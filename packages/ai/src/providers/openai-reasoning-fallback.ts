@@ -138,7 +138,8 @@ function collectMessageParts(error: unknown, captured: CapturedHttpErrorResponse
  * the value alone with `level "none" not supported, valid levels: low, …` — so
  * the allowed-level phrasing counts as a mention too.
  */
-const REASONING_EFFORT_FIELD_PATTERN = /reasoning[_. ]effort|reasoning value|(?:valid|supported|allowed) levels?/i;
+const REASONING_EFFORT_FIELD_PATTERN =
+	/reasoning[_. ]effort|reasoning value|(?:valid|supported|allowed) levels?|始终思考|思考模式|(?:不支持|无法|不能)(?:开启|关闭)?思考|(?:不支持|仅支持|只支持)[^\n]{0,40}?(?:思考|reasoning)|(?:不支持|仅支持|只支持)[^\n]{0,20}?(?:none|minimal|low|medium|high|xhigh|max)/i;
 
 function mentionsReasoningEffort(error: unknown, captured: CapturedHttpErrorResponse | undefined): boolean {
 	const param = capturedStringField(captured, "param");
@@ -174,6 +175,13 @@ function isInvalidReasoningEffortError(
 	if (/(?:unsupported|not supported)[^\n]*(?:reasoning[_. ]effort|reasoning value)/i.test(message)) {
 		return true;
 	}
+	if (
+		new RegExp(`(?:不支持|仅支持|只支持)[^\\n]{0,20}?${escapeRegExp(currentEffort)}|${escapeRegExp(currentEffort)}[^\\n]{0,20}?(?:不支持|请使用)`, "i").test(
+			message,
+		)
+	) {
+		return true;
+	}
 	// Gateways put the rejected value first (`level "none" not supported`), the
 	// official API puts the verdict first (`Unsupported value: 'none'`).
 	const quoted = `["'\`]${escapeRegExp(currentEffort)}["'\`]`;
@@ -196,7 +204,7 @@ function parseKnownReasoningValues(text: string): Set<string> {
 		quotedMatch = quotedPattern.exec(text);
 	}
 	const allowedMatch =
-		/(?:must be|one of|allowed values?|supported values?(?: are)?|expected|(?:valid|supported|allowed) levels?(?: are)?)[^.\n]+/i.exec(
+		/(?:must be|one of|allowed values?|supported values?(?: are)?|expected|(?:valid|supported|allowed) levels?(?: are)?|请使用|必须使用|可选值?|支持(?:的)?值)[^.\n]*/i.exec(
 			text,
 		);
 	if (allowedMatch) {
@@ -213,8 +221,15 @@ function parseKnownReasoningValues(text: string): Set<string> {
 
 function parseAllowedReasoningValues(message: string, currentEffort: string): Set<string> | undefined {
 	const values = parseKnownReasoningValues(message);
+	const zhAllowedCue = /请使用|必须使用|可选值?|支持(?:的)?值/.test(message);
 	const hasAllowedCue =
+		zhAllowedCue ||
 		/must be|one of|allowed values?|supported values?|expected|(?:valid|supported|allowed) levels?/i.test(message);
+	// Chinese always-thinking relays list the allowed levels while rejecting
+	// only the OFF semantics; the current effort being in that list means the
+	// rejection is not about its value. The English quoted-value collector also
+	// picks up the REJECTED value there, so presence proves nothing.
+	if (zhAllowedCue && values.has(currentEffort.toLowerCase())) return undefined;
 	values.delete(currentEffort.toLowerCase());
 	if (!hasAllowedCue && values.size === 0) return undefined;
 	return values;
@@ -279,4 +294,48 @@ export function resolveOpenAIReasoningEffortFallback(
 	}
 	if (normalizedCurrent === "none") return null;
 	return nearestEnabledReasoningFallback(normalizedCurrent, allowed) ?? null;
+}
+
+/**
+ * Whether a 400 is the always-thinking gateway rejection (`[1210][该模型始终思考，
+ * 不支持关闭思考…请使用 low、high 或 max。]`) regardless of the current effort
+ * value — several relays emit it whenever the assistant history carries inline
+ * `<think>` blocks, with or without an effort field.
+ */
+export function isAlwaysThinkingRejection(error: unknown, captured: CapturedHttpErrorResponse | undefined): boolean {
+	const status = extractHttpStatusFromError(error) ?? captured?.status;
+	if (status !== 400 && status !== 422) return false;
+	return /始终思考|(?:不支持|无法|不能)(?:开启|关闭)?思考/.test(collectMessageParts(error, captured));
+}
+
+/**
+ * Strip `<think>…</think>` segments (and unterminated `<think>` prefixes) from
+ * assistant string contents in already-built chat-completions params. Returns
+ * true when anything changed. Mutates `params.messages` in place.
+ */
+export function stripThinkTagsFromCompletionsParams(params: unknown): boolean {
+	if (!isRecord(params) || !Array.isArray(params.messages)) return false;
+	let changed = false;
+	for (const message of params.messages) {
+		if (!isRecord(message) || message.role !== "assistant" || typeof message.content !== "string") continue;
+		const stripped = message.content
+			.replace(/<think>[\s\S]*?<\/think>\s*/g, "")
+			.replace(/^<think>[\s\S]*$/g, "")
+			.trim();
+		if (stripped !== message.content) {
+			// Pure-thinking turns become null content: OpenAI-compatible relays
+			// reject empty strings, but accept null (the tool_calls-only shape).
+			message.content = stripped.length > 0 ? stripped : null;
+			changed = true;
+		}
+	}
+	return changed;
+}
+
+/** Whether assistant string contents in built params carry inline `<think>` blocks. */
+export function completionsParamsContainThinkTags(params: unknown): boolean {
+	if (!isRecord(params) || !Array.isArray(params.messages)) return false;
+	return params.messages.some(
+		m => isRecord(m) && m.role === "assistant" && typeof m.content === "string" && m.content.includes("<think>"),
+	);
 }

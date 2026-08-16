@@ -20,8 +20,10 @@ export class CustomMessageComponent extends Container {
 	) {
 		super();
 
-		// Create box with custom background (used for default rendering)
-		this.#box = new Box(1, 1, t => theme.bg("customMessageBg", t));
+		// Transparent card: renderFramedMessage applies the rounded outline; the
+		// customMessageBg wash defeated terminal background opacity (same failure
+		// mode as the removed state-card tints).
+		this.#box = new Box(1, 1);
 		this.#box.setIgnoreTight(true);
 
 		this.#rebuild();

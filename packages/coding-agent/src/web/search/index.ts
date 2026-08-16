@@ -7,7 +7,7 @@
 
 import { type } from "@oh-my-pi/omptype";
 import type { AgentTool, AgentToolContext, AgentToolResult, AgentToolUpdateCallback } from "@oh-my-pi/pi-agent-core";
-import type { AuthStorage } from "@oh-my-pi/pi-ai";
+import type { AuthStorage, Model } from "@oh-my-pi/pi-ai";
 import { prompt } from "@oh-my-pi/pi-utils";
 import { ModelRegistry } from "../../config/model-registry";
 import { settings } from "../../config/settings";
@@ -130,6 +130,7 @@ function hasRenderableSearchContent(response: SearchResponse): boolean {
 interface ExecuteSearchOptions {
 	authStorage: AuthStorage;
 	modelRegistry?: ModelRegistry;
+	activeModel?: Model;
 	sessionId?: string;
 	signal?: AbortSignal;
 }
@@ -140,7 +141,7 @@ async function executeSearch(
 	params: SearchQueryParams,
 	options: ExecuteSearchOptions,
 ): Promise<{ content: Array<{ type: "text"; text: string }>; details: SearchRenderDetails }> {
-	const { authStorage, modelRegistry, sessionId, signal } = options;
+	const { activeModel, authStorage, modelRegistry, sessionId, signal } = options;
 	const explicitProvider = params.provider;
 	let candidates: SearchProviderCandidate[];
 	if (explicitProvider && explicitProvider !== "auto") {
@@ -189,9 +190,10 @@ async function executeSearch(
 		lastProvider = providerMeta;
 		try {
 			provider = await getSearchProvider(candidate.id);
+			const availabilityContext = { activeModel, modelRegistry };
 			const available = candidate.explicit
-				? await provider.isExplicitlyAvailable(authStorage)
-				: await provider.isAvailable(authStorage);
+				? await provider.isExplicitlyAvailable(authStorage, availabilityContext)
+				: await provider.isAvailable(authStorage, availabilityContext);
 			if (!available && !candidate.explicit) continue;
 			if (!available && candidate.explicit) {
 				throw new SearchProviderError(
@@ -215,6 +217,7 @@ async function executeSearch(
 				timeoutMs,
 				authStorage,
 				modelRegistry,
+				activeModel,
 				sessionId,
 				antigravityEndpointMode,
 				geminiModel,
@@ -290,7 +293,13 @@ async function executeSearch(
  */
 export async function runSearchQuery(
 	params: SearchQueryParams,
-	options: { authStorage?: AuthStorage; modelRegistry?: ModelRegistry; sessionId?: string; signal?: AbortSignal } = {},
+	options: {
+		authStorage?: AuthStorage;
+		modelRegistry?: ModelRegistry;
+		activeModel?: Model;
+		sessionId?: string;
+		signal?: AbortSignal;
+	} = {},
 ): Promise<{ content: Array<{ type: "text"; text: string }>; details: SearchRenderDetails }> {
 	const createdAuthStorage = options.authStorage || options.modelRegistry ? undefined : await discoverAuthStorage();
 	const authStorage = options.authStorage ?? options.modelRegistry?.authStorage ?? createdAuthStorage;
@@ -302,6 +311,7 @@ export async function runSearchQuery(
 		return await executeSearch("cli-web-search", params, {
 			authStorage,
 			modelRegistry,
+			activeModel: options.activeModel,
 			sessionId: options.sessionId,
 			signal: options.signal,
 		});
@@ -344,6 +354,7 @@ export class WebSearchTool implements AgentTool<typeof webSearchSchema, SearchRe
 		return executeSearch(_toolCallId, params, {
 			authStorage,
 			modelRegistry: this.#session.modelRegistry,
+			activeModel: this.#session.getActiveModel?.(),
 			sessionId,
 			signal,
 		});
@@ -370,6 +381,7 @@ export const webSearchCustomTool: CustomTool<typeof webSearchSchema, SearchRende
 		return executeSearch(toolCallId, params, {
 			authStorage,
 			modelRegistry: ctx.modelRegistry,
+			activeModel: ctx.model,
 			sessionId,
 			signal,
 		});

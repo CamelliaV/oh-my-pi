@@ -82,7 +82,7 @@ Streaming: none. `WebSearchTool.execute()` forwards its `AbortSignal` into `exec
 Each provider search transport receives a hard timeout from `providers.webSearchTimeoutSeconds` (default `60`, maximum `300`). When that transport exceeds the ceiling, the automatic chain records the provider failure and advances to the next candidate. The setting is not a whole-chain deadline, and providers may impose shorter upstream, retry, or aggregate limits. Set a positive number of seconds, for example `omp config set providers.webSearchTimeoutSeconds 180` for slower model-backed search.
 
 ## Flow
-1. `WebSearchTool.execute()` in `packages/coding-agent/src/web/search/index.ts` delegates directly to `executeSearch()`.
+1. `WebSearchTool.execute()` in `packages/coding-agent/src/web/search/index.ts` captures the active session model and delegates to `executeSearch()`.
 2. `executeSearch()` parses `query` once with `parseSearchQuery()`, then computes ordered provider candidates without eagerly loading their modules:
    - if internal `params.provider` is set and not `"auto"`, that provider is the only candidate and is treated as explicit;
    - otherwise it uses the configured candidate order. Entries explicitly listed in `providers.webSearchOrder` use `isExplicitlyAvailable()`; ordinary fallback entries use `isAvailable()`.
@@ -93,6 +93,7 @@ Each provider search transport receives a hard timeout from `providers.webSearch
    - `limit`, `recency`, `temperature`, `maxOutputTokens`, `numSearchResults`,
    - `timeoutMs`, derived from `providers.webSearchTimeoutSeconds`,
    - `systemPrompt` from `packages/coding-agent/src/prompts/system/web-search.md`,
+   - the current agent model and registry when search runs inside a session,
    - the parsed structured query, including recognized directives and date/domain/title/URL/filetype constraints.
 6. After a provider responds, `applyQueryConstraints()` leniently post-filters its sources for constraints not guaranteed upstream. It applies each filterable dimension in turn; any dimension that would eliminate every remaining result is relaxed and a leading `Note: no results matched ...` is emitted. Answer/citation text is not rewritten.
 7. A `SearchResponse` with no renderable content (`hasRenderableSearchContent()` returns false) is rejected as a `SearchProviderError` (status `204`) so the loop advances to the next provider. On the first renderable response, `formatForLLM()` renders notes, answer, sources, citations, related questions, and search queries into one text block.
@@ -135,9 +136,11 @@ Each provider search transport receives a hard timeout from `providers.webSearch
     - `limit` and `num_search_results` are collapsed together before dispatch: `num_results = params.numSearchResults ?? params.limit`.
     - Output may include `answer`, `sources`, `citations`, `searchQueries`, `usage.searchRequests`, `model`, `requestId`.
   - **Codex** — `packages/coding-agent/src/web/search/providers/codex.ts`
-    - Availability: OAuth credential for `openai-codex` in `agent.db`; refresh is lazy during search. Custom model-registry endpoints may instead use a configured API-key/command credential, but official OAuth/env credentials are refused for custom endpoints.
-    - Querying: streams the Codex Responses endpoint with hosted `web_search` and `search_context_size: "high"`. Google-style directives are re-emitted in the query.
-    - `PI_CODEX_WEB_SEARCH_MODEL` forces one model attempt. Otherwise the adapter tries bundled ChatGPT-account-safe models in preference order (`gpt-5.6-luna`, `terra`, `sol`, `gpt-5.5`, …), advancing only for supported model-retry failures. Responses-Lite models use automatic tool choice; a completion without a `web_search_call` is rejected rather than presented as searched content.
+    - Availability: when the current agent model is GPT-family and uses an `openai-responses`, `openai-codex-responses`, or `openai-completions` transport, Codex search resolves availability from that model's provider. Other model families use the standalone `openai-codex` OAuth/API-key configuration unchanged.
+    - Active GPT affinity: the current model's provider, `requestModelId ?? id`, base URL, provider/model headers, and credentials win over standalone Codex search overrides. Standard OpenAI-compatible providers use `<baseUrl>/responses`; an `openai-codex-responses` model keeps Codex endpoint resolution. A failed active-provider attempt returns to the ordinary search-provider fallback chain; it does not switch to an unrelated GPT gateway inside the Codex adapter.
+    - Querying: streams a Responses endpoint with hosted `web_search` and `search_context_size: "high"`. Google-style directives are re-emitted in the query.
+    - `PI_CODEX_WEB_SEARCH_BASE_URL` optionally overrides the standalone endpoint for web search only; it accepts either a provider base URL or a complete `/responses` URL. It is ignored while active GPT affinity applies.
+    - `PI_CODEX_WEB_SEARCH_MODEL` forces one standalone model attempt. Otherwise the adapter tries bundled ChatGPT-account-safe models in preference order (`gpt-5.6-luna`, `terra`, `sol`, `gpt-5.5`, …), advancing only for supported model-retry failures. It is ignored while active GPT affinity applies. A completion without a `web_search_call` is rejected rather than presented as searched content.
     - Ignores `recency`, `max_tokens`, and `temperature`. `num_search_results ?? limit` slices parsed sources locally.
     - Output may include `answer`, `sources`, `usage`, `model`, `requestId`. If the stream has no `url_citation` annotations, the adapter falls back to markdown links and bare URLs from the answer.
   - **xAI** — `packages/coding-agent/src/web/search/providers/xai.ts`

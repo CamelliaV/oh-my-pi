@@ -61,7 +61,9 @@ class SummaryDividerComponent implements Component {
 
 	#detailBox(): Box {
 		if (this.#detail) return this.#detail;
-		const box = new Box(1, 1, t => theme.bg("customMessageBg", t));
+		// Transparent card: the framed outline carries the block; a bg wash
+		// would defeat terminal background opacity.
+		const box = new Box(1, 1);
 		box.setIgnoreTight(true);
 		box.addChild(
 			new Markdown(this.options.detailMarkdown(), 0, 0, getMarkdownTheme(), {

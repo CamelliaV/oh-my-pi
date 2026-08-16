@@ -1,7 +1,15 @@
-import type { AuthStorage, FetchImpl } from "@oh-my-pi/pi-ai";
+import type { AuthStorage, FetchImpl, Model } from "@oh-my-pi/pi-ai";
 import type { ModelRegistry } from "../../../config/model-registry";
 import type { StructuredQuery } from "../query";
 import type { SearchProviderId, SearchResponse } from "../types";
+
+/** Context used when deciding whether a provider can serve the current model. */
+export interface SearchProviderAvailabilityContext {
+	/** The model currently selected by the running agent session. */
+	activeModel?: Model;
+	/** Registry used to resolve the active model's provider credentials. */
+	modelRegistry?: ModelRegistry;
+}
 
 /**
  * Shared web search parameters passed to providers.
@@ -66,6 +74,8 @@ export interface SearchParams {
 	authStorage: AuthStorage;
 	/** Provider/model transport settings used by native search endpoints. */
 	modelRegistry?: ModelRegistry;
+	/** Current agent model, when search runs inside an agent session. */
+	activeModel?: Model;
 	/**
 	 * Optional session id used as the round-robin / sticky key when selecting
 	 * among multiple credentials for the same provider. Pass through from the
@@ -90,7 +100,10 @@ export abstract class SearchProvider {
 	 * when {@link resolveProviderChain} walks the order. Explicit selection
 	 * uses {@link isExplicitlyAvailable} instead.
 	 */
-	abstract isAvailable(authStorage: AuthStorage): Promise<boolean> | boolean;
+	abstract isAvailable(
+		authStorage: AuthStorage,
+		context?: SearchProviderAvailabilityContext,
+	): Promise<boolean> | boolean;
 
 	/**
 	 * Returns `true` when this provider should run when the user explicitly
@@ -101,8 +114,11 @@ export abstract class SearchProvider {
 	 *
 	 * Defaults to mirroring {@link isAvailable}.
 	 */
-	isExplicitlyAvailable(authStorage: AuthStorage): Promise<boolean> | boolean {
-		return this.isAvailable(authStorage);
+	isExplicitlyAvailable(
+		authStorage: AuthStorage,
+		context?: SearchProviderAvailabilityContext,
+	): Promise<boolean> | boolean {
+		return this.isAvailable(authStorage, context);
 	}
 
 	/**

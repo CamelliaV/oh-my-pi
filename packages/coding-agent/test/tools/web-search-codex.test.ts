@@ -1,8 +1,8 @@
-import { afterEach, describe, expect, it, vi } from "bun:test";
-import type { AuthStorage, FetchImpl } from "@oh-my-pi/pi-ai";
+import { afterEach, beforeEach, describe, expect, it, vi } from "bun:test";
+import type { AuthStorage, FetchImpl, Model } from "@oh-my-pi/pi-ai";
 import type { ModelRegistry } from "@oh-my-pi/pi-coding-agent/config/model-registry";
 import type { SearchParams } from "@oh-my-pi/pi-coding-agent/web/search/providers/base";
-import { hasCodexSearch, searchCodex } from "@oh-my-pi/pi-coding-agent/web/search/providers/codex";
+import { CodexProvider, hasCodexSearch, searchCodex } from "@oh-my-pi/pi-coding-agent/web/search/providers/codex";
 
 type CapturedRequest = {
 	url: string;
@@ -12,6 +12,11 @@ type CapturedRequest = {
 };
 
 const originalCodexSearchModel = process.env.PI_CODEX_WEB_SEARCH_MODEL;
+const originalCodexSearchBaseUrl = process.env.PI_CODEX_WEB_SEARCH_BASE_URL;
+
+beforeEach(() => {
+	delete process.env.PI_CODEX_WEB_SEARCH_BASE_URL;
+});
 
 // A completed hosted web_search tool call. Real Codex searches always stream a
 // `response.web_search_call.*` event; the provider now requires that evidence
@@ -284,6 +289,11 @@ describe("searchCodex model selection", () => {
 		} else {
 			process.env.PI_CODEX_WEB_SEARCH_MODEL = originalCodexSearchModel;
 		}
+		if (originalCodexSearchBaseUrl === undefined) {
+			delete process.env.PI_CODEX_WEB_SEARCH_BASE_URL;
+		} else {
+			process.env.PI_CODEX_WEB_SEARCH_BASE_URL = originalCodexSearchBaseUrl;
+		}
 	});
 
 	it("uses GPT-5.6 Luna as the first bundled default", async () => {
@@ -356,6 +366,104 @@ describe("searchCodex model selection", () => {
 		expect(headers.get("x-proxy-tenant")).toBe("tenant-1");
 		expect(headers.has("chatgpt-account-id")).toBe(false);
 		expect(result.answer).toBe("Codex answer");
+	});
+
+	it("uses a search-only endpoint override and preserves the configured gateway User-Agent", async () => {
+		process.env.PI_CODEX_WEB_SEARCH_MODEL = "gpt-5.4";
+		process.env.PI_CODEX_WEB_SEARCH_BASE_URL = "https://proxy.example/v1/responses";
+		const endpointRegistry = {
+			...proxyModelRegistry,
+			getProviderHeaders() {
+				return { "X-Proxy-Tenant": "tenant-1", "User-Agent": "codex_cli_rs/0.45.0" };
+			},
+		} as unknown as ModelRegistry;
+
+		const result = await searchCodex({
+			...makeSearchParams("direct Responses endpoint", mockCodexFetch("gpt-5.4")),
+			authStorage: proxyAuthStorage,
+			modelRegistry: endpointRegistry,
+		});
+
+		expect(capturedRequest?.url).toBe("https://proxy.example/v1/responses");
+		const headers = new Headers(capturedRequest?.headers);
+		expect(headers.get("user-agent")).toBe("codex_cli_rs/0.45.0");
+		expect(result.answer).toBe("Codex answer");
+	});
+
+	it("routes active GPT search through the current model provider ahead of standalone overrides", async () => {
+		process.env.PI_CODEX_WEB_SEARCH_MODEL = "gpt-5.4";
+		process.env.PI_CODEX_WEB_SEARCH_BASE_URL = "https://standalone.example/v1/responses";
+		const activeModel = {
+			provider: "active-gpt",
+			id: "gpt-5.6-sol",
+			requestModelId: "gpt-5.6-sol-wire",
+			api: "openai-responses",
+			baseUrl: "https://active.example/v1",
+			headers: { "X-Model-Route": "active", "User-Agent": "active-gpt-client/1.0" },
+		} as unknown as Model;
+		const activeAuthStorage = {
+			hasAuth(provider: string) {
+				return provider === "active-gpt";
+			},
+		} as unknown as AuthStorage;
+		const activeRegistry = {
+			authStorage: activeAuthStorage,
+			hasConfiguredAuth(model: Model) {
+				return model.provider === "active-gpt";
+			},
+			getProviderHeaders(provider: string) {
+				expect(provider).toBe("active-gpt");
+				return { "X-Provider-Route": "active-provider" };
+			},
+			resolver(provider: string, options?: { sessionId?: string; baseUrl?: string; modelId?: string }) {
+				expect(provider).toBe("active-gpt");
+				expect(options).toMatchObject({
+					baseUrl: "https://active.example/v1",
+					modelId: "gpt-5.6-sol-wire",
+				});
+				return async () => "active-provider-key";
+			},
+		} as unknown as ModelRegistry;
+
+		const provider = new CodexProvider();
+		expect(await provider.isAvailable(activeAuthStorage, { activeModel, modelRegistry: activeRegistry })).toBe(true);
+		const result = await searchCodex({
+			...makeSearchParams("active provider search", mockCodexFetch("gpt-5.6-sol-wire")),
+			authStorage: activeAuthStorage,
+			modelRegistry: activeRegistry,
+			activeModel,
+		});
+
+		expect(capturedRequest?.url).toBe("https://active.example/v1/responses");
+		expect(capturedRequest?.body?.model).toBe("gpt-5.6-sol-wire");
+		const headers = new Headers(capturedRequest?.headers);
+		expect(headers.get("authorization")).toBe("Bearer active-provider-key");
+		expect(headers.get("user-agent")).toBe("active-gpt-client/1.0");
+		expect(headers.get("x-provider-route")).toBe("active-provider");
+		expect(headers.get("x-model-route")).toBe("active");
+		expect(headers.has("chatgpt-account-id")).toBe(false);
+		expect(result.model).toBe("gpt-5.6-sol-wire");
+	});
+
+	it("keeps the standalone Codex route for a non-GPT active model", async () => {
+		process.env.PI_CODEX_WEB_SEARCH_MODEL = "gpt-5.4";
+		const activeModel = {
+			provider: "active-glm",
+			id: "glm-5.2",
+			api: "openai-completions",
+			baseUrl: "https://glm.example/v1",
+		} as unknown as Model;
+
+		const result = await searchCodex({
+			...makeSearchParams("non-GPT fallback", mockCodexFetch("gpt-5.4")),
+			authStorage: proxyAuthStorage,
+			modelRegistry: proxyModelRegistry,
+			activeModel,
+		});
+
+		expect(capturedRequest?.url).toBe("https://proxy.example/backend-api/codex/responses");
+		expect(capturedRequest?.body?.model).toBe("gpt-5.4");
+		expect(result.model).toBe("gpt-5.4");
 	});
 
 	it("refuses to send official OAuth credentials to a configured Codex endpoint", async () => {
@@ -848,5 +956,50 @@ describe("searchCodex model selection", () => {
 		await expect(searchCodex(makeSearchParams("rate-limited search", fetchMock))).rejects.toMatchObject({
 			status: 429,
 		});
+	});
+});
+
+describe("CodexProvider availability", () => {
+	it("uses the active GPT provider credentials even when its wire model id is an opaque deployment name", async () => {
+		const activeModel = {
+			provider: "current-gpt",
+			id: "gpt-5.6-sol",
+			requestModelId: "production-deployment",
+			api: "openai-responses",
+			baseUrl: "https://current.example/v1",
+		} as unknown as Model;
+		const hasAuth = vi.fn((_provider: string) => false);
+		const hasConfiguredAuth = vi.fn((model: Model) => model === activeModel);
+		const provider = new CodexProvider();
+
+		const available = await provider.isAvailable({ hasAuth } as unknown as AuthStorage, {
+			activeModel,
+			modelRegistry: { hasConfiguredAuth } as unknown as ModelRegistry,
+		});
+
+		expect(available).toBe(true);
+		expect(hasConfiguredAuth).toHaveBeenCalledWith(activeModel);
+		expect(hasAuth).not.toHaveBeenCalled();
+	});
+
+	it("preserves standalone Codex availability for an active non-GPT model", async () => {
+		const activeModel = {
+			provider: "z-ai",
+			id: "glm-5.3",
+			api: "openai-responses",
+			baseUrl: "https://glm.example/v1",
+		} as unknown as Model;
+		const hasAuth = vi.fn((providerId: string) => providerId === "openai-codex");
+		const hasConfiguredAuth = vi.fn(() => true);
+		const provider = new CodexProvider();
+
+		const available = await provider.isAvailable({ hasAuth } as unknown as AuthStorage, {
+			activeModel,
+			modelRegistry: { hasConfiguredAuth } as unknown as ModelRegistry,
+		});
+
+		expect(available).toBe(true);
+		expect(hasAuth).toHaveBeenCalledWith("openai-codex");
+		expect(hasConfiguredAuth).not.toHaveBeenCalled();
 	});
 });

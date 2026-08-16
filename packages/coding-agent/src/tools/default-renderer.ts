@@ -124,8 +124,11 @@ export function formatDefaultToolExecution(
 	const maxOutputLines = options.expanded ? 12 : 4;
 	const displayLines = outputLines.slice(0, maxOutputLines);
 
+	// Error output renders in the error color so the card stays legible
+	// without its former solid error background.
+	const outputColor = result.isError ? "error" : "toolOutput";
 	for (const line of displayLines) {
-		lines.push(uiTheme.fg("toolOutput", truncateToWidth(replaceTabs(line), contentWidth)));
+		lines.push(uiTheme.fg(outputColor, truncateToWidth(replaceTabs(line), contentWidth)));
 	}
 
 	if (outputLines.length > maxOutputLines) {
@@ -143,12 +146,9 @@ export function formatDefaultToolExecution(
 /** Render the generic fallback as the state-tinted card used by direct custom tools. */
 export function renderDefaultToolExecution(input: DefaultToolRenderInput, uiTheme: Theme): Component {
 	const component = new WidthAwareText(contentWidth => formatDefaultToolExecution(input, contentWidth, uiTheme), 1, 1);
-	const background = input.options.isPartial
-		? "toolPendingBg"
-		: input.result?.isError
-			? "toolErrorBg"
-			: "toolSuccessBg";
-	component.setCustomBgFn(text => uiTheme.bg(background, text));
+	// All states render without a tinted card: the status icon + error text
+	// coloring carry the signal, and a solid wash would defeat terminal
+	// background transparency.
 	component.setIgnoreTight(true);
 	return component;
 }

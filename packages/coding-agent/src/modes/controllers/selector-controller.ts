@@ -1494,6 +1494,22 @@ export class SelectorController {
 						);
 					}
 				},
+				onRename: async (session: SessionInfo, title: string) => {
+					const storage = new FileSessionStorage();
+					try {
+						await storage.updateSessionTitle(session.path, {
+							title,
+							source: "user",
+							updatedAt: new Date().toISOString(),
+						});
+						return true;
+					} catch (error) {
+						throw new Error(
+							`Failed to rename session: ${error instanceof Error ? error.message : String(error)}`,
+							{ cause: error },
+						);
+					}
+				},
 				historyMatcher,
 				loadAllSessions: () => SessionManager.listAll(),
 			};

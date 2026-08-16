@@ -15,6 +15,8 @@ export interface SessionPickerOptions {
 	allowDelete?: boolean;
 	allowGlobalScope?: boolean;
 	historySearch?: boolean;
+	/** Prefill the search input (used by fuzzy --resume disambiguation). */
+	initialQuery?: string;
 }
 
 /**
@@ -77,6 +79,15 @@ export async function selectSession(
 								await storage.deleteSessionWithArtifacts(session.path);
 								return true;
 							},
+				onRename: async (session: SessionInfo, title: string) => {
+					await storage.updateSessionTitle(session.path, {
+						title,
+						source: "user",
+						updatedAt: new Date().toISOString(),
+					});
+					return true;
+				},
+				initialQuery: options.initialQuery,
 				historyMatcher,
 				loadAllSessions: options.allowGlobalScope === false ? undefined : () => SessionManager.listAll(storage),
 				allSessions: options.allSessions,

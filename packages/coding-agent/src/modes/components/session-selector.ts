@@ -20,6 +20,7 @@ import type { SessionInfo, SessionStatus } from "../../session/session-listing";
 import { shortenPath } from "../../tools/render-utils";
 import { DynamicBorder } from "./dynamic-border";
 import { HookSelectorComponent } from "./hook-selector";
+import { HookInputComponent } from "./hook-input";
 
 /**
  * Themed glyph + colored label for a session's lifecycle status, or `undefined`
@@ -278,6 +279,7 @@ class SessionList implements Component {
 	readonly #getTerminalRows: () => number;
 
 	onDeleteRequest?: (session: SessionInfo) => void;
+	onRenameRequest?: (session: SessionInfo) => void;
 
 	#allSessions: SessionInfo[];
 	#showCwd: boolean;
@@ -311,6 +313,7 @@ class SessionList implements Component {
 		showCwd = false,
 		historyMatcher?: SessionHistoryMatcher,
 		getTerminalRows: () => number = () => 24,
+		initialQuery?: string,
 	) {
 		this.#getTerminalRows = getTerminalRows;
 		this.#allSessions = sessions;
@@ -318,6 +321,10 @@ class SessionList implements Component {
 		this.#historyMatcher = historyMatcher;
 		this.#filteredSessions = sessions;
 		this.#searchInput = new Input();
+		if (initialQuery) {
+			this.#searchInput.setValue(initialQuery);
+			this.#filterSessions(initialQuery);
+		}
 
 		// Handle Enter in search input - select current item
 		this.#searchInput.onSubmit = () => {
@@ -494,6 +501,17 @@ class SessionList implements Component {
 		}
 	}
 
+		/** Update a session's display title in place after an offline rename. */
+	updateSessionTitle(sessionPath: string, title: string): void {
+		const session = this.#allSessions.find(s => s.path === sessionPath);
+		if (!session) return;
+		session.title = title;
+		// The cached lowercase search haystack still matches the old title; drop
+		// it so the next keystroke rebuilds it with the new text.
+		delete (session as SearchableSessionInfo)[kSearchTextLower];
+		this.#filterSessions(this.#searchInput.getValue());
+	}
+
 	/** Resolve a list-local rendered-line index to a filtered-session index. */
 	hitTestSession(line: number): number | undefined {
 		return this.#hitRows[line];
@@ -662,6 +680,15 @@ class SessionList implements Component {
 			}
 			return;
 		}
+		// Ctrl+R - rename the selected session (upstream keybinding
+		// `app.session.rename`; the fork's selector rewrite had lost it).
+		if (matchesKey(keyData, "ctrl+r")) {
+			const selected = this.#filteredSessions[this.#selectedIndex];
+			if (selected && this.onRenameRequest) {
+				this.onRenameRequest(selected);
+			}
+			return;
+		}
 		// Up arrow
 		if (matchesSelectUp(keyData)) {
 			this.#selectionMoved = true;
@@ -719,6 +746,8 @@ class SessionList implements Component {
 
 export interface SessionSelectorOptions {
 	onDelete?: (session: SessionInfo) => Promise<boolean>;
+	/** Persist a new display title for a session picked in the list. */
+	onRename?: (session: SessionInfo, title: string) => Promise<boolean>;
 	historyMatcher?: SessionHistoryMatcher;
 	/** Loads sessions across all projects for the all-projects scope toggle (Tab). */
 	loadAllSessions?: () => Promise<SessionInfo[]>;
@@ -730,6 +759,8 @@ export interface SessionSelectorOptions {
 	scopeLabel?: string | false;
 	/** Show each session's working directory in the list. */
 	showCwd?: boolean;
+	/** Prefill the search query (fuzzy --resume disambiguation). */
+	initialQuery?: string;
 	/**
 	 * Reads the live terminal height so the visible window fits the viewport.
 	 * Omitted only in tests; defaults to a conservative 24 rows.
@@ -760,6 +791,8 @@ export class SessionSelectorComponent extends Container {
 	#messageContainer: Container;
 	#headerText: Text;
 	#onDelete?: (session: SessionInfo) => Promise<boolean>;
+	#onRename?: (session: SessionInfo, title: string) => Promise<boolean>;
+	#renameDialog: HookInputComponent | null = null;
 	#onRequestRender?: () => void;
 	readonly #loadAllSessions?: () => Promise<SessionInfo[]>;
 	#folderSessions: SessionInfo[];
@@ -793,6 +826,7 @@ export class SessionSelectorComponent extends Container {
 
 		this.#messageContainer = new Container();
 		this.#onDelete = options.onDelete;
+		this.#onRename = options.onRename;
 		this.#loadAllSessions = options.loadAllSessions;
 		this.#folderSessions = sessions;
 		this.#globalSessions = options.allSessions ?? null;
@@ -816,6 +850,7 @@ export class SessionSelectorComponent extends Container {
 			options.showCwd ?? false,
 			options.historyMatcher,
 			options.getTerminalRows,
+			options.initialQuery,
 		);
 		// Every exit path cancels the list's pending history merge, so a stale
 		// debounce timer can never run its SQLite lookup after the picker closed.
@@ -834,6 +869,9 @@ export class SessionSelectorComponent extends Container {
 		this.#sessionList.onRequestRender = () => this.#onRequestRender?.();
 		this.#sessionList.onDeleteRequest = (session: SessionInfo) => {
 			this.#showDeleteConfirmation(session);
+		};
+		this.#sessionList.onRenameRequest = (session: SessionInfo) => {
+			this.#showRenameDialog(session);
 		};
 		if (this.#loadAllSessions || this.#globalSessions) {
 			this.#sessionList.onToggleScope = () => {
@@ -960,6 +998,41 @@ export class SessionSelectorComponent extends Container {
 		this.#onRequestRender?.();
 	}
 
+	#showRenameDialog(session: SessionInfo): void {
+		if (this.#confirmationDialog) return;
+		const displayName = session.title || session.firstMessage.slice(0, 40) || session.id;
+		const closeDialog = () => {
+			this.#renameDialog = null;
+			this.#contentSlot.clear();
+			this.#contentSlot.addChild(this.#sessionList);
+			this.#onRequestRender?.();
+		};
+		const input = new HookInputComponent(
+			`Rename session\n${displayName}`,
+			session.title,
+			async (value: string) => {
+				const title = value.trim();
+				if (title && this.#onRename) {
+					this.#clearError();
+					try {
+						const renamed = await this.#onRename(session, title);
+						if (renamed) this.#sessionList.updateSessionTitle(session.path, title);
+					} catch (err) {
+						this.#showError(err instanceof Error ? err.message : String(err));
+					}
+				}
+				closeDialog();
+			},
+			closeDialog,
+		);
+		// Same dialog-swap discipline as delete confirmation: the input replaces
+		// the list in the content slot so the picker frame stays in-viewport.
+		this.#renameDialog = input;
+		this.#contentSlot.clear();
+		this.#contentSlot.addChild(input);
+		this.#onRequestRender?.();
+	}
+
 	/**
 	 * Concatenate the children's renders (like {@link Container}) while recording
 	 * the line where the session list begins, so the fullscreen picker can hit-
@@ -992,7 +1065,10 @@ export class SessionSelectorComponent extends Container {
 	/** Blank · keybinding hint · bottom border. Rendered by {@link render}. */
 	#footerLines(width: number): string[] {
 		const scopeHint = this.#scope === "all" ? "current folder" : "all projects";
-		const hint = theme.fg("muted", `  [Del/⌫ delete · Enter select · Tab ${scopeHint} · Esc cancel]`);
+		const hint = theme.fg(
+			"muted",
+			`  [Del/⌫ delete · Ctrl+R rename · Enter select · Tab ${scopeHint} · Esc cancel]`,
+		);
 		return ["", hint, "", ...this.#bottomBorder.render(width)];
 	}
 
@@ -1002,7 +1078,9 @@ export class SessionSelectorComponent extends Container {
 			this.#handleMouse(keyData);
 			return;
 		}
-		if (this.#confirmationDialog) {
+		if (this.#renameDialog) {
+			this.#renameDialog.handleInput(keyData);
+		} else if (this.#confirmationDialog) {
 			this.#confirmationDialog.handleInput(keyData);
 		} else {
 			this.#sessionList.handleInput(keyData);
@@ -1016,7 +1094,7 @@ export class SessionSelectorComponent extends Container {
 	 * pointer. Mouse is inert while the delete-confirmation dialog is open.
 	 */
 	#handleMouse(data: string): void {
-		if (this.#confirmationDialog) return;
+		if (this.#confirmationDialog || this.#renameDialog) return;
 		routeSgrMouseInput(data, event => {
 			if (event.wheel !== null) {
 				this.#sessionList.handleWheel(event.wheel);

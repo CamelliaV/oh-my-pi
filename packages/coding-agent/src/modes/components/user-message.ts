@@ -1,4 +1,4 @@
-import { type Component, Container, Markdown } from "@oh-my-pi/pi-tui";
+import { Box, type Component, Container, Markdown } from "@oh-my-pi/pi-tui";
 import { formatBytes } from "@oh-my-pi/pi-utils";
 import { getMarkdownTheme, theme } from "../../modes/theme/theme";
 import { imageReferenceHyperlink, renderPlaceholders } from "../image-references";
@@ -63,7 +63,16 @@ export class UserMessageComponent extends Container {
 			color,
 		});
 		md.setIgnoreTight(true);
-		this.addChild(md);
+		// Frame the bubble with the same rounded outline tool cards use, so user
+		// input reads as a card even when userMessageBg is "" (terminal default,
+		// transparent under terminal background opacity).
+		const frame = new Box(0, 0, undefined, {
+			chars: theme.boxRound,
+			color: str => theme.fg("borderAccent", str),
+		});
+		frame.setIgnoreTight(true);
+		frame.addChild(md);
+		this.addChild(frame);
 	}
 
 	override render(width: number): readonly string[] {

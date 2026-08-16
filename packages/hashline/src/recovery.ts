@@ -7,7 +7,7 @@
  * patcher then returns a mismatch with fresh context instead of guessing.
  */
 import { diffLineRuns } from "@oh-my-pi/pi-natives";
-import { applyEdits } from "./apply";
+import { type ApplyEditsOptions, applyEdits } from "./apply";
 import { RECOVERY_EXTERNAL_WARNING, RECOVERY_LINE_REMAP_WARNING, RECOVERY_SESSION_CHAIN_WARNING } from "./messages";
 import type { SnapshotStore } from "./snapshots";
 import type { Anchor, ApplyResult, Clipboard, Edit } from "./types";
@@ -19,6 +19,8 @@ export interface RecoveryArgs {
 	edits: readonly Edit[];
 	/** Shared clipboard register for `cut`/`paste` edits, threaded into the replay apply. */
 	clipboard?: Clipboard;
+	/** Replacement-boundary policy used when replaying on current content. */
+	repairReplacementBoundaries?: ApplyEditsOptions["repairReplacementBoundaries"];
 }
 
 export interface RecoveryResult {
@@ -309,6 +311,7 @@ function replayRemappedAnchorsOnCurrent(
 	recoveryWarning: string,
 	clipboard: Clipboard | undefined,
 	path: string,
+	repairReplacementBoundaries: ApplyEditsOptions["repairReplacementBoundaries"],
 ): RecoveryResult | null {
 	const remapped = remapEditsToCurrent(previousText, currentText, edits);
 	if (remapped === null) return null;
@@ -317,6 +320,7 @@ function replayRemappedAnchorsOnCurrent(
 		applied = applyEdits(currentText, remapped.edits, {
 			...(clipboard === undefined ? {} : { clipboard }),
 			path,
+			repairReplacementBoundaries,
 		});
 	} catch {
 		return null;
@@ -345,13 +349,21 @@ export class Recovery {
 	 * caller should then surface a {@link MismatchError}.
 	 */
 	tryRecover(args: RecoveryArgs): RecoveryResult | null {
-		const { path, currentText, fileHash, edits, clipboard } = args;
+		const { path, currentText, fileHash, edits, clipboard, repairReplacementBoundaries } = args;
 		// When retained texts collide on the 16-bit tag, use the latest one.
 		// Recovery still requires its anchors and context to map unambiguously.
 		const snapshot = this.store.byHash(path, fileHash);
 		if (!snapshot) return null;
 		const recoveryWarning =
 			this.store.head(path) === snapshot ? RECOVERY_EXTERNAL_WARNING : RECOVERY_SESSION_CHAIN_WARNING;
-		return replayRemappedAnchorsOnCurrent(snapshot.text, currentText, edits, recoveryWarning, clipboard, path);
+		return replayRemappedAnchorsOnCurrent(
+			snapshot.text,
+			currentText,
+			edits,
+			recoveryWarning,
+			clipboard,
+			path,
+			repairReplacementBoundaries,
+		);
 	}
 }

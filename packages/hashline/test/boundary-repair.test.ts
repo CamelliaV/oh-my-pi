@@ -349,6 +349,21 @@ describe("boundary-balance repair", () => {
 		expect(boundaryRepairWarnings(warnings)).toHaveLength(1);
 	});
 
+	it("preserves a concrete range and its full payload when boundary repair is disabled", () => {
+		const file = ["function f() {", "  a();", "  b();", "  const out = [];", "  return out;", "}"].join("\n");
+		const edits = parsePatch(["PUT 2-3:", "+  a2();", "+  b2();", "+  const out = [];"].join("\n")).edits;
+
+		const result = applyEdits(file, edits, { path: "fixture.ts", repairReplacementBoundaries: false });
+
+		expect(result.text).toBe(
+			["function f() {", "  a2();", "  b2();", "  const out = [];", "  const out = [];", "  return out;", "}"].join(
+				"\n",
+			),
+		);
+		expect(boundaryRepairWarnings(result.warnings ?? [])).toHaveLength(0);
+		expect(result.warnings ?? []).toHaveLength(0);
+	});
+
 	it("drops a one-sided JSX closer echo in a single-line expansion", () => {
 		const file = ["const view = (", "  <section>", "    <Old />", "  </section>", ");"].join("\n");
 		const diff = ["PUT 3-3:", "+    <New />", "+  </section>"].join("\n");
@@ -916,6 +931,44 @@ describe("boundary-balance repair through stale-snapshot recovery", () => {
 		expect(recovered?.text).toContain("const tail = 99;");
 		// The repair warning propagates out through the recovery result.
 		expect(boundaryRepairWarnings(recovered?.warnings ?? [])).toHaveLength(1);
+	});
+
+	it("preserves remapped range edges when repair is disabled", () => {
+		const snapshotText = [
+			"function f() {",
+			"\ta();",
+			"\tb();",
+			"\tconst out = [];",
+			"\treturn out;",
+			"}",
+			"const tail = 0;",
+		].join("\n");
+		const currentText = snapshotText.replace("const tail = 0;", "const tail = 1;");
+		const store = new InMemorySnapshotStore();
+		const fileHash = store.record(PATH, snapshotText);
+		const edits = parsePatch(["PUT 2-3:", "+\ta2();", "+\tb2();", "+\tconst out = [];"].join("\n")).edits;
+
+		const recovered = new Recovery(store).tryRecover({
+			path: PATH,
+			currentText,
+			fileHash,
+			edits,
+			repairReplacementBoundaries: false,
+		});
+
+		expect(recovered?.text).toBe(
+			[
+				"function f() {",
+				"\ta2();",
+				"\tb2();",
+				"\tconst out = [];",
+				"\tconst out = [];",
+				"\treturn out;",
+				"}",
+				"const tail = 1;",
+			].join("\n"),
+		);
+		expect(boundaryRepairWarnings(recovered?.warnings ?? [])).toHaveLength(0);
 	});
 });
 

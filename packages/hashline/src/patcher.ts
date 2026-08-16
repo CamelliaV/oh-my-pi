@@ -83,6 +83,11 @@ export interface PatcherOptions {
 	 */
 	enforceSeenLines?: boolean;
 	/**
+	 * Whether to rewrite authored replacement range edges. Defaults to `true`;
+	 * disable it when the selected source range and body rows must stay unchanged.
+	 */
+	repairReplacementBoundaries?: boolean;
+	/**
 	 * Host-owned clipboard register shared across batches, so `CUT` content
 	 * can be `PASTE`d by a later {@link Patcher.apply} call. Each batch works
 	 * on a fork and publishes it back only after writes land.
@@ -221,6 +226,7 @@ export class Patcher {
 	readonly blockResolver: BlockResolver | undefined;
 	readonly clipboard: Clipboard | undefined;
 	readonly #enforceSeenLines: boolean;
+	readonly #repairReplacementBoundaries: boolean;
 
 	constructor(options: PatcherOptions) {
 		if (!options.snapshots) {
@@ -232,6 +238,7 @@ export class Patcher {
 		this.blockResolver = options.blockResolver;
 		this.clipboard = options.clipboard;
 		this.#enforceSeenLines = options.enforceSeenLines ?? true;
+		this.#repairReplacementBoundaries = options.repairReplacementBoundaries ?? true;
 	}
 
 	/**
@@ -732,7 +739,11 @@ export class Patcher {
 			if (expected !== undefined && this.#enforceSeenLines) {
 				this.#assertSeenLines(section, expected, matchedSnapshot);
 			}
-			const result = applyEdits(normalized, resolved, { clipboard, path: canonicalPath });
+			const result = applyEdits(normalized, resolved, {
+				clipboard,
+				path: canonicalPath,
+				repairReplacementBoundaries: this.#repairReplacementBoundaries,
+			});
 			return withResolveWarnings(blockResolutions.length > 0 ? { ...result, blockResolutions } : result);
 		}
 		// Head/tail-only inserts are position-stable: "start"/"end" cannot move
@@ -740,7 +751,11 @@ export class Patcher {
 		// content and warn instead of hard-failing — unlike an anchored
 		// mismatch, which cannot be safely relocated and must reject.
 		if (!hasAnchorScopedEdit(resolved)) {
-			const result = applyEdits(normalized, resolved, { clipboard, path: canonicalPath });
+			const result = applyEdits(normalized, resolved, {
+				clipboard,
+				path: canonicalPath,
+				repairReplacementBoundaries: this.#repairReplacementBoundaries,
+			});
 			return withResolveWarnings({ ...result, warnings: [HEADTAIL_DRIFT_WARNING, ...(result.warnings ?? [])] });
 		}
 		// File drifted: map every anchor from the tagged snapshot to unchanged
@@ -751,6 +766,7 @@ export class Patcher {
 			fileHash: expected,
 			edits: resolved,
 			clipboard,
+			repairReplacementBoundaries: this.#repairReplacementBoundaries,
 		});
 		if (recovered) return withResolveWarnings(recoveryToApplyResult(recovered));
 		const hashRecognized = this.snapshots.byHash(canonicalPath, expected) !== null;

@@ -149,6 +149,39 @@ describe("Patcher snapshot tag integrity", () => {
 	});
 });
 
+describe("Patcher replacement-boundary policy", () => {
+	const CONTENT = ["function f() {", "  a();", "  b();", "  const out = [];", "  return out;", "}"].join("\n");
+	const BODY = ["+  a2();", "+  b2();", "+  const out = [];"].join("\n");
+
+	it("keeps compatibility repair enabled by default", async () => {
+		const fs = new InMemoryFilesystem([[PATH, CONTENT]]);
+		const snapshots = new InMemorySnapshotStore();
+		const tag = snapshots.record(PATH, CONTENT);
+
+		await new Patcher({ fs, snapshots }).apply(Patch.parse(`[${PATH}#${tag}]\nPUT 2-3:\n${BODY}`));
+
+		expect(fs.get(PATH)).toBe(
+			["function f() {", "  a2();", "  b2();", "  const out = [];", "  return out;", "}"].join("\n"),
+		);
+	});
+
+	it("applies the concrete range literally when boundary repair is disabled", async () => {
+		const fs = new InMemoryFilesystem([[PATH, CONTENT]]);
+		const snapshots = new InMemorySnapshotStore();
+		const tag = snapshots.record(PATH, CONTENT);
+
+		await new Patcher({ fs, snapshots, repairReplacementBoundaries: false }).apply(
+			Patch.parse(`[${PATH}#${tag}]\nPUT 2-3:\n${BODY}`),
+		);
+
+		expect(fs.get(PATH)).toBe(
+			["function f() {", "  a2();", "  b2();", "  const out = [];", "  const out = [];", "  return out;", "}"].join(
+				"\n",
+			),
+		);
+	});
+});
+
 // A write-time transform outside the patcher's control (e.g. an ACP-connected
 // editor's format-on-save rewriting indentation on every save) must never
 // poison the next section's snapshot tag with content that no longer exists

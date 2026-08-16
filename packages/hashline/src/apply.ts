@@ -1065,6 +1065,11 @@ export interface ApplyEditsOptions {
 	 * evidence-complete rejections run.
 	 */
 	path?: string;
+	/**
+	 * Whether to rewrite authored replacement range edges. Defaults to `true`;
+	 * disable it when the selected source range and body rows must stay unchanged.
+	 */
+	repairReplacementBoundaries?: boolean;
 }
 
 interface Materialized {
@@ -1166,11 +1171,10 @@ function materializeEdits(originalLines: readonly string[], edits: readonly Appl
  * Returns the post-edit text and the first changed line number (1-indexed).
  * Throws if an anchor is out of bounds.
  *
- * Mis-set replacement boundaries are repaired by {@link repairBoundaryVariants}
- * when `options.path` lets tree-sitter judge the result. A parsing authored
- * result is never second-guessed. For a broken result, only syntax-essential
- * edge retention with matching indentation and exact outside-row echo removal
- * are considered; every selected candidate must parse.
+ * Mis-set replacement range edges are repaired only when
+ * `options.repairReplacementBoundaries` is enabled (the default). Disable it
+ * to preserve the selected source range and body rows; indentation repair and
+ * syntax advisories remain independent.
  */
 export function applyEdits(text: string, edits: readonly Edit[], options: ApplyEditsOptions = {}): ApplyResult {
 	if (edits.length === 0) return { text, firstChangedLine: undefined };
@@ -1201,7 +1205,10 @@ export function applyEdits(text: string, edits: readonly Edit[], options: ApplyE
 	);
 	validateLineBounds(targetEdits, fileLines);
 	const indentationWarnings = repairReplacementIndentation(targetEdits, fileLines);
-	const normalized = normalizeTextualBoundaryEchoes(targetEdits, fileLines);
+	const repairBoundaries = options.repairReplacementBoundaries ?? true;
+	const normalized = repairBoundaries
+		? normalizeTextualBoundaryEchoes(targetEdits, fileLines)
+		: { edits: targetEdits, warnings: [], ambiguities: [] };
 	const leading = [...clipboardWarnings, ...indentationWarnings, ...normalized.warnings];
 	const authoredResult = materializeEdits(fileLines, normalized.edits);
 	const baselineParses = parsesCleanly(options.path, text);
@@ -1231,11 +1238,13 @@ export function applyEdits(text: string, edits: readonly Edit[], options: ApplyE
 		}
 		return finish(authoredResult, leading);
 	}
-	const repaired = repairBoundaryVariants(normalized.edits, fileLines, options.path, baselineParses);
-	if (repaired) {
-		const repairedResult = materializeEdits(fileLines, repaired.edits);
-		if (parsesCleanly(options.path, repairedResult.text)) {
-			return finish(repairedResult, [...leading, ...repaired.warnings]);
+	if (repairBoundaries) {
+		const repaired = repairBoundaryVariants(normalized.edits, fileLines, options.path, baselineParses);
+		if (repaired) {
+			const repairedResult = materializeEdits(fileLines, repaired.edits);
+			if (parsesCleanly(options.path, repairedResult.text)) {
+				return finish(repairedResult, [...leading, ...repaired.warnings]);
+			}
 		}
 	}
 	if (ambiguity) {

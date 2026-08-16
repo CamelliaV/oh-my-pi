@@ -80,8 +80,13 @@ export function renderOutputBlock(options: OutputBlockOptions, theme: Theme): st
 					? "accent"
 					: "dim");
 	const border = (text: string) => theme.fg(borderColor, text);
+	// Error and pending blocks drop the solid background: the state-colored
+	// border carries the signal (✘ red for errors, spinner frame for pending),
+	// and a solid wash fights terminal transparency (explicit bg never follows
+	// background_opacity). Success keeps the tint (bg is "" in transparent
+	// themes, so transparent setups are unaffected either way).
 	const bgFn = (() => {
-		if (!state || !applyBg) return undefined;
+		if (!state || !applyBg || state === "error" || state === "pending" || state === "running") return undefined;
 		const bgAnsi = theme.getBgAnsi(getStateBgColor(state));
 		// Keep block background stable even if inner content contains SGR resets (e.g. "\x1b[0m"),
 		// which would otherwise clear the outer background mid-line.

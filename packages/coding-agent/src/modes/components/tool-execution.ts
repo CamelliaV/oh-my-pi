@@ -1001,16 +1001,20 @@ export class ToolExecutionComponent extends Container implements NativeScrollbac
 		// (steering/peer interrupt aborted a still-pending call) never ran, so it
 		// gets the neutral pending tint rather than the error tint (#7199).
 		const benignSkip = this.#isBenignSkip();
-		const stateBgKey =
-			this.#isPartial || benignSkip ? "toolPendingBg" : this.#result?.isError ? "toolErrorBg" : "toolSuccessBg";
-		const stateBgFn = (t: string) => theme.bg(stateBgKey, t);
+		const isError = this.#result?.isError === true && !this.#isPartial && !benignSkip;
+		// Pending and error states render without a tinted background: the
+		// spinner frame / per-renderer red frame carry the state signal, and a
+		// solid wash would defeat terminal background transparency. Benign
+		// skips keep the pending tint so the placeholder still reads as a card.
+		const stateBgKey = benignSkip ? "toolPendingBg" : isError ? undefined : this.#isPartial ? undefined : "toolSuccessBg";
+		const stateBgFn = stateBgKey ? (t: string) => theme.bg(stateBgKey, t) : undefined;
 
 		// A benign skip is a synthetic placeholder for a call that never executed,
 		// so bypass any bespoke error frame and draw the neutral generic card —
 		// the per-tool ✘/red-border would misread normal mid-turn steering as a
 		// failure (#7199).
 		if (benignSkip) {
-			this.#renderBenignSkipCard(stateBgFn);
+			this.#renderBenignSkipCard(t => theme.bg("toolPendingBg", t));
 		} else if (this.#tool && (this.#tool.renderCall || this.#tool.renderResult)) {
 			const tool = this.#tool;
 			const mergeCallAndResult = Boolean((tool as { mergeCallAndResult?: boolean }).mergeCallAndResult);

@@ -24,8 +24,10 @@ export class TtsrNotificationComponent extends Container {
 
 		this.addChild(new Spacer(1));
 
-		// Use inverse warning color for yellow background effect
-		this.#box = new Box(1, 1, t => theme.inverse(theme.fg("warning", t)));
+		// Transparent card with a warning-colored outline: the inverse-video wash
+		// defeated terminal background opacity and overwhelmed the notice. The
+		// ⚠ header icon + warning-colored text keep the signal.
+		this.#box = new Box(1, 1, undefined, { chars: theme.boxRound, color: t => theme.fg("warning", t) });
 		this.#box.setIgnoreTight(true);
 		this.addChild(this.#box);
 
@@ -75,9 +77,8 @@ export class TtsrNotificationComponent extends Container {
 			this.#rebuildMulti();
 		}
 	}
-
 	#rebuildSingle(rule: Rule): void {
-		const header = `${theme.icon.warning} Injecting rule: ${theme.bold(rule.name)}  ${theme.icon.rewind}`;
+		const header = `${theme.fg("warning", `${theme.icon.warning} Injecting rule:`)} ${theme.bold(rule.name)}  ${theme.icon.rewind}`;
 		this.#box.addChild(new Text(header, 0, 0));
 
 		const desc = (rule.description || rule.content)?.trim();
@@ -101,7 +102,7 @@ export class TtsrNotificationComponent extends Container {
 	}
 
 	#rebuildMulti(): void {
-		const header = `${theme.icon.warning} Injecting ${this.#rules.length} rules:  ${theme.icon.rewind}`;
+		const header = `${theme.fg("warning", `${theme.icon.warning} Injecting ${this.#rules.length} rules:`)}  ${theme.icon.rewind}`;
 		this.#box.addChild(new Text(header, 0, 0));
 		this.#box.addChild(new Spacer(1));
 

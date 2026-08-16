@@ -296,3 +296,95 @@ Location: `packages/*/CHANGELOG.md` (per package).
 2. Run `bun run release`.
 
 The script handles version bump, CHANGELOG finalization, commit, tag, publish, and adding new `[Unreleased]` sections.
+
+---
+
+## Local Fork Workflow (cindy's build)
+
+This checkout at `~/code/oh-my-pi` is a **patch fork** of upstream used to build
+a customized `omp` binary. The system `omp` (`/usr/bin/omp`, pacman `omp-bin`)
+stays untouched; the patched binary installs to `~/.local/bin/omp-patched`,
+and BOTH `~/.local/bin/omp` and `~/.fzf/bin/omp` are symlinks to it (PATH
+precedence beats `/usr/bin`; `~/.zshrc` also pins `hash omp=...` because
+oh-my-zsh plugins pre-hash `/usr/bin/omp` at startup). `omp update` MUST NOT
+be run — it would overwrite omp-patched with a stock release; upgrading is a
+source-level rebase (below).
+
+### Layout
+
+- Baseline commit = pristine upstream tag source (from the release **tarball**,
+  not a git clone — GitHub cloning is unreliable from this network; use
+  `aria2c -x8 <tarball-url>`). Every commit after it is a local patch; keep
+  patches small and self-contained. No `origin` remote; history is local-only.
+- `packages/natives/native/pi_natives.linux-x64-{baseline,modern}.node` are
+  reused binaries copied from `~/.omp/natives/<version>/` — cargo is never
+  needed. **natives are version-coupled**: after rebasing onto a new tag, run
+  the official binary of that tag once (`~/.omp/natives/<new>/` materializes),
+  then copy the two .node files over.
+- `~/.omp/agent/themes/amethyst-glass.json` custom theme (transparent bg
+  experiments) lives OUTSIDE this repo.
+
+### Build (~20 s)
+
+```bash
+cd ~/code/oh-my-pi
+bun install --frozen-lockfile          # first time only
+RELEASE_TARGETS='linux-x64' bun run ci:release:build-binaries
+install -Dm755 packages/coding-agent/binaries/omp-linux-x64 ~/.local/bin/omp-patched
+```
+
+Never run `bun run release`, never push, never edit CHANGELOG sections.
+
+### Patch policy
+
+- One feature per commit, English commit messages matching upstream style.
+- Verify each patch by rendering the touched component standalone
+  (`bun packages/coding-agent/test/<name>.ts`, init the global theme via
+  `initTheme(false, "unicode", false, "amethyst-glass", "light")`) and/or
+  `omp-patched gallery`. Delete throwaway drivers after.
+- Local regression drivers kept in-tree: `packages/ai/test/reasoning-fallback-zh.ts`
+  (`bun` + exit code, uses the captured real-world [1210] error text).
+
+### Upgrading the fork (source-level, NEVER `omp update`)
+
+1. `aria2c -x8 https://github.com/can1357/oh-my-pi/archive/refs/tags/v<NEW>.tar.gz`
+2. Extract to a temp dir; replace the worktree (keep `.git`! `rm -rf` globs
+   must not touch `.git` — use `git checkout --orphan` or copy over).
+3. Re-apply the patch series (see list below) — rebase by hand via the same
+   scripted replacements, or cherry-pick if history survived.
+4. Materialize new natives: run the official v<NEW> binary once, copy the two
+   .node files into `packages/natives/native/`.
+5. `bun install --frozen-lockfile` + build + install (above).
+6. Verify: `omp-patched gallery`, `omp -r <fuzzy term>`, zh driver passes.
+
+### Patch list (v17.3.5 baseline)
+
+1. `feat(tui)` user message bubble rounded frame — `user-message.ts` Box +
+   `theme.boxRound`, `borderAccent`, `setIgnoreTight(true)`; OSC 133 markers
+   open on the first frame row, close on the last.
+2. `fix(ai)` zh relay thinking-effort 400 fallback —
+   `openai-reasoning-fallback.ts` 不支持/请使用 patterns; guard keeps a
+   still-allowed effort from downgrading (drop field = null).
+3. `fix(ai)` misrouted-relay [1210] auto-retry, 3 layers —
+   `fetch-retry.ts` shouldRetryResponse gates non-transient statuses;
+   `openai-http.ts` opts 400+[1210]/始终思考 bodies into the retry loop;
+   `flags.ts` classifyText + `retryable.ts` mark the fingerprint Transient
+   (turn-level auto-retry with retry budget/UI); `openai-completions.ts`
+   strips `<think>` history once on always-thinking 400 (helpers:
+   isAlwaysThinkingRejection / stripThinkTagsFromCompletionsParams /
+   completionsParamsContainThinkTags).
+4. `feat(tui)` Ctrl+R rename in session picker — session-selector ctrl+r
+   branch + HookInputComponent dialog-swap; persistence via
+   `FileSessionStorage.updateSessionTitle` (source "user"); initialQuery
+   prefill plumbing (selectSession → component → SessionList).
+5. `feat(tui)` error/pending cards as frames without solid bg —
+   output-block state=error/pending/running skips bg; default-renderer error
+   text red; tool-execution wrapper drops tint (benign-skip keeps pending).
+6. `feat(cli)` fuzzy `--resume <term>` — `fuzzyMatchResumableSessions`
+   (title+firstMessage, substring>subsequence, local>global, dedup); single
+   hit resumes directly, several open prefilled picker; wired in main.ts.
+7. `feat(tui)` turn-level token usage aggregate — `turn-usage.ts`
+   TurnUsageAccumulator + dim aggregate row (`⏱ turn N req ⤵ in ⤴ out 💾
+   cache ⚡ span`); flushed on next user message / transcript end; wired into
+   chat-transcript-builder, ui-helpers rebuild, event-controller live path.
+   Esc-aborted requests count (provider billed them).

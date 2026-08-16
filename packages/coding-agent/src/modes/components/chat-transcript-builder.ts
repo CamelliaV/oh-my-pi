@@ -58,6 +58,7 @@ import { ToolActivityContainer } from "./tool-activity";
 import { ToolExecutionComponent } from "./tool-execution";
 import { TranscriptContainer } from "./transcript-container";
 import { createUsageRowBlock } from "./usage-row";
+import { createTurnUsageRowBlock, TurnUsageAccumulator } from "./turn-usage";
 import { CollapsedSyntheticMessageComponent, UserMessageComponent } from "./user-message";
 
 export interface ChatTranscriptBuilderDeps {
@@ -92,6 +93,7 @@ export class ChatTranscriptBuilder {
 	#pendingUsageTimestamp: number | undefined;
 	#pendingReadUsageCallIds: string[] | undefined;
 	#lastAssistantUsage: Usage | undefined;
+	#turnUsage = new TurnUsageAccumulator();
 	#waitingPoll: ToolExecutionComponent | null = null;
 	#todoSnapshot: ToolExecutionComponent | null = null;
 	#expandables: Array<{ setExpanded(expanded: boolean): void }> = [];
@@ -114,12 +116,14 @@ export class ChatTranscriptBuilder {
 		// (a read whose result has not arrived stays pending); otherwise the row
 		// would sit above its tools. The drain happens here at the end of the pass.
 		if (this.#readArgs.size === 0 && this.#pendingTools.size === 0) this.#flushPendingUsage();
+		this.#flushTurnUsage();
 	}
 
 	/** Append newly persisted entries without rebuilding already rendered rows. */
 	append(entries: SessionMessageEntry[]): void {
 		for (const entry of entries) this.#appendChatMessage(entry.message);
 		if (this.#readArgs.size === 0 && this.#pendingTools.size === 0) this.#flushPendingUsage();
+		this.#flushTurnUsage();
 	}
 
 	/** Toggle tool-output expansion across every expandable component. */
@@ -144,6 +148,7 @@ export class ChatTranscriptBuilder {
 		this.#pendingUsageTimestamp = undefined;
 		this.#pendingReadUsageCallIds = undefined;
 		this.#lastAssistantUsage = undefined;
+		this.#turnUsage = new TurnUsageAccumulator();
 		this.#waitingPoll = null;
 		this.#todoSnapshot = null;
 		this.#expandables = [];
@@ -236,6 +241,12 @@ export class ChatTranscriptBuilder {
 		this.#pendingReadUsageCallIds = undefined;
 	}
 
+	/** Close the turn aggregate: the next real user prompt ended the prior turn. */
+	#flushTurnUsage(): void {
+		const snapshot = this.#turnUsage.flush();
+		if (snapshot) this.container.addChild(createTurnUsageRowBlock(snapshot));
+	}
+
 	#appendChatMessage(message: AgentMessage): void {
 		if (message.role !== "toolResult") this.#flushPendingUsage();
 		if (message.role !== "assistant" && message.role !== "toolResult") {
@@ -254,6 +265,7 @@ export class ChatTranscriptBuilder {
 				// A user prompt closes the poll-displacement window, same as the live path.
 				if (message.role === "user") this.#resolveWaitingPoll();
 				if (message.role === "user") this.#resolveTodoSnapshot();
+				this.#flushTurnUsage();
 				const textContent = message.role === "user" ? userMessageText(message) : "";
 				if (textContent) {
 					const isSynthetic = message.role === "developer" ? true : (message.synthetic ?? false);
@@ -431,6 +443,7 @@ export class ChatTranscriptBuilder {
 		this.#pendingUsageTtft = message.ttft;
 		this.#pendingUsageTimestamp = message.timestamp;
 		this.#pendingReadUsageCallIds = this.#pendingUsage ? groupedReadUsageCallIds(message) : undefined;
+		if (assistantUsageIsBilled(message.usage)) this.#turnUsage.add(message.usage, message.timestamp);
 	}
 
 	#appendToolResult(message: Extract<AgentMessage, { role: "toolResult" }>): void {

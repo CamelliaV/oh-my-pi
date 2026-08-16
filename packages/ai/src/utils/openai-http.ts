@@ -69,6 +69,13 @@ export async function postOpenAIStream<TEvent>(init: OpenAIStreamRequestInit): P
 		signal: init.signal,
 		fetch: init.fetch,
 		maxAttempts: DEFAULT_MAX_ATTEMPTS,
+		// Misrouted relay nodes: new-api gateways fronting model pools occasionally
+		// reject a request with a misleading 400 whose message names thinking-control
+		// semantics the request never set (code 1210 该模型始终思考…). Identical
+		// replays flip 200/400 at random, so the body text — not the status — is the
+		// retry signal; this gate opts such 400s into the retry/backoff loop.
+		shouldRetryResponse: (_response, bodyText) =>
+			_response.status === 400 && /\[1210\]|该模型始终思考|不支持关闭思考/.test(bodyText),
 		// Bun's native fetch enforces a hard ~300s pre-response timeout (issue #2422).
 		// Cold large-context streams legitimately exceed it; the caller's
 		// `firstEventTimeoutMs`/`AbortSignal` already govern stuck requests.

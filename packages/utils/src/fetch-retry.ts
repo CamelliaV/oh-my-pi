@@ -224,7 +224,14 @@ export async function fetchWithRetry(
 			continue;
 		}
 
-		if (!isRetryableStatus(response.status)) return response;
+		if (!isRetryableStatus(response.status)) {
+			// Non-transient statuses (e.g. 400) are terminal unless the caller's
+			// gate explicitly opts the body into the retry loop — misrouted relay
+			// nodes answer with misleading 400s whose message text is the signal.
+			if (!shouldRetryResponse) return response;
+			const optInBody = await response.clone().text();
+			if (!(await shouldRetryResponse(response, optInBody, attempt))) return response;
+		}
 		if (attempt + 1 >= maxAttempts) return response;
 
 		const retryBody = await response.clone().text();

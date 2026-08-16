@@ -51,6 +51,12 @@ export function isProviderRetryableError(error: unknown, hooks: ProviderRetryabl
 	if (!(error instanceof Error)) return false;
 	if (hooks.isProviderTransient?.(error)) return true;
 	if (isUsageLimit(error)) return false;
+	// Misrouted relay nodes: new-api gateways sometimes route a request to an
+	// upstream that rejects it with a misleading 400 (code 1210 该模型始终思考，
+	// 不支持关闭思考) fired regardless of the payload's thinking parameters and
+	// non-deterministically across identical retries. The message, not the 400,
+	// is the signal.
+	if (/\[1210\]|该模型始终思考|不支持关闭思考/.test(error.message)) return true;
 	const httpStatus = status(error);
 	if (httpStatus !== undefined && httpStatus >= 400 && httpStatus < 500 && httpStatus !== 408 && httpStatus !== 429) {
 		return false;

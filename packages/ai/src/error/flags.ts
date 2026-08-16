@@ -112,6 +112,8 @@ const AUTH_FAILURE_PATTERN =
 	/\b(?:401|403|unauthorized|forbidden|authentication|auth[_ ]?unavailable|no auth available|(?:invalid|no)[_ ]?api[_ ]?key)\b/i;
 const MALFORMED_FUNCTION_CALL_PATTERN = /\bmalformed.?function.?call\b/i;
 const PROVIDER_FINISH_ERROR_PATTERN = /\bProvider (?:returned error finish_reason|finish_reason:\s*error)\b/i;
+/** Misrouted relay rejection: new-api gateways' misleading always-thinking 400. */
+const MISROUTED_RELAY_400_PATTERN = /\[1210\]|该模型始终思考|不支持关闭思考/;
 const EMPTY_RESPONSE_PATTERN = /\bthought-only response without final output\b/i;
 const CONTENT_FILTER_PATTERN = /\b(?:incomplete:\s*)?content_filter\b/i;
 const ACCOUNT_POLICY_PATTERN = /\bcyber_policy\b|trusted access for cyber/i;
@@ -394,6 +396,11 @@ function classifyText(errorMessage: string | undefined, errorStatus: number | un
 
 		// Copilot's `model_not_supported` fleet-skew rejection is transient.
 		if (statusClean === 400 && COPILOT_TRANSIENT_MODEL_PATTERN.test(cleanMessage)) kinds |= Flag.Transient;
+		// Misrouted relay nodes answer with a misleading 400 whose message names
+		// thinking-control semantics the request never set; identical bodies flip
+		// 200/400 across replays, so the fingerprint — not the status — marks it
+		// retryable.
+		if (MISROUTED_RELAY_400_PATTERN.test(cleanMessage)) kinds |= Flag.Transient;
 		if (matchesStrictToolsRejection(cleanMessage, statusClean)) kinds |= Flag.Grammar;
 		if (matchesFastModeUnsupported(cleanMessage, statusClean)) kinds |= Flag.FastModeUnsupported;
 	}

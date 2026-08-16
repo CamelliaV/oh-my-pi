@@ -77,6 +77,9 @@ import {
 	type OpenAIReasoningEffortFallbackState,
 	rememberOpenAIReasoningEffortFallback,
 	resolveOpenAIReasoningEffortFallback,
+	completionsParamsContainThinkTags,
+	isAlwaysThinkingRejection,
+	stripThinkTagsFromCompletionsParams,
 } from "./openai-reasoning-fallback";
 import {
 	applyChatCompletionsCompatPolicy,
@@ -657,6 +660,9 @@ const streamOpenAICompletionsOnce = (
 			);
 			const strictToolsScope = getOpenAIStrictToolsScope(model, baseUrl);
 			let disableStrictTools = isStrictToolsDisabledForScope(providerSessionState, strictToolsScope);
+			// Set after an always-thinking 400: the retry pass strips inline
+			// <think> blocks from the assistant history before sending.
+			let stripThinkingHistory = false;
 			const trimmedBaseUrl = baseUrl.replace(/\/+$/, "");
 			const completionsUrl = query
 				? `${trimmedBaseUrl}/chat/completions?${new URLSearchParams(query)}`
@@ -670,6 +676,10 @@ const streamOpenAICompletionsOnce = (
 					effectiveToolStrictModeOverride,
 				);
 				appliedStrictTools = strictToolsApplied;
+				// Always-thinking relays reject history carrying inline <think> blocks
+				// with 400 [1210] regardless of reasoning_effort; the retry pass drops
+				// those segments from the rebuilt history.
+				if (stripThinkingHistory) stripThinkTagsFromCompletionsParams(params);
 				const reasoningEffortFallbackKey = createOpenAIReasoningEffortFallbackKey(
 					"chat-completions",
 					trimmedBaseUrl,
@@ -733,13 +743,27 @@ const streamOpenAICompletionsOnce = (
 				});
 			} catch (error) {
 				const capturedErrorResponse = error instanceof OpenAIHttpError ? error.captured : undefined;
-				const reasoningEffortFallback =
-					activeReasoningEffortFallbackKey && activeRequestParams && !requestSignal.aborted
-						? resolveOpenAIReasoningEffortFallback(error, capturedErrorResponse, activeRequestParams, {
-								explicitDisable: options?.disableReasoning === true && options.reasoning === undefined,
-							})
-						: undefined;
-				if (reasoningEffortFallback !== undefined && activeReasoningEffortFallbackKey) {
+				// Always-thinking rejection with <think>-bearing history: strip the
+				// segments and retry once. Checked before the effort fallback — the
+				// rejection fires with any/no effort field when the history is the
+				// trigger, so adjusting effort cannot fix it.
+				if (
+					!stripThinkingHistory &&
+					!requestSignal.aborted &&
+					activeRequestParams &&
+					isAlwaysThinkingRejection(error, capturedErrorResponse) &&
+					completionsParamsContainThinkTags(activeRequestParams)
+				) {
+					stripThinkingHistory = true;
+					openaiStream = await createCompletionsStream();
+				} else {
+					const reasoningEffortFallback =
+						activeReasoningEffortFallbackKey && activeRequestParams && !requestSignal.aborted
+							? resolveOpenAIReasoningEffortFallback(error, capturedErrorResponse, activeRequestParams, {
+									explicitDisable: options?.disableReasoning === true && options.reasoning === undefined,
+								})
+							: undefined;
+					if (reasoningEffortFallback !== undefined && activeReasoningEffortFallbackKey) {
 					const retryMarker = `${activeReasoningEffortFallbackKey}:${String(reasoningEffortFallback)}`;
 					if (attemptedReasoningEffortFallbacks.has(retryMarker)) throw error;
 					attemptedReasoningEffortFallbacks.add(retryMarker);
@@ -773,6 +797,7 @@ const streamOpenAICompletionsOnce = (
 					disableStrictToolsForScope(providerSessionState, strictToolsScope);
 					disableStrictTools = true;
 					openaiStream = await createCompletionsStream("none");
+				}
 				}
 			}
 			if (premiumRequestsTotal !== undefined) {

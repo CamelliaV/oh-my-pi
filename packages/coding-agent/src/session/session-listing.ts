@@ -675,6 +675,77 @@ function sessionMatchesResumeArg(session: SessionInfo, sessionArg: string): bool
 	return fileSessionId.startsWith(normalizedArg);
 }
 
+/** Fuzzy `--resume <term>` candidates ranked best-first. */
+export interface FuzzyResumableSession {
+	session: SessionInfo;
+	scope: "local" | "global";
+	/** 0 = literal substring of title/first message (strong); higher = weaker fuzzy runs. */
+	score: number;
+}
+
+/**
+ * Fuzzy-match `--resume <term>` against session titles and first messages.
+ * Local sessions rank above global ones; literal substrings beat character-
+ * sequence fuzzy matches. Caller still gets the empty array when nothing
+ * matches, so the existing exact-prefix path keeps priority.
+ */
+export async function fuzzyMatchResumableSessions(
+	term: string,
+	cwd: string,
+	sessionDir?: string,
+	storage: SessionStorage = new FileSessionStorage(),
+): Promise<FuzzyResumableSession[]> {
+	const normalizedTerm = term.trim().toLowerCase();
+	if (normalizedTerm.length === 0) return [];
+	const scopeBoost = (scope: "local" | "global"): number => (scope === "local" ? 0 : 1);
+	const matches: FuzzyResumableSession[] = [];
+	const visit = (sessions: SessionInfo[], scope: "local" | "global"): void => {
+		for (const session of sessions) {
+			const haystacks = [session.title, session.firstMessage].filter(
+				(value): value is string => typeof value === "string" && value.length > 0,
+			);
+			let score: number | undefined;
+			for (const haystack of haystacks) {
+				const lower = haystack.toLowerCase();
+				const substringAt = lower.indexOf(normalizedTerm);
+				if (substringAt >= 0) {
+					// Title substring outranks message substring; earlier = better.
+					const literal = substringAt + (haystack === session.title ? 0 : 100);
+					score = score === undefined ? literal : Math.min(score, literal);
+					continue;
+				}
+				if (score === undefined && isFuzzySubsequence(normalizedTerm, lower)) {
+					score = 1000;
+				}
+			}
+			if (score !== undefined) matches.push({ session, scope, score: score + scopeBoost(scope) });
+		}
+	};
+	const localSessionDir = sessionDir ?? computeDefaultSessionDir(cwd, storage);
+	visit(await listSessions(localSessionDir, storage), "local");
+	// listAllSessions includes the local directory too; skip sessions already
+	// matched so one session never appears as two candidates.
+	const seenPaths = new Set(matches.map(m => m.session.path));
+	const globalSessions = await listAllSessions(storage);
+	visit(
+		globalSessions.filter(session => !seenPaths.has(session.path)),
+		"global",
+	);
+	matches.sort((a, b) => a.score - b.score || b.session.modified.getTime() - a.session.modified.getTime());
+	return matches;
+}
+
+/** Case-insensitive ordered subsequence test: every term char appears in order. */
+function isFuzzySubsequence(term: string, text: string): boolean {
+	let cursor = 0;
+	for (const char of term) {
+		cursor = text.indexOf(char, cursor);
+		if (cursor < 0) return false;
+		cursor++;
+	}
+	return true;
+}
+
 /** Controls cross-directory fallback for resumable session lookup. */
 export interface ResolveResumableSessionOptions {
 	/** Search default global session buckets after the active/custom session directory misses. */

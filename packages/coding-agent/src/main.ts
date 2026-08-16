@@ -85,7 +85,11 @@ import {
 	persistForeignSession,
 } from "./session/foreign-session-import";
 import type { ForeignSessionInfo, ForeignSessionSource, ForeignSessionStore } from "./session/foreign-session-store";
-import { resolveResumableSession, type SessionInfo } from "./session/session-listing";
+import {
+	fuzzyMatchResumableSessions,
+	resolveResumableSession,
+	type SessionInfo,
+} from "./session/session-listing";
 import { SessionManager } from "./session/session-manager";
 import { executeBuiltinSlashCommand } from "./slash-commands/builtin-registry";
 import { shouldShowStartupSplash } from "./startup-splash";
@@ -792,43 +796,47 @@ export async function createSessionManager(
 			return await SessionManager.open(sessionArg, parsed.sessionDir);
 		}
 		const match = await resolveResumableSession(sessionArg, cwd, parsed.sessionDir);
-		if (!match) {
-			throw new SessionResolutionError(
-				`Session "${sessionArg}" not found.`,
-				"Run `omp --resume` without an argument to pick from recent sessions, or `omp` to start a new one.",
-			);
+		if (match) {
+			if (match.scope === "local" || match.scope === "global") {
+				const moveResult = await moveMissingCwdSessionIfNeeded(
+					sessionArg,
+					match.session,
+					cwd,
+					parsed.sessionDir,
+					askToMoveSession,
+				);
+				if (moveResult.status === "moved") {
+					return moveResult.manager;
+				}
+				if (moveResult.status === "declined") {
+					return undefined;
+				}
+			}
+			return await SessionManager.open(match.session.path, parsed.sessionDir);
 		}
-		if (match.scope === "local") {
-			const moveResult = await moveMissingCwdSessionIfNeeded(
-				sessionArg,
-				match.session,
-				cwd,
-				parsed.sessionDir,
-				askToMoveSession,
-			);
-			if (moveResult.status === "moved") {
-				return moveResult.manager;
-			}
-			if (moveResult.status === "declined") {
-				return undefined;
-			}
+		// Exact id/filename prefix missed: fuzzy-match titles and first messages.
+		// A single confident hit resumes directly; several hits open the picker
+		// prefilled with the term so the user picks among the candidates.
+		const fuzzyMatches = await fuzzyMatchResumableSessions(sessionArg, cwd, parsed.sessionDir);
+		if (fuzzyMatches.length === 1) {
+			return await SessionManager.open(fuzzyMatches[0]!.session.path, parsed.sessionDir);
 		}
-		if (match.scope === "global") {
-			const moveResult = await moveMissingCwdSessionIfNeeded(
-				sessionArg,
-				match.session,
-				cwd,
-				parsed.sessionDir,
-				askToMoveSession,
-			);
-			if (moveResult.status === "moved") {
-				return moveResult.manager;
-			}
-			if (moveResult.status === "declined") {
-				return undefined;
-			}
+		if (fuzzyMatches.length > 1) {
+			pauseStartupWatchdog();
+			const candidates = fuzzyMatches.map(m => m.session);
+			const selected = await selectSession(candidates, {
+				initialQuery: sessionArg,
+				title: `Resume Session — "${sessionArg}" (${candidates.length} matches)`,
+				allowGlobalScope: true,
+			});
+			resumeStartupWatchdog();
+			if (!selected) return undefined;
+			return await SessionManager.open(selected.path, parsed.sessionDir);
 		}
-		return await SessionManager.open(match.session.path, parsed.sessionDir);
+		throw new SessionResolutionError(
+			`Session "${sessionArg}" not found.`,
+			"Run `omp --resume` without an argument to pick from recent sessions, or `omp` to start a new one.",
+		);
 	}
 	if (parsed.continue) {
 		return await SessionManager.continueRecent(cwd, parsed.sessionDir);

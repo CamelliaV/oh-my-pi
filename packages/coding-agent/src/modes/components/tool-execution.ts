@@ -1001,12 +1001,11 @@ export class ToolExecutionComponent extends Container implements NativeScrollbac
 		// (steering/peer interrupt aborted a still-pending call) never ran, so it
 		// gets the neutral pending tint rather than the error tint (#7199).
 		const benignSkip = this.#isBenignSkip();
-		const isError = this.#result?.isError === true && !this.#isPartial && !benignSkip;
-		// Pending and error states render without a tinted background: the
-		// spinner frame / per-renderer red frame carry the state signal, and a
-		// solid wash would defeat terminal background transparency. Benign
-		// skips keep the pending tint so the placeholder still reads as a card.
-		const stateBgKey = benignSkip ? "toolPendingBg" : isError ? undefined : this.#isPartial ? undefined : "toolSuccessBg";
+		// All result states render without a tinted background — per-renderer
+		// frames carry the state signal and a solid wash would defeat terminal
+		// background transparency. Benign skips keep the pending tint so the
+		// placeholder still reads as a card.
+		const stateBgKey = benignSkip ? "toolPendingBg" : undefined;
 		const stateBgFn = stateBgKey ? (t: string) => theme.bg(stateBgKey, t) : undefined;
 
 		// A benign skip is a synthetic placeholder for a call that never executed,

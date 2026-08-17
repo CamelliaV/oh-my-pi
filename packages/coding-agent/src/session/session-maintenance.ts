@@ -173,6 +173,15 @@ function mergeLlmCompactionPreserveData(
 	return snapcompact.stripPreservedArchive(Object.keys(preserveData).length > 0 ? preserveData : undefined);
 }
 
+/** Codex Responses models use provider-native compaction ahead of the configured visual archive strategy. */
+function shouldPreferCodexRemoteOverSnapcompact(model: Model, settings: CompactionSettings): boolean {
+	return (
+		settings.strategy === "snapcompact" &&
+		(model.remoteCompaction?.api ?? model.api) === "openai-codex-responses" &&
+		shouldUseProviderNativeCompaction(model, settings)
+	);
+}
+
 /** Capabilities borrowed from the owning AgentSession. */
 export interface SessionMaintenanceHost {
 	agent: Agent;
@@ -670,11 +679,40 @@ export class SessionMaintenance {
 			}
 
 			const compactionPrep = await this.#prepareCompactionFromHooks(preparation, hookCompaction);
+			let codexCompaction: CodexCompactionContext | undefined;
+			let preferredCodexRemoteResult: CompactionResult | undefined;
+			let preferredCodexRemoteFailed = false;
+			if (
+				compactionPrep.kind !== "fromHook" &&
+				!compactMode &&
+				shouldPreferCodexRemoteOverSnapcompact(this.#model, effectiveSettings)
+			) {
+				codexCompaction = createCodexCompactionContext({
+					trigger: "manual",
+					reason: "user_requested",
+					phase: "standalone_turn",
+				});
+				preferredCodexRemoteResult = await this.#tryPreferredCodexRemoteCompaction(
+					preparation,
+					options?.internalGuidance ?? customInstructions,
+					compactionAbortController.signal,
+					{
+						promptOverride: this.#host.obfuscateTextForProvider(compactionPrep.hookPrompt),
+						extraContext: compactionPrep.hookContext,
+						remoteInstructions: this.#host.baseSystemPrompt().join("\n\n"),
+						convertToLlm: messages => this.#host.convertToLlmForSideRequest(messages),
+						codexCompaction,
+					},
+					"manual",
+				);
+				preferredCodexRemoteFailed = !preferredCodexRemoteResult;
+			}
 
 			// Strategy honored on manual /compact too. Custom instructions (public
 			// user focus OR internal plan-mode guidance) imply a directed LLM
 			// summary; a text-only model cannot read snapcompact frames.
 			const wantsSnapcompact =
+				!preferredCodexRemoteResult &&
 				compactionPrep.kind !== "fromHook" &&
 				effectiveSettings.strategy === "snapcompact" &&
 				!customInstructions &&
@@ -739,12 +777,11 @@ export class SessionMaintenance {
 			let firstKeptEntryId: string;
 			let tokensBefore: number;
 			let details: unknown;
-			let codexCompaction: CodexCompactionContext | undefined;
 
-			// Snapcompact runs locally first. The frame cap is sized from the live
-			// model window via #computeSnapcompactMaxFrames so the post-render context
-			// fits without the warning loop (issue #3247). Zero-frame budget now fails
-			// the snapcompact request locally rather than falling back to an LLM call.
+			// The configured snapcompact fallback runs locally. The frame cap is sized
+			// from the live model window via #computeSnapcompactMaxFrames so the
+			// post-render context fits without the warning loop (issue #3247). A
+			// zero-frame budget fails the snapcompact request locally.
 			let snapcompactResult: snapcompact.CompactionResult | undefined;
 			if (snapcompactReady) {
 				const maxFrames = this.#computeSnapcompactMaxFrames(preparation, effectiveSettings);
@@ -812,6 +849,16 @@ export class SessionMaintenance {
 				tokensBefore = compactionPrep.tokensBefore;
 				details = compactionPrep.details;
 				preserveData = compactionPrep.preserveData;
+			} else if (preferredCodexRemoteResult) {
+				summary = preferredCodexRemoteResult.summary;
+				shortSummary = preferredCodexRemoteResult.shortSummary;
+				firstKeptEntryId = preferredCodexRemoteResult.firstKeptEntryId;
+				tokensBefore = preferredCodexRemoteResult.tokensBefore;
+				details = preferredCodexRemoteResult.details;
+				preserveData = mergeLlmCompactionPreserveData(
+					compactionPrep.preserveData,
+					preferredCodexRemoteResult.preserveData,
+				);
 			} else if (snapcompactResult) {
 				summary = snapcompactResult.summary;
 				shortSummary = snapcompactResult.shortSummary;
@@ -820,7 +867,7 @@ export class SessionMaintenance {
 				details = snapcompactResult.details;
 				preserveData = { ...(compactionPrep.preserveData ?? {}), ...(snapcompactResult.preserveData ?? {}) };
 			} else {
-				codexCompaction = createCodexCompactionContext({
+				codexCompaction ??= createCodexCompactionContext({
 					trigger: "manual",
 					reason: "user_requested",
 					phase: "standalone_turn",
@@ -838,7 +885,9 @@ export class SessionMaintenance {
 				// of the result-derived locals are reachable only on success.
 				try {
 					const result = await this.#compactWithFallbackModel(
-						preparation,
+						preferredCodexRemoteFailed
+							? { ...preparation, settings: { ...preparation.settings, remoteEnabled: false } }
+							: preparation,
 						options?.internalGuidance ?? customInstructions,
 						compactionAbortController.signal,
 						{
@@ -1621,6 +1670,45 @@ export class SessionMaintenance {
 		throw this.#buildCompactionAuthError();
 	}
 
+	async #tryPreferredCodexRemoteCompaction(
+		preparation: CompactionPreparation,
+		customInstructions: string | undefined,
+		signal: AbortSignal,
+		options: SummaryOptions,
+		trigger: "manual" | "auto",
+	): Promise<CompactionResult | undefined> {
+		const model = this.#model;
+		if (!model || !shouldPreferCodexRemoteOverSnapcompact(model, preparation.settings)) return undefined;
+
+		try {
+			return await this.#compactWithFallbackModel(
+				{
+					...preparation,
+					settings: { ...preparation.settings, strategy: "context-full", remoteEnabled: true },
+				},
+				customInstructions,
+				signal,
+				options,
+				[model],
+			);
+		} catch (error) {
+			if (signal.aborted || error instanceof CompactionCancelledError) throw error;
+			const authUnavailable = error instanceof Error && error.message === this.#buildCompactionAuthError().message;
+			if (!(error instanceof NativeCompactionError) && !authUnavailable) throw error;
+			logger.warn("Preferred Codex remote compaction failed, using configured snapcompact fallback", {
+				trigger,
+				model: `${model.provider}/${model.id}`,
+				error: error instanceof Error ? error.message : String(error),
+			});
+			this.#host.emitNotice(
+				"warning",
+				"Codex remote compaction failed; using configured snapcompact fallback.",
+				"compaction",
+			);
+			return undefined;
+		}
+	}
+
 	async #prepareCompactionFromHooks(
 		preparation: CompactionPreparation,
 		hookCompaction: CompactionResult | undefined,
@@ -2240,20 +2328,27 @@ export class SessionMaintenance {
 		// "overflow" forces context-full because the input itself is broken — a handoff
 		// LLM call would hit the same overflow. "incomplete" is an output-side problem,
 		// so a handoff request on the existing context is still viable.
-		let action: "context-full" | "handoff" | "snapcompact" =
+		const configuredAction: "context-full" | "handoff" | "snapcompact" =
 			compactionSettings.strategy === "snapcompact"
 				? "snapcompact"
 				: compactionSettings.strategy === "handoff" && reason !== "overflow" && !suppressHandoff
 					? "handoff"
 					: "context-full";
-		if (action === "snapcompact" && this.#model && !this.#model.input.includes("image")) {
-			this.#host.emitNotice(
-				"warning",
-				`snapcompact needs a vision-capable active model (${this.#model.id} is text-only); using context-full auto-compaction instead.`,
-				"compaction",
-			);
-			action = "context-full";
+		const preferCodexRemote =
+			configuredAction === "snapcompact" &&
+			Boolean(this.#model && shouldPreferCodexRemoteOverSnapcompact(this.#model, compactionSettings));
+		let fallbackAction = configuredAction;
+		if (fallbackAction === "snapcompact" && this.#model && !this.#model.input.includes("image")) {
+			fallbackAction = "context-full";
+			if (!preferCodexRemote) {
+				this.#host.emitNotice(
+					"warning",
+					`snapcompact needs a vision-capable active model (${this.#model.id} is text-only); using context-full auto-compaction instead.`,
+					"compaction",
+				);
+			}
 		}
+		let action = preferCodexRemote ? "context-full" : fallbackAction;
 		// Abort any older auto-compaction before installing this run's controller.
 		this.#autoCompactionAbortController?.abort();
 		const autoCompactionAbortController = new AbortController();
@@ -2519,17 +2614,53 @@ export class SessionMaintenance {
 
 			const compactionPrep = await this.#prepareCompactionFromHooks(preparation, hookCompaction);
 
+			let preferredCodexRemoteResult: CompactionResult | undefined;
+			let preferredCodexRemoteFailed = false;
+			if (preferCodexRemote && compactionPrep.kind !== "fromHook") {
+				codexCompaction = createCodexCompactionContext({
+					trigger: "auto",
+					reason: "context_limit",
+					phase:
+						options.phase ??
+						(reason === "threshold" ? "pre_turn" : reason === "idle" ? "standalone_turn" : "mid_turn"),
+				});
+				preferredCodexRemoteResult = await this.#tryPreferredCodexRemoteCompaction(
+					preparation,
+					undefined,
+					autoCompactionSignal,
+					{
+						promptOverride: this.#host.obfuscateTextForProvider(compactionPrep.hookPrompt),
+						extraContext: compactionPrep.hookContext,
+						remoteInstructions: this.#host.baseSystemPrompt().join("\n\n"),
+						convertToLlm: messages => this.#host.convertToLlmForSideRequest(messages),
+						codexCompaction,
+						oneshotRetry: false,
+					},
+					"auto",
+				);
+				preferredCodexRemoteFailed = !preferredCodexRemoteResult;
+				if (!preferredCodexRemoteResult) {
+					action = fallbackAction;
+					if (configuredAction === "snapcompact" && fallbackAction === "context-full") {
+						this.#host.emitNotice(
+							"warning",
+							`snapcompact needs a vision-capable active model (${this.#model.id} is text-only); using context-full auto-compaction instead.`,
+							"compaction",
+						);
+					}
+				}
+			}
+
 			let summary: string;
 			let shortSummary: string | undefined;
 			let firstKeptEntryId: string;
 			let tokensBefore: number;
 			let details: unknown;
 
-			// Snapcompact runs locally first. The post-compaction context = kept-recent
-			// + a summary message carrying the imaged archive at FRAME_TOKEN_ESTIMATE
-			// per frame; #computeSnapcompactMaxFrames sizes the frame cap from the
-			// live window so we don't run snapcompact just to overflow every threshold
-			// tick. Any local blocker (unsupported snapcompact glyphs, kept-history too large,
+			// The configured snapcompact fallback runs locally. The post-compaction
+			// context = kept-recent + a summary message carrying the imaged archive at
+			// FRAME_TOKEN_ESTIMATE per frame; #computeSnapcompactMaxFrames sizes the
+			// frame cap from the live window. Any local blocker (unsupported glyphs,
 			// post-render overflow) downgrades auto maintenance to a context-full LLM
 			// summary instead of wedging the session (#3659) — auto runs the default
 			// strategy on the user's behalf, so a fallback that lets the session keep
@@ -2621,6 +2752,16 @@ export class SessionMaintenance {
 				tokensBefore = compactionPrep.tokensBefore;
 				details = compactionPrep.details;
 				preserveData = compactionPrep.preserveData;
+			} else if (preferredCodexRemoteResult) {
+				summary = preferredCodexRemoteResult.summary;
+				shortSummary = preferredCodexRemoteResult.shortSummary;
+				firstKeptEntryId = preferredCodexRemoteResult.firstKeptEntryId;
+				tokensBefore = preferredCodexRemoteResult.tokensBefore;
+				details = preferredCodexRemoteResult.details;
+				preserveData = mergeLlmCompactionPreserveData(
+					compactionPrep.preserveData,
+					preferredCodexRemoteResult.preserveData,
+				);
 			} else if (snapcompactResult) {
 				summary = snapcompactResult.summary;
 				shortSummary = snapcompactResult.shortSummary;
@@ -2635,7 +2776,10 @@ export class SessionMaintenance {
 				let compactResult: CompactionResult | undefined;
 				let lastError: unknown;
 				let nativeCompactionFailure: { error: NativeCompactionError; provider: string } | undefined;
-				codexCompaction = createCodexCompactionContext({
+				const llmPreparation = preferredCodexRemoteFailed
+					? { ...preparation, settings: { ...preparation.settings, remoteEnabled: false } }
+					: preparation;
+				codexCompaction ??= createCodexCompactionContext({
 					trigger: "auto",
 					reason: "context_limit",
 					phase:
@@ -2651,7 +2795,7 @@ export class SessionMaintenance {
 					if (
 						nativeCompactionFailure &&
 						(candidate.provider !== nativeCompactionFailure.provider ||
-							!shouldUseProviderNativeCompaction(candidate, preparation.settings))
+							!shouldUseProviderNativeCompaction(candidate, llmPreparation.settings))
 					) {
 						throw nativeCompactionFailure.error;
 					}
@@ -2660,7 +2804,7 @@ export class SessionMaintenance {
 					while (true) {
 						try {
 							compactResult = await compact(
-								this.#host.obfuscatePreparationForProvider(preparation),
+								this.#host.obfuscatePreparationForProvider(llmPreparation),
 								candidate,
 								this.#host.modelRegistry.resolver(candidate, this.#host.sessionId()),
 								undefined,

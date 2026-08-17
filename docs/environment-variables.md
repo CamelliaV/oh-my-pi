@@ -334,7 +334,7 @@ therefore completes through the paste-code path.
 | `SEARXNG_ENDPOINT`, `SEARXNG_TOKEN`                 | SearXNG endpoint and optional bearer token                                |
 | `SEARXNG_BASIC_USERNAME`, `SEARXNG_BASIC_PASSWORD`  | SearXNG HTTP Basic Auth credentials                                       |
 
-When `web_search` reaches the Codex adapter while the current agent model is GPT-family on an OpenAI Responses/Codex/Completions provider, the adapter reuses that model's provider, wire model id, base URL, headers, and credentials. The two `PI_CODEX_WEB_SEARCH_*` variables are fallback configuration for non-GPT sessions and sessionless `omp search` calls; they do not pin an eligible active GPT session to a different gateway.
+When `web_search` reaches the Codex adapter while the current agent model is GPT-family on an OpenAI Responses/Codex/Completions provider, the adapter reuses that model's provider, wire model id, base URL, headers, and credentials. The two `PI_CODEX_WEB_SEARCH_*` variables are fallback configuration for sessions without eligible active GPT affinity and for sessionless `omp search` calls; they do not pin an eligible active GPT session to a different gateway.
 
 SearXNG also reads the equivalent `searxng.endpoint`, `searxng.token`, `searxng.basicUsername`, and `searxng.basicPassword` settings from `~/.omp/agent/config.yml`; environment variables are fallbacks.
 

@@ -445,6 +445,79 @@ describe("searchCodex model selection", () => {
 		expect(result.model).toBe("gpt-5.6-sol-wire");
 	});
 
+	it("uses the canonical non-Lite Codex transport for active Codex gateways", async () => {
+		const activeModel = {
+			provider: "active-codex",
+			id: "gpt-5.6-sol",
+			requestModelId: "gpt-5.6-sol-wire",
+			api: "openai-codex-responses",
+			baseUrl: "https://active.example/v1/responses",
+			headers: { "X-Model-Route": "active" },
+			name: "Active Codex",
+			reasoning: true,
+			input: ["text"],
+			contextWindow: 200_000,
+			maxTokens: 32_000,
+			cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+		} as unknown as Model;
+		const activeAuthStorage = {
+			hasAuth(provider: string) {
+				return provider === "active-codex";
+			},
+			getCredentialOrigin() {
+				return { kind: "config" as const };
+			},
+		} as unknown as AuthStorage;
+		const activeRegistry = {
+			authStorage: activeAuthStorage,
+			hasConfiguredAuth(model: Model) {
+				return model.provider === "active-codex";
+			},
+			getProviderHeaders() {
+				return { "X-Provider-Route": "active-provider" };
+			},
+			hasCommandBackedApiKey() {
+				return false;
+			},
+			resolver(provider: string, options?: { baseUrl?: string; modelId?: string }) {
+				expect(provider).toBe("active-codex");
+				expect(options).toMatchObject({
+					baseUrl: "https://active.example/v1/responses",
+					modelId: "gpt-5.6-sol-wire",
+				});
+				return async () => "active-provider-key";
+			},
+		} as unknown as ModelRegistry;
+
+		const result = await searchCodex({
+			...makeSearchParams("active Codex gateway search", mockCodexFetch("gpt-5.6-sol-wire")),
+			authStorage: activeAuthStorage,
+			modelRegistry: activeRegistry,
+			activeModel,
+		});
+
+		expect(capturedRequest?.url).toBe("https://active.example/v1/responses");
+		expect(capturedRequest?.body).toMatchObject({
+			model: "gpt-5.6-sol-wire",
+			store: false,
+			stream: true,
+			tools: [{ type: "web_search", search_context_size: "high" }],
+			tool_choice: { type: "web_search" },
+		});
+		expect(capturedRequest?.body?.client_metadata).toBeDefined();
+		expect(capturedRequest?.body?.include).toContain("web_search_call.action.sources");
+		const headers = new Headers(capturedRequest?.headers);
+		expect(headers.get("authorization")).toBe("Bearer active-provider-key");
+		expect(headers.get("x-openai-internal-codex-responses-lite")).toBeNull();
+		expect(headers.get("x-provider-route")).toBe("active-provider");
+		expect(result).toMatchObject({
+			provider: "codex",
+			model: "gpt-5.6-sol-wire",
+			answer: "Codex answer",
+			sources: [{ title: "Example Article", url: "https://example.com/article" }],
+		});
+	});
+
 	it("keeps the standalone Codex route for a non-GPT active model", async () => {
 		process.env.PI_CODEX_WEB_SEARCH_MODEL = "gpt-5.4";
 		const activeModel = {

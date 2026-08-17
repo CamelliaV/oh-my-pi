@@ -9,6 +9,7 @@ import type { AuthStorage, Model } from "@oh-my-pi/pi-ai";
 import { runSearchQuery } from "@oh-my-pi/pi-coding-agent/web/search";
 import type { SearchParams } from "@oh-my-pi/pi-coding-agent/web/search/provider";
 import * as provider from "@oh-my-pi/pi-coding-agent/web/search/provider";
+import { CodexProvider } from "@oh-my-pi/pi-coding-agent/web/search/providers/codex";
 import type { SearchProviderId, SearchResponse, SearchSource } from "@oh-my-pi/pi-coding-agent/web/search/types";
 
 const SOURCES: SearchSource[] = [
@@ -68,6 +69,7 @@ describe("web search directive pipeline", () => {
 				seenAvailabilityModel = context?.activeModel;
 				return true;
 			},
+			isExplicitlyAvailable: () => true,
 			search: async params => {
 				seenSearchParams = params;
 				return { provider: "codex", sources: SOURCES };
@@ -80,6 +82,38 @@ describe("web search directive pipeline", () => {
 
 		expect(seenAvailabilityModel).toBe(activeModel);
 		expect(seenSearchParams?.activeModel).toBe(activeModel);
+	});
+
+	it("skips standalone Codex without credentials for a non-GPT session and continues to Exa", async () => {
+		const activeModel = {
+			provider: "z-ai",
+			id: "glm-5.3",
+			api: "openai-responses",
+			baseUrl: "https://glm.example/v1",
+		} as unknown as Model;
+		const codexProvider = new CodexProvider();
+		const exaProvider: provider.SearchProvider = {
+			id: "exa",
+			label: "exa",
+			isAvailable: () => true,
+			isExplicitlyAvailable: () => true,
+			search: async () => ({ provider: "exa", sources: SOURCES }),
+		};
+		vi.spyOn(provider, "resolveProviderCandidates").mockReturnValue([
+			{ id: "codex", explicit: false },
+			{ id: "exa", explicit: false },
+		]);
+		vi.spyOn(provider, "getSearchProvider").mockImplementation(async id =>
+			id === "codex" ? codexProvider : exaProvider,
+		);
+
+		const result = await runSearchQuery(
+			{ query: "non-GPT fallback" },
+			{ authStorage: { hasAuth: () => false } as unknown as AuthStorage, activeModel },
+		);
+
+		expect(result.details.response.provider).toBe("exa");
+		expect(result.details.response.sources).toEqual(SOURCES);
 	});
 
 	it("relaxes a constraint that matches nothing and leads the LLM text with a note", async () => {

@@ -3,6 +3,7 @@ import type { Usage } from "@oh-my-pi/pi-ai";
 import { Container, Spacer, Text } from "@oh-my-pi/pi-tui";
 import { formatDuration, formatNumber } from "@oh-my-pi/pi-utils";
 import { theme } from "../theme/theme";
+import { DynamicBorder } from "./dynamic-border";
 
 type AssistantMessage = Extract<AgentMessage, { role: "assistant" }>;
 type ToolResultMessage = Extract<AgentMessage, { role: "toolResult" }>;
@@ -271,37 +272,61 @@ export class WorkUsageAccumulator {
 	}
 }
 
-/** Format the work aggregate without turning unavailable telemetry into zero. */
+/** Format the work aggregate with the same accent hierarchy as prompt chrome. */
 export function formatWorkUsageRow(snapshot: WorkUsageSnapshot): string {
 	const { usage } = snapshot;
-	const parts = [
-		`${theme.icon.time} work ${formatDuration(snapshot.wallMs)}`,
+	const timing = [
+		`work ${formatDuration(snapshot.wallMs)}`,
 		`model ${formatDuration(snapshot.modelMs)}`,
 		`tool ${formatDuration(snapshot.toolMs)}`,
 		`wait ${formatDuration(snapshot.waitMs)}`,
-		`${snapshot.requests} req`,
+	].join("  ");
+	const tokens = [
 		`${theme.icon.input} ${formatNumber(usage.input)}`,
 		`${theme.icon.output} ${formatNumber(usage.output)}`,
 		`${theme.icon.cache} R${formatNumber(usage.cacheRead)}/W${formatNumber(usage.cacheWrite)}`,
+	].join("  ");
+	const headerParts = [
+		theme.fg("accent", theme.bold(`${theme.icon.time} WORK`)),
+		theme.fg("muted", timing),
+		theme.fg("accent", `${snapshot.requests} req`),
 	];
-	if (usage.reasoningTokens !== undefined) parts.push(`reason ${formatNumber(usage.reasoningTokens)}`);
+	const detailParts = [theme.fg("userMessageText", tokens)];
+	if (usage.reasoningTokens !== undefined) {
+		detailParts.push(theme.fg("muted", `reason ${formatNumber(usage.reasoningTokens)}`));
+	}
 	if (usage.orchestration) {
-		parts.push(
-			`orch I${formatNumber(usage.orchestration.input ?? 0)}/R${formatNumber(usage.orchestration.cacheRead ?? 0)}/O${formatNumber(usage.orchestration.output ?? 0)}`,
+		detailParts.push(
+			theme.fg(
+				"muted",
+				`orch I${formatNumber(usage.orchestration.input ?? 0)}/R${formatNumber(usage.orchestration.cacheRead ?? 0)}/O${formatNumber(usage.orchestration.output ?? 0)}`,
+			),
 		);
 	}
 	const cacheRate = snapshot.cacheRate === null ? "N/A" : `${(snapshot.cacheRate * 100).toFixed(1)}%`;
-	parts.push(`cache ${cacheRate} (${snapshot.cacheReportedRequests}/${snapshot.cacheEligibleRequests})`);
-	if (snapshot.actualCostRequests > 0) parts.push(`${formatCost(snapshot.actualCost)} actual`);
-	if (snapshot.estimatedCostRequests > 0) parts.push(`~${formatCost(snapshot.estimatedCost)} catalog`);
-	if (snapshot.unknownCostRequests > 0) parts.push(`cost N/A (${snapshot.unknownCostRequests})`);
-	return parts.join("  ");
+	const cacheColor = snapshot.cacheRate === null ? "muted" : snapshot.cacheRate > 0 ? "success" : "warning";
+	detailParts.push(
+		theme.fg(cacheColor, `cache ${cacheRate} (${snapshot.cacheReportedRequests}/${snapshot.cacheEligibleRequests})`),
+	);
+	if (snapshot.actualCostRequests > 0) {
+		detailParts.push(theme.fg("success", `${formatCost(snapshot.actualCost)} actual`));
+	}
+	if (snapshot.estimatedCostRequests > 0) {
+		detailParts.push(theme.fg("accent", `~${formatCost(snapshot.estimatedCost)} catalog`));
+	}
+	if (snapshot.unknownCostRequests > 0) {
+		detailParts.push(theme.fg("warning", `cost N/A (${snapshot.unknownCostRequests})`));
+	}
+	return `${headerParts.join("  ")}\n${detailParts.join("  ")}`;
 }
 
-/** Rendered work-total row; muted styling distinguishes it from request rows. */
+/** Render the work total with prompt-style accent chrome, not recap-level dim text. */
 export function createWorkUsageRowBlock(snapshot: WorkUsageSnapshot): Container {
 	const block = new Container();
+	const border = new DynamicBorder(str => theme.fg("borderAccent", str));
 	block.addChild(new Spacer(1));
-	block.addChild(new Text(theme.fg("dim", formatWorkUsageRow(snapshot)), 1, 0));
+	block.addChild(border);
+	block.addChild(new Text(formatWorkUsageRow(snapshot), 1, 0));
+	block.addChild(new DynamicBorder(str => theme.fg("borderAccent", str)));
 	return block;
 }

@@ -17,12 +17,13 @@ import {
 	getDomain,
 	PREVIEW_LIMITS,
 	replaceTabs,
+	TRUNCATE_LENGTHS,
 	truncateToWidth,
 } from "../../tools/render-utils";
 import { renderStatusLine, renderTreeList, urlHyperlink } from "../../tui";
 import { CachedOutputBlock, markFramedBlockComponent, outputBlockContentWidth } from "../../tui/output-block";
-import { getSearchProviderLabel } from "./provider";
-import type { SearchResponse } from "./types";
+import { formatSearchProviderFailureRecord, getSearchProviderLabel } from "./provider";
+import type { SearchProviderFailure, SearchResponse } from "./types";
 
 const MAX_COLLAPSED_ITEMS = PREVIEW_LIMITS.COLLAPSED_ITEMS;
 
@@ -57,16 +58,30 @@ function renderFallbackText(contentText: string, expanded: boolean, theme: Theme
 export interface SearchRenderDetails {
 	response: SearchResponse;
 	error?: string;
+	/** Failed attempts retained from the provider chain. */
+	providerFailures?: readonly SearchProviderFailure[];
 }
 
 /** Render a web search failure as a framed error panel, matching the success layout. */
-function renderSearchErrorPanel(message: string, providerLabel: string | undefined, theme: Theme): Component {
+function renderSearchErrorPanel(
+	message: string,
+	providerLabel: string | undefined,
+	theme: Theme,
+	providerFailures: readonly SearchProviderFailure[] = [],
+): Component {
 	const header = renderStatusLine({ icon: "error", title: "Web Search", description: providerLabel }, theme);
-	const body = theme.fg("error", `Error: ${replaceTabs(message)}`);
+	const body = theme.fg("error", `Error: ${truncateToWidth(replaceTabs(message), TRUNCATE_LENGTHS.LINE)}`);
+	const failureLines = providerFailures.map(failure => {
+		const text = truncateToWidth(replaceTabs(formatSearchProviderFailureRecord(failure)), TRUNCATE_LENGTHS.LINE);
+		return `${theme.fg("warning", "Attempt:")} ${theme.fg("text", text)}`;
+	});
 	const outputBlock = new CachedOutputBlock();
 	return markFramedBlockComponent({
 		render(width: number): readonly string[] {
-			return outputBlock.render({ header, state: "error", sections: [{ lines: [body] }], width }, theme);
+			return outputBlock.render(
+				{ header, state: "error", sections: [{ lines: [body, ...failureLines] }], width },
+				theme,
+			);
 		},
 		invalidate() {
 			outputBlock.invalidate();
@@ -91,7 +106,7 @@ export function renderSearchResult(
 		const errorProvider = details.response?.provider;
 		const errorProviderLabel =
 			errorProvider && errorProvider !== "none" ? getSearchProviderLabel(errorProvider) : undefined;
-		return renderSearchErrorPanel(details.error, errorProviderLabel, theme);
+		return renderSearchErrorPanel(details.error, errorProviderLabel, theme, details.providerFailures);
 	}
 
 	const rawText = result.content?.find(block => block.type === "text")?.text?.trim() ?? "";
@@ -112,6 +127,8 @@ export function renderSearchResult(
 	const contentText = answerText || rawText;
 
 	const providerLabel = provider !== "none" ? getSearchProviderLabel(provider) : "None";
+	const providerFailures = details?.providerFailures ?? [];
+	const usedFallback = providerFailures.length > 0;
 	const queryPreview = args?.query
 		? truncateToWidth(args.query, 80)
 		: searchQueries[0]
@@ -121,10 +138,11 @@ export function renderSearchResult(
 	const header = renderStatusLine(
 		success
 			? {
-					iconOverride: theme.styledSymbol("tool.webSearch", "accent"),
+					iconOverride: usedFallback ? undefined : theme.styledSymbol("tool.webSearch", "accent"),
+					icon: usedFallback ? "warning" : undefined,
 					title: "Web Search",
 					description: providerLabel,
-					meta: [formatCount("source", sourceCount)],
+					meta: [...(usedFallback ? ["fallback"] : []), formatCount("source", sourceCount)],
 				}
 			: {
 					icon: "warning",
@@ -134,12 +152,22 @@ export function renderSearchResult(
 				},
 		theme,
 	);
-
 	const authShort =
 		response.authMode === "oauth" ? "OAuth" : response.authMode === "api_key" ? "API" : response.authMode;
 	let providerInfo = response.model ? `${response.model} @ ${providerLabel}` : providerLabel;
 	if (authShort) providerInfo += ` (${authShort})`;
 	const metaLines: string[] = [`${theme.fg("muted", "Provider:")} ${theme.fg("text", providerInfo)}`];
+	if (providerFailures.length > 0) {
+		const route = truncateToWidth(
+			`${[...providerFailures.map(failure => failure.label), providerLabel].join(" → ")} (fallback)`,
+			TRUNCATE_LENGTHS.LINE,
+		);
+		metaLines.push(`${theme.fg("warning", "Route:")} ${theme.fg("text", route)}`);
+		for (const failure of providerFailures) {
+			const text = truncateToWidth(replaceTabs(formatSearchProviderFailureRecord(failure)), TRUNCATE_LENGTHS.LINE);
+			metaLines.push(`${theme.fg("warning", "Fallback:")} ${theme.fg("text", text)}`);
+		}
+	}
 	if (response.usage) {
 		const usageParts: string[] = [];
 		if (response.usage.inputTokens !== undefined) usageParts.push(`in ${response.usage.inputTokens}`);

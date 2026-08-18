@@ -10,7 +10,13 @@
 
 import type { AuthStorage } from "@oh-my-pi/pi-ai";
 import type { SearchProvider, SearchProviderAvailabilityContext } from "./providers/base";
-import { SEARCH_PROVIDER_LABELS, SEARCH_PROVIDER_ORDER, SearchProviderError, type SearchProviderId } from "./types";
+import {
+	SEARCH_PROVIDER_LABELS,
+	SEARCH_PROVIDER_ORDER,
+	SearchProviderError,
+	type SearchProviderFailure,
+	type SearchProviderId,
+} from "./types";
 
 export type { SearchParams } from "./providers/base";
 export { SearchProvider } from "./providers/base";
@@ -171,6 +177,31 @@ export function formatSearchProviderFailures(
 	failures: readonly { provider: Pick<SearchProvider, "id" | "label">; error: unknown }[],
 ): string {
 	return failures.map(f => `${f.provider.id}: ${formatSearchProviderFailure(f.error, f.provider)}`).join("; ");
+}
+/** Convert an internal provider error into safe, serializable fallback metadata. */
+export function createSearchProviderFailure(
+	error: unknown,
+	provider: Pick<SearchProvider, "id" | "label">,
+): SearchProviderFailure {
+	return {
+		provider: provider.id,
+		label: provider.label,
+		message: formatSearchProviderFailure(error, provider),
+		status: error instanceof SearchProviderError ? error.status : undefined,
+	};
+}
+
+/** Format retained provider failures for model-visible tool output and TUI metadata. */
+export function formatSearchProviderFailureRecord(failure: SearchProviderFailure): string {
+	const status =
+		failure.status !== undefined && !failure.message.includes(String(failure.status))
+			? ` (HTTP ${failure.status})`
+			: "";
+	return `${failure.label}: ${failure.message}${status}`;
+}
+
+export function formatSearchProviderFailureRecords(failures: readonly SearchProviderFailure[]): string {
+	return failures.map(formatSearchProviderFailureRecord).join("; ");
 }
 
 /**

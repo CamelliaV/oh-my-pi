@@ -175,10 +175,11 @@ describe("executeSearch abort propagation", () => {
 	function fakeProvider(
 		id: SearchProviderId,
 		behaviour: (params: SearchParams) => Promise<SearchResponse>,
+		label: string = id,
 	): provider.SearchProvider {
 		return {
 			id,
-			label: id,
+			label,
 			isAvailable: () => true,
 			isExplicitlyAvailable: () => true,
 			search: behaviour,
@@ -341,7 +342,7 @@ describe("executeSearch abort propagation", () => {
 		expect(fallbackSearch).not.toHaveBeenCalled();
 	});
 
-	it("falls through after the preferred provider fails", async () => {
+	it("exposes a rate-limit fallback to the model and renderer metadata", async () => {
 		const fallbackSearch = vi.fn(
 			async (): Promise<SearchResponse> => ({
 				provider: "brave",
@@ -350,9 +351,13 @@ describe("executeSearch abort propagation", () => {
 		);
 		const getProvider = mockProviderChain(
 			[
-				fakeProvider("exa", async () => {
-					throw new SearchProviderError("exa", "Preferred provider failed.", 500);
-				}),
+				fakeProvider(
+					"codex",
+					async () => {
+						throw new SearchProviderError("codex", "Codex web search rate limited.", 429);
+					},
+					"OpenAI",
+				),
 				fakeProvider("brave", fallbackSearch),
 			],
 			{ explicitFirst: true },
@@ -362,6 +367,19 @@ describe("executeSearch abort propagation", () => {
 		const result = await tool.execute("test-id", { query: "anything" });
 
 		expect(result.details?.response.provider).toBe("brave");
+		expect(result.details?.providerFailures).toEqual([
+			{
+				provider: "codex",
+				label: "OpenAI",
+				message: "Codex web search rate limited.",
+				status: 429,
+			},
+		]);
+		const block = result.content[0];
+		const text = block && "text" in block ? block.text : "";
+		expect(text).toContain("Note: Web search fallback used.");
+		expect(text).toContain("OpenAI: Codex web search rate limited. (HTTP 429)");
+		expect(text).toContain("Results below were returned by Brave (brave), not the failed provider.");
 		expect(getProvider).toHaveBeenCalledTimes(2);
 		expect(fallbackSearch).toHaveBeenCalledTimes(1);
 	});

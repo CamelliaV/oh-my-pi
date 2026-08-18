@@ -64,6 +64,30 @@ describe("renderSearchResult", () => {
 		expect(answer).toContain("first");
 	});
 
+	it("shows the fallback route and provider failure cause", async () => {
+		const uiTheme = (await getThemeByName("dark"))!;
+		const result = buildResult("Fallback answer");
+		result.details.providerFailures = [
+			{
+				provider: "codex",
+				label: "OpenAI",
+				message: "Codex web search rate limited.",
+				status: 429,
+			},
+		];
+		const component = renderSearchResult(result, { expanded: true, isPartial: false }, uiTheme, {
+			query: "test query",
+		});
+		const rendered = component
+			.render(120)
+			.map(line => sanitizeText(line))
+			.join("\n");
+
+		expect(rendered).toContain("fallback");
+		expect(rendered).toContain("Route: OpenAI → Perplexity (fallback)");
+		expect(rendered).toContain("Fallback: OpenAI: Codex web search rate limited. (HTTP 429)");
+	});
+
 	it("shows the full answer when expanded — no answer truncation summary", async () => {
 		const uiTheme = (await getThemeByName("dark"))!;
 		const component = renderSearchResult(buildResult(ANSWER), { expanded: true, isPartial: false }, uiTheme, {

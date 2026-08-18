@@ -177,6 +177,14 @@ export interface SearchResponse {
 	authMode?: string;
 }
 
+/** A failed provider attempt retained when the chain later succeeds or exhausts. */
+export interface SearchProviderFailure {
+	provider: SearchProviderId;
+	label: string;
+	message: string;
+	status?: number;
+}
+
 /** Provider-specific error with optional HTTP status */
 export class SearchProviderError extends Error {
 	constructor(

@@ -20,8 +20,9 @@ import type { ToolSession } from "../../tools";
 import { formatAge } from "../../tools/render-utils";
 import { throwIfAborted } from "../../tools/tool-errors";
 import {
-	formatSearchProviderFailure,
-	formatSearchProviderFailures,
+	createSearchProviderFailure,
+	formatSearchProviderFailureRecord,
+	formatSearchProviderFailureRecords,
 	getSearchProvider,
 	getSearchProviderLabel,
 	resolveProviderCandidates,
@@ -34,6 +35,7 @@ import {
 	DEFAULT_WEB_SEARCH_TIMEOUT_SECONDS,
 	MAX_WEB_SEARCH_TIMEOUT_SECONDS,
 	SearchProviderError,
+	type SearchProviderFailure,
 	type SearchProviderId,
 	type SearchResponse,
 } from "./types";
@@ -65,10 +67,21 @@ function formatCount(label: string, count: number): string {
 }
 
 /** Format response for LLM consumption. `notes` lead the output (e.g. relaxed-constraint warnings). */
-function formatForLLM(response: SearchResponse, notes: readonly string[] = []): string {
+function formatForLLM(
+	response: SearchResponse,
+	notes: readonly string[] = [],
+	providerFailures: readonly SearchProviderFailure[] = [],
+): string {
 	const parts: string[] = [];
 	for (const note of notes) {
 		parts.push(`Note: ${note}`);
+	}
+	if (providerFailures.length > 0 && response.provider !== "none") {
+		const selectedProvider = `${getSearchProviderLabel(response.provider)} (${response.provider})`;
+		const failures = formatSearchProviderFailureRecords(providerFailures);
+		parts.push(
+			`Note: Web search fallback used. ${failures}. Results below were returned by ${selectedProvider}, not the failed provider.`,
+		);
 	}
 
 	if (response.answer) {
@@ -181,7 +194,7 @@ async function executeSearch(
 		// Preserve the default for one-shot callers that do not initialize Settings.
 	}
 
-	const failures: Array<{ provider: Pick<SearchProvider, "id" | "label">; error: unknown }> = [];
+	const failures: SearchProviderFailure[] = [];
 	let availableProviderCount = 0;
 	let lastProvider: Pick<SearchProvider, "id" | "label"> | undefined;
 	for (const candidate of candidates) {
@@ -243,11 +256,14 @@ async function executeSearch(
 				throw new SearchProviderError(provider.id, `${provider.label} returned no renderable search content.`, 204);
 			}
 
-			const text = formatForLLM(finalResponse, constraintNotes);
+			const text = formatForLLM(finalResponse, constraintNotes, failures);
 
 			return {
 				content: [{ type: "text" as const, text }],
-				details: { response: finalResponse },
+				details: {
+					response: finalResponse,
+					providerFailures: failures.length > 0 ? failures : undefined,
+				},
 			};
 		} catch (error) {
 			// Surface user-initiated cancellation immediately so the session sees
@@ -256,7 +272,7 @@ async function executeSearch(
 			// failure and the loop falls through to the next provider (or to the
 			// summary error), masking the cancellation.
 			throwIfAborted(signal);
-			failures.push({ provider: provider ?? providerMeta, error });
+			failures.push(createSearchProviderFailure(error, provider ?? providerMeta));
 		}
 	}
 
@@ -270,16 +286,19 @@ async function executeSearch(
 
 	const lastFailure = failures[failures.length - 1];
 	const baseMessage = lastFailure
-		? formatSearchProviderFailure(lastFailure.error, lastFailure.provider)
+		? formatSearchProviderFailureRecord(lastFailure)
 		: `Unknown error from ${lastProvider?.label ?? "web search provider"}`;
 	const message =
-		failures.length > 1 ? `All web search providers failed: ${formatSearchProviderFailures(failures)}` : baseMessage;
+		failures.length > 1
+			? `All web search providers failed: ${formatSearchProviderFailureRecords(failures)}`
+			: baseMessage;
 
 	return {
 		content: [{ type: "text" as const, text: `Error: ${message}` }],
 		details: {
-			response: { provider: lastFailure?.provider.id ?? lastProvider?.id ?? "none", sources: [] },
+			response: { provider: lastFailure?.provider ?? lastProvider?.id ?? "none", sources: [] },
 			error: message,
+			providerFailures: failures.length > 0 ? failures : undefined,
 		},
 	};
 }

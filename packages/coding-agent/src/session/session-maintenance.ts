@@ -165,6 +165,8 @@ const PRUNE_IDLE_FLUSH_MS = 90 * 60_000;
  */
 const COMPACTION_RECOVERY_BAND = 0.8;
 
+const CODEX_REMOTE_AUTO_COMPACTION_THRESHOLD_PERCENT = 90;
+
 function mergeLlmCompactionPreserveData(
 	hookPreserveData: Record<string, unknown> | undefined,
 	resultPreserveData: Record<string, unknown> | undefined,
@@ -173,13 +175,75 @@ function mergeLlmCompactionPreserveData(
 	return snapcompact.stripPreservedArchive(Object.keys(preserveData).length > 0 ? preserveData : undefined);
 }
 
+type CodexRemoteCompactionRouteSettings = Pick<
+	CompactionSettings,
+	"enabled" | "strategy" | "remoteEnabled" | "remoteStreamingV2Enabled"
+>;
+
 /** Codex Responses models use provider-native compaction ahead of the configured visual archive strategy. */
-function shouldPreferCodexRemoteOverSnapcompact(model: Model, settings: CompactionSettings): boolean {
+function shouldPreferCodexRemoteOverSnapcompact(
+	model: Model,
+	settings: Omit<CodexRemoteCompactionRouteSettings, "enabled">,
+): boolean {
 	return (
 		settings.strategy === "snapcompact" &&
 		(model.remoteCompaction?.api ?? model.api) === "openai-codex-responses" &&
 		shouldUseProviderNativeCompaction(model, settings)
 	);
+}
+
+function usesCodexRemoteAutoCompactionPolicy(model: Model, settings: CodexRemoteCompactionRouteSettings): boolean {
+	return settings.enabled && shouldPreferCodexRemoteOverSnapcompact(model, settings);
+}
+
+interface AutomaticCompactionPressure {
+	contextTokens: number;
+	thresholdTokens: number;
+	shouldCompact: boolean;
+	source: "provider-context" | "stored-context-floor";
+	usesCodexRemotePolicy: boolean;
+}
+
+function resolveAutomaticCompactionPressure(
+	model: Model,
+	contextWindow: number,
+	settings: CompactionSettings,
+	providerContextTokens: number,
+	storedContextTokens: number,
+	providerAnchored: boolean,
+): AutomaticCompactionPressure {
+	const usesCodexRemotePolicy = usesCodexRemoteAutoCompactionPolicy(model, settings);
+	const hasExplicitThreshold =
+		(typeof settings.thresholdTokens === "number" &&
+			Number.isFinite(settings.thresholdTokens) &&
+			settings.thresholdTokens > 0) ||
+		(typeof settings.thresholdPercent === "number" &&
+			Number.isFinite(settings.thresholdPercent) &&
+			settings.thresholdPercent > 0) ||
+		settings.reserveTokens !== undefined;
+	const thresholdTokens =
+		usesCodexRemotePolicy && !hasExplicitThreshold
+			? Math.max(
+					0,
+					Math.min(
+						contextWindow - 1,
+						Math.floor(contextWindow * (CODEX_REMOTE_AUTO_COMPACTION_THRESHOLD_PERCENT / 100)),
+					),
+				)
+			: resolveThresholdTokens(contextWindow, settings);
+	const usesProviderContext = usesCodexRemotePolicy && providerAnchored;
+	const contextTokens = usesProviderContext
+		? Math.max(0, providerContextTokens)
+		: compactionContextTokens(providerContextTokens, storedContextTokens);
+
+	return {
+		contextTokens,
+		thresholdTokens,
+		shouldCompact:
+			settings.enabled && settings.strategy !== "off" && contextWindow > 0 && contextTokens > thresholdTokens,
+		source: usesProviderContext ? "provider-context" : "stored-context-floor",
+		usesCodexRemotePolicy,
+	};
 }
 
 /** Capabilities borrowed from the owning AgentSession. */
@@ -307,6 +371,31 @@ export class SessionMaintenance {
 
 	constructor(host: SessionMaintenanceHost) {
 		this.#host = host;
+	}
+
+	/** Whether automatic snapcompact maintenance is routed through Codex provider-native compaction. */
+	usesCodexRemoteAutoCompaction(): boolean {
+		const model = this.#model;
+		if (!model) return false;
+		const settings = this.#host.settings;
+		return usesCodexRemoteAutoCompactionPolicy(model, {
+			enabled: settings.get("compaction.enabled"),
+			strategy: settings.get("compaction.strategy"),
+			remoteEnabled: settings.get("compaction.remoteEnabled"),
+			remoteStreamingV2Enabled: settings.get("compaction.remoteStreamingV2Enabled"),
+		});
+	}
+
+	/** Context occupancy shown to callers; Codex remote uses the same total-token anchor as its trigger. */
+	getContextUsage(options?: { contextWindow?: number }): ContextUsage | undefined {
+		const breakdown = this.#host.getContextBreakdown(options);
+		if (!breakdown) return undefined;
+		const tokens = this.usesCodexRemoteAutoCompaction() ? breakdown.providerContextTokens : breakdown.usedTokens;
+		return {
+			tokens,
+			contextWindow: breakdown.contextWindow,
+			percent: breakdown.contextWindow > 0 ? (tokens / breakdown.contextWindow) * 100 : 0,
+		};
 	}
 
 	/** Whether manual or automatic context maintenance is active. */
@@ -1036,14 +1125,9 @@ export class SessionMaintenance {
 
 	/**
 	 * Local token estimate of the stored conversation (plus any pending messages),
-	 * independent of provider-reported usage. A `before_provider_request` hook
-	 * (e.g. a compression extension such as Headroom) or other on-wire payload
-	 * transform can shrink the request below the real stored conversation; the
-	 * provider then reports deflated prompt tokens, so anchoring the compaction
-	 * decision purely on that usage lets the real history grow unbounded until it
-	 * overflows and native compaction can no longer run. This estimate is the
-	 * floor the compaction decision respects so on-wire compression can never
-	 * suppress it.
+	 * independent of provider-reported usage. Generic compaction routes use it as
+	 * a floor against payload-shrinking transforms; the Codex provider-native route
+	 * uses it only when no valid provider anchor is available.
 	 */
 	#estimateStoredContextTokens(pendingMessages: AgentMessage[] = []): number {
 		// Exclude encrypted reasoning (thinkingSignature / redactedThinking): its
@@ -1058,13 +1142,21 @@ export class SessionMaintenance {
 		);
 	}
 
-	#estimatePrePromptContextTokens(messages: AgentMessage[], contextWindow: number): number {
+	#estimatePrePromptCompactionPressure(
+		model: Model,
+		messages: AgentMessage[],
+		contextWindow: number,
+		settings: CompactionSettings,
+	): AutomaticCompactionPressure {
 		const breakdown = this.#host.getContextBreakdown({ contextWindow, pendingMessages: messages });
-		const localEstimate = this.#estimateStoredContextTokens(messages);
-		// Floor by the local estimate: a payload-shrinking before_provider_request
-		// hook deflates the provider-anchored breakdown, which must not suppress
-		// pre-prompt compaction (see #estimateStoredContextTokens).
-		return compactionContextTokens(breakdown?.usedTokens ?? 0, localEstimate);
+		return resolveAutomaticCompactionPressure(
+			model,
+			contextWindow,
+			settings,
+			breakdown?.providerContextTokens ?? 0,
+			this.#estimateStoredContextTokens(messages),
+			breakdown?.anchored === true,
+		);
 	}
 
 	async runPrePromptCompactionIfNeeded(messages: AgentMessage[]): Promise<void> {
@@ -1073,10 +1165,11 @@ export class SessionMaintenance {
 		const contextWindow = model.contextWindow ?? 0;
 		if (contextWindow <= 0) return;
 		const compactionSettings = this.#host.settings.getGroup("compaction");
-		const contextTokens = this.#estimatePrePromptContextTokens(messages, contextWindow);
+		const pressure = this.#estimatePrePromptCompactionPressure(model, messages, contextWindow, compactionSettings);
+		const contextTokens = pressure.contextTokens;
 		const pendingMidTurnDeadEnd = this.#midTurnDeadEndPendingPrePrompt;
 		this.#midTurnDeadEndPendingPrePrompt = false;
-		if (!shouldCompact(contextTokens, contextWindow, compactionSettings)) return;
+		if (!pressure.shouldCompact) return;
 		if (
 			pendingMidTurnDeadEnd &&
 			prepareCompaction(this.#host.sessionManager.getBranch(), compactionSettings, model) === undefined
@@ -1104,6 +1197,9 @@ export class SessionMaintenance {
 			contextTokens,
 			contextWindow,
 			model: `${model.provider}/${model.id}`,
+			thresholdTokens: pressure.thresholdTokens,
+			triggerSource: pressure.source,
+			usesCodexRemotePolicy: pressure.usesCodexRemotePolicy,
 		});
 		await this.runAutoCompaction("threshold", false, false, false, {
 			autoContinue: false,
@@ -1138,7 +1234,8 @@ export class SessionMaintenance {
 			return;
 
 		const model = this.#model;
-		const contextWindow = model?.contextWindow ?? 0;
+		if (!model) return;
+		const contextWindow = model.contextWindow ?? 0;
 		if (contextWindow <= 0) return;
 
 		const compactionSettings = this.#host.settings.getGroup("compaction");
@@ -1162,8 +1259,16 @@ export class SessionMaintenance {
 		// request or tool running.
 		const billedContextTokens = calculateContextTokens(lastAssistant.usage);
 		const storedContextTokens = this.#estimateStoredContextTokens();
-		const contextTokens = compactionContextTokens(billedContextTokens, storedContextTokens);
-		if (!shouldCompact(contextTokens, contextWindow, compactionSettings)) return;
+		const pressure = resolveAutomaticCompactionPressure(
+			model,
+			contextWindow,
+			compactionSettings,
+			billedContextTokens,
+			storedContextTokens,
+			hasContextTokenUsage(lastAssistant.usage),
+		);
+		const contextTokens = pressure.contextTokens;
+		if (!pressure.shouldCompact) return;
 
 		if (!(await this.#host.persistTurnMessagesForMidRunCompaction(context))) return;
 		if (this.#midTurnCompactionDeadEnds.has(activeMessages)) {
@@ -1263,14 +1368,14 @@ export class SessionMaintenance {
 	): Promise<CompactionCheckResult> {
 		// Skip if message was aborted (user cancelled) - unless skipAbortedCheck is false
 		if (skipAbortedCheck && assistantMessage.stopReason === "aborted") return COMPACTION_CHECK_NONE;
-		const contextWindow = this.#model?.contextWindow ?? 0;
+		const model = this.#model;
+		const contextWindow = model?.contextWindow ?? 0;
 		const generation = this.#host.promptGeneration();
 		// Skip overflow check if the message came from a different model.
 		// This handles the case where user switched from a smaller-context model (e.g. opus)
 		// to a larger-context model (e.g. codex) - the overflow error from the old model
 		// shouldn't trigger compaction for the new model.
-		const sameModel =
-			this.#model && assistantMessage.provider === this.#model.provider && assistantMessage.model === this.#model.id;
+		const sameModel = model && assistantMessage.provider === model.provider && assistantMessage.model === model.id;
 		// This handles the case where an error was kept after compaction (in the "kept" region).
 		// The error shouldn't trigger another compaction since we already compacted.
 		// Example: opus fails -> switch to codex -> compact -> switch back to opus -> opus error
@@ -1396,6 +1501,7 @@ export class SessionMaintenance {
 
 		const compactionSettings = this.#host.settings.getGroup("compaction");
 		if (!compactionSettings.enabled || compactionSettings.strategy === "off") return COMPACTION_CHECK_NONE;
+		if (!model || contextWindow <= 0) return COMPACTION_CHECK_NONE;
 
 		// Case 4: Threshold - turn succeeded but context is getting large
 		// Skip if this was an error (non-overflow errors don't have usage data)
@@ -1407,34 +1513,35 @@ export class SessionMaintenance {
 		// not just an error-specific one; alias it locally so the threshold intent
 		// reads clearly (#3412 review).
 		const assistantPredatesCompaction = errorIsFromBeforeCompaction;
-		// An assistant that predates the latest compaction carries stale, pre-rewrite
-		// `usage`: the scheduled auto-continue re-enters this check with the kept
-		// assistant (#promptWithMessage → checkCompaction), and its old high prompt
-		// count would re-trip the threshold on a freshly compacted history. Drop the
-		// stale provider number for those messages and let the live stored estimate
-		// (the floor applied below) drive the decision instead.
-		const assistantUsageContextTokens = assistantPredatesCompaction
-			? 0
-			: calculateContextTokens(assistantMessage.usage);
+		// Usage from before the latest compaction is stale. Without a valid
+		// post-compaction provider anchor, retain the stored-context safety floor.
+		const providerAnchored = !assistantPredatesCompaction && hasContextTokenUsage(assistantMessage.usage);
+		const assistantUsageContextTokens = providerAnchored ? calculateContextTokens(assistantMessage.usage) : 0;
 		const storedContextTokens = this.#estimateStoredContextTokens();
-		// Pruning frees bytes for the NEXT prompt; it does not change the size of
-		// the prompt the LLM just billed for. Earlier revisions subtracted the
-		// per-turn supersede/prune `tokensSaved` from the threshold input, which
-		// let a long-running `/goal` session sit above `compaction.thresholdTokens`
-		// indefinitely whenever per-turn pruning saved enough to drop the
-		// post-prune estimate below the user-configured trigger — the visible
-		// context (anchored to the same provider billing) still showed >threshold,
-		// but `shouldCompact` no-op'd (#3174). Anchor the initial trigger on the
-		// last turn's billed context tokens, floored by the post-prune
-		// stored-conversation estimate so a payload-compression hook still can't
-		// deflate the trigger.
-		const contextTokens = compactionContextTokens(assistantUsageContextTokens, storedContextTokens);
-		const postMaintenanceContextTokens = compactionContextTokens(
+		// Pruning frees bytes for the NEXT prompt; it does not change the provider
+		// occupancy that triggered this decision. Keep the initial trigger anchored
+		// to the completed turn, then pass the projected post-maintenance pressure to
+		// the recovery guard.
+		const pressure = resolveAutomaticCompactionPressure(
+			model,
+			contextWindow,
+			compactionSettings,
+			assistantUsageContextTokens,
+			storedContextTokens,
+			providerAnchored,
+		);
+		const postMaintenancePressure = resolveAutomaticCompactionPressure(
+			model,
+			contextWindow,
+			compactionSettings,
 			Math.max(0, assistantUsageContextTokens - maintenanceTokensFreed),
 			storedContextTokens,
+			providerAnchored,
 		);
-		const thresholdTokens = resolveThresholdTokens(contextWindow, compactionSettings);
-		const shouldThresholdCompact = shouldCompact(contextTokens, contextWindow, compactionSettings);
+		const contextTokens = pressure.contextTokens;
+		const postMaintenanceContextTokens = postMaintenancePressure.contextTokens;
+		const thresholdTokens = pressure.thresholdTokens;
+		const shouldThresholdCompact = pressure.shouldCompact;
 		logger.debug("Auto-compaction threshold decision", {
 			phase: "post-agent-end",
 			goalModeEnabled: this.#goalModeState?.enabled === true,
@@ -1450,6 +1557,8 @@ export class SessionMaintenance {
 			postMaintenanceContextTokens,
 			maintenanceTokensFreed,
 			shouldCompact: shouldThresholdCompact,
+			triggerSource: pressure.source,
+			usesCodexRemotePolicy: pressure.usesCodexRemotePolicy,
 			contextPromotionEnabled: this.#host.settings.get("contextPromotion.enabled") === true,
 		});
 		if (shouldThresholdCompact) {

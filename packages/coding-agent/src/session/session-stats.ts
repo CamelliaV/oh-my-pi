@@ -1,5 +1,6 @@
 import type { Agent, AgentMessage } from "@oh-my-pi/pi-agent-core";
 import {
+	calculateContextTokens,
 	calculatePromptTokens,
 	estimateTokens,
 	hasContextTokenUsage,
@@ -37,6 +38,13 @@ export interface SessionStatsTrackerHost {
 function correctedPromptTokens(assistant: AssistantMessage): number {
 	const providerPromptTokens = assistant.contextSnapshot?.promptTokens ?? calculatePromptTokens(assistant.usage);
 	return Math.max(0, providerPromptTokens - (assistant.contextSnapshot?.historyRewriteTokensRemoved ?? 0));
+}
+
+function correctedContextTokens(assistant: AssistantMessage): number {
+	return Math.max(
+		0,
+		calculateContextTokens(assistant.usage) - (assistant.contextSnapshot?.historyRewriteTokensRemoved ?? 0),
+	);
 }
 
 /** Computes session totals and tracks the in-flight context estimate. */
@@ -128,8 +136,11 @@ export class SessionStatsTracker {
 		const latestCompaction = getLatestCompactionEntry(branchEntries);
 		const compactionIndex = latestCompaction ? branchEntries.lastIndexOf(latestCompaction) : -1;
 		let usedTokens = 0;
+		let providerContextTokens = 0;
 		let anchored = false;
 		const pendingMessages = options?.pendingMessages ?? [];
+		let pendingMessagesTokens = 0;
+		for (const message of pendingMessages) pendingMessagesTokens += estimateTokens(message);
 		const pending = this.#pendingContextSnapshot;
 
 		let anchorEntry: SessionMessageEntry | undefined;
@@ -166,6 +177,7 @@ export class SessionStatsTracker {
 			anchorAssistant !== undefined && anchorIndex !== -1 && (!pending || anchorIndex >= pending.cutoffCount);
 		if (useAnchor && anchorAssistant) {
 			const promptTokens = correctedPromptTokens(anchorAssistant);
+			const contextTokens = correctedContextTokens(anchorAssistant);
 			const nonMessageTokens =
 				anchorAssistant.contextSnapshot?.nonMessageTokens ?? computeNonMessageTokens(this.#host.session);
 			anchored = true;
@@ -173,11 +185,10 @@ export class SessionStatsTracker {
 			for (let index = anchorIndex + 1; index < activeMessages.length; index++) {
 				tailTokens += estimateTokens(activeMessages[index]);
 			}
-			usedTokens =
-				promptTokens +
-				Math.max(0, currentNonMessageTokens - nonMessageTokens) +
-				tailTokens +
-				pendingMessages.reduce((sum, message) => sum + estimateTokens(message), 0);
+			const tailAndPendingTokens = tailTokens + pendingMessagesTokens;
+			const nonMessageGrowth = Math.max(0, currentNonMessageTokens - nonMessageTokens);
+			usedTokens = promptTokens + nonMessageGrowth + tailAndPendingTokens;
+			providerContextTokens = contextTokens + nonMessageGrowth + tailAndPendingTokens;
 		} else if (pending) {
 			anchored = true;
 			let tailTokens = 0;
@@ -188,7 +199,8 @@ export class SessionStatsTracker {
 				pending.promptTokens +
 				Math.max(0, currentNonMessageTokens - pending.nonMessageTokens) +
 				tailTokens +
-				pendingMessages.reduce((sum, message) => sum + estimateTokens(message), 0);
+				pendingMessagesTokens;
+			providerContextTokens = usedTokens;
 		}
 
 		if (!anchored && !pending && branchEntries.length === 0) {
@@ -204,17 +216,17 @@ export class SessionStatsTracker {
 					continue;
 				}
 				const promptTokens = correctedPromptTokens(message);
+				const contextTokens = correctedContextTokens(message);
 				const nonMessageTokens =
 					message.contextSnapshot?.nonMessageTokens ?? computeNonMessageTokens(this.#host.session);
 				let tailTokens = 0;
 				for (let tailIndex = index + 1; tailIndex < activeMessages.length; tailIndex++) {
 					tailTokens += estimateTokens(activeMessages[tailIndex]);
 				}
-				usedTokens =
-					promptTokens +
-					Math.max(0, currentNonMessageTokens - nonMessageTokens) +
-					tailTokens +
-					pendingMessages.reduce((sum, pendingMessage) => sum + estimateTokens(pendingMessage), 0);
+				const tailAndPendingTokens = tailTokens + pendingMessagesTokens;
+				const nonMessageGrowth = Math.max(0, currentNonMessageTokens - nonMessageTokens);
+				usedTokens = promptTokens + nonMessageGrowth + tailAndPendingTokens;
+				providerContextTokens = contextTokens + nonMessageGrowth + tailAndPendingTokens;
 				anchored = true;
 				break;
 			}
@@ -222,15 +234,14 @@ export class SessionStatsTracker {
 		if (!anchored) {
 			let messagesTokens = 0;
 			for (const message of activeMessages) messagesTokens += estimateTokens(message);
-			usedTokens =
-				currentNonMessageTokens +
-				messagesTokens +
-				pendingMessages.reduce((sum, message) => sum + estimateTokens(message), 0);
+			usedTokens = currentNonMessageTokens + messagesTokens + pendingMessagesTokens;
+			providerContextTokens = usedTokens;
 		}
 		return {
 			contextWindow,
 			anchored,
 			usedTokens,
+			providerContextTokens,
 			systemPromptTokens,
 			systemToolsTokens: toolsTokens,
 			systemContextTokens,

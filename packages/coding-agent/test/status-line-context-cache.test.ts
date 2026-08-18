@@ -2,10 +2,10 @@
  * Contract for `StatusLineComponent.getCachedContextBreakdown`.
  *
  * The status-line context% segment no longer keeps its own cl100k estimate of
- * the whole conversation. It surfaces `session.getContextUsage()`, which
- * anchors on the last assistant's real provider prompt-token count — so the bar
- * matches the provider and the `/context` panel instead of an independent
- * estimate that drifted past 100%.
+ * the whole conversation. It surfaces `session.getContextUsage()`: generic
+ * routes use the last assistant's provider prompt-token count, while active
+ * Codex provider-native auto-compaction uses the provider total-context count
+ * that drives its trigger.
  *
  * `getTopBorder()` runs on every agent event (event-controller.ts), so the
  * breakdown is memoized: it re-queries `getContextUsage()` only when an input
@@ -38,6 +38,8 @@ interface Fake {
 	setUsage: (usage: ContextUsage | undefined) => void;
 	/** Bump the in-flight pending revision the next `getCachedContextBreakdown()` reads. */
 	setRevision: (n: number) => void;
+	/** Switch the automatic pressure route the next cache lookup observes. */
+	setCodexRemote: (enabled: boolean) => void;
 }
 
 function makeSession(opts: { messages: unknown[]; contextWindow?: number; usage?: ContextUsage | undefined }): Fake {
@@ -45,6 +47,7 @@ function makeSession(opts: { messages: unknown[]; contextWindow?: number; usage?
 	let usage: ContextUsage | undefined = "usage" in opts ? opts.usage : { tokens: 1234, contextWindow, percent: 0.6 };
 	let calls = 0;
 	let revision = 0;
+	let codexRemote = false;
 	const session = {
 		messages: opts.messages,
 		systemPrompt: ["You are a helpful assistant."],
@@ -75,6 +78,9 @@ function makeSession(opts: { messages: unknown[]; contextWindow?: number; usage?
 		get contextUsageRevision() {
 			return revision;
 		},
+		get usesCodexRemoteAutoCompaction() {
+			return codexRemote;
+		},
 	} as unknown as AgentSession;
 	return {
 		session,
@@ -84,6 +90,9 @@ function makeSession(opts: { messages: unknown[]; contextWindow?: number; usage?
 		},
 		setRevision: (n: number) => {
 			revision = n;
+		},
+		setCodexRemote: enabled => {
+			codexRemote = enabled;
 		},
 	};
 }
@@ -166,6 +175,21 @@ describe("StatusLineComponent context breakdown", () => {
 		comp.getCachedContextBreakdown();
 
 		expect(usageCalls()).toBe(2);
+	});
+
+	it("re-queries when Codex provider-native pressure becomes active", () => {
+		const fake = makeSession({
+			messages: [userMessage("hi")],
+			usage: { tokens: 5_000, contextWindow: 272_000, percent: 1.8 },
+		});
+		const comp = new StatusLineComponent(fake.session);
+		expect(comp.getCachedContextBreakdown().usedTokens).toBe(5_000);
+
+		fake.setUsage({ tokens: 5_500, contextWindow: 272_000, percent: 2.0 });
+		fake.setCodexRemote(true);
+
+		expect(comp.getCachedContextBreakdown().usedTokens).toBe(5_500);
+		expect(fake.usageCalls()).toBe(2);
 	});
 
 	it("re-queries when only the in-flight pending revision changes (no message change)", () => {

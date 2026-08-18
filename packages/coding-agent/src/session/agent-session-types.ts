@@ -363,6 +363,8 @@ export interface ContextUsageBreakdown {
 	contextWindow: number;
 	anchored: boolean;
 	usedTokens: number;
+	/** Provider total occupancy plus the active tail when anchored; otherwise the speculative local estimate. */
+	providerContextTokens: number;
 	systemPromptTokens: number;
 	systemToolsTokens: number;
 	systemContextTokens: number;

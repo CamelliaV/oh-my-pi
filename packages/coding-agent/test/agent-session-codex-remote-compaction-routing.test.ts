@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "bun:test";
 import { Agent } from "@oh-my-pi/pi-agent-core";
 import * as compactionModule from "@oh-my-pi/pi-agent-core/compaction";
-import type { Message, Model } from "@oh-my-pi/pi-ai";
+import type { AssistantMessage, Message, Model } from "@oh-my-pi/pi-ai";
 import { getBundledModel } from "@oh-my-pi/pi-catalog/models";
 import { ModelRegistry } from "@oh-my-pi/pi-coding-agent/config/model-registry";
 import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
@@ -97,36 +97,43 @@ describe("Codex remote compaction routing", () => {
 		}));
 	}
 
-	function triggerThreshold(current: Harness): Promise<{ action: string; errorMessage?: string }> {
+	function makeThresholdAssistant(current: Harness, contextTokens: number): AssistantMessage {
+		return {
+			role: "assistant",
+			content: [{ type: "text", text: "Done." }],
+			api: current.model.api,
+			provider: current.model.provider,
+			model: current.model.id,
+			stopReason: "stop",
+			usage: {
+				input: contextTokens,
+				output: 0,
+				cacheRead: 0,
+				cacheWrite: 0,
+				totalTokens: contextTokens,
+				cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+			},
+			timestamp: Date.now(),
+		};
+	}
+
+	function emitThresholdAssistant(current: Harness, contextTokens: number): void {
+		const assistantMessage = makeThresholdAssistant(current, contextTokens);
+		current.session.agent.emitExternalEvent({ type: "message_end", message: assistantMessage });
+		current.session.agent.emitExternalEvent({ type: "agent_end", messages: [assistantMessage] });
+	}
+
+	function triggerThreshold(
+		current: Harness,
+		contextTokens = Math.floor((current.model.contextWindow ?? 0) * 0.95),
+	): Promise<{ action: string; errorMessage?: string }> {
 		const end = Promise.withResolvers<{ action: string; errorMessage?: string }>();
 		current.session.subscribe(event => {
 			if (event.type === "auto_compaction_end") {
 				end.resolve({ action: event.action, errorMessage: event.errorMessage });
 			}
 		});
-
-		const contextWindow = current.model.contextWindow ?? 0;
-		const threshold = compactionModule.resolveThresholdTokens(contextWindow, current.settings.getGroup("compaction"));
-		const promptTokens = Math.floor((threshold + contextWindow) / 2);
-		const assistantMessage = {
-			role: "assistant" as const,
-			content: [{ type: "text" as const, text: "Done." }],
-			api: current.model.api,
-			provider: current.model.provider,
-			model: current.model.id,
-			stopReason: "stop" as const,
-			usage: {
-				input: promptTokens,
-				output: 0,
-				cacheRead: 0,
-				cacheWrite: 0,
-				totalTokens: promptTokens,
-				cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
-			},
-			timestamp: Date.now(),
-		};
-		current.session.agent.emitExternalEvent({ type: "message_end", message: assistantMessage });
-		current.session.agent.emitExternalEvent({ type: "agent_end", messages: [assistantMessage] });
+		emitThresholdAssistant(current, contextTokens);
 		return end.promise;
 	}
 
@@ -210,6 +217,121 @@ describe("Codex remote compaction routing", () => {
 			type: "compaction",
 			summary: "automatic remote Codex compaction",
 		});
+	});
+
+	it("waits for 90% provider occupancy despite an oversized stored transcript", async () => {
+		const current = await createHarness();
+		const compactSpy = vi.spyOn(compactionModule, "compact").mockImplementation(async preparation => ({
+			summary: "unexpected remote compaction",
+			firstKeptEntryId: preparation.firstKeptEntryId,
+			tokensBefore: 42,
+		}));
+		const snapcompactSpy = vi.spyOn(snapcompact, "compact");
+		const contextWindow = current.model.contextWindow ?? 0;
+		current.session.agent.state.messages.unshift({
+			role: "user",
+			content: "x".repeat(contextWindow * 5),
+			timestamp: Date.now() - 1,
+		});
+
+		emitThresholdAssistant(current, Math.floor(contextWindow * 0.88));
+		await current.session.waitForIdle();
+
+		expect(compactSpy).not.toHaveBeenCalled();
+		expect(snapcompactSpy).not.toHaveBeenCalled();
+	});
+
+	it("uses the stored-context safety floor without a provider anchor", async () => {
+		const current = await createHarness();
+		const compactSpy = vi.spyOn(compactionModule, "compact").mockImplementation(async preparation => ({
+			summary: "missing usage remote compaction",
+			firstKeptEntryId: preparation.firstKeptEntryId,
+			tokensBefore: 42,
+		}));
+		const contextWindow = current.model.contextWindow ?? 0;
+		current.session.agent.state.messages.unshift({
+			role: "user",
+			content: "x".repeat(contextWindow * 5),
+			timestamp: Date.now() - 1,
+		});
+
+		const end = triggerThreshold(current, 0);
+
+		expect(await end).toEqual({ action: "context-full", errorMessage: undefined });
+		expect(compactSpy).toHaveBeenCalledTimes(1);
+	});
+
+	it("uses the provider anchor for Codex pre-prompt pressure", async () => {
+		const current = await createHarness();
+		const compactSpy = vi.spyOn(compactionModule, "compact").mockImplementation(async preparation => ({
+			summary: "unexpected pre-prompt compaction",
+			firstKeptEntryId: preparation.firstKeptEntryId,
+			tokensBefore: 42,
+		}));
+		const promptSpy = vi.spyOn(current.session.agent, "prompt").mockResolvedValue();
+		const contextWindow = current.model.contextWindow ?? 0;
+		current.session.agent.state.messages.unshift({
+			role: "user",
+			content: "x".repeat(contextWindow * 5),
+			timestamp: Date.now() - 1,
+		});
+		const anchor = makeThresholdAssistant(current, 20);
+		current.sessionManager.appendMessage(anchor);
+		current.session.agent.state.messages.push(anchor);
+
+		await current.session.prompt("continue without compacting");
+
+		expect(promptSpy).toHaveBeenCalledTimes(1);
+		expect(compactSpy).not.toHaveBeenCalled();
+	});
+
+	it("honors an explicit threshold below the Codex remote default", async () => {
+		const current = await createHarness();
+		current.settings.set("compaction.thresholdTokens", 100);
+		const compactSpy = vi.spyOn(compactionModule, "compact").mockImplementation(async preparation => ({
+			summary: "explicit threshold remote compaction",
+			firstKeptEntryId: preparation.firstKeptEntryId,
+			tokensBefore: 42,
+		}));
+
+		const end = triggerThreshold(current, 1_000);
+
+		expect(await end).toEqual({ action: "context-full", errorMessage: undefined });
+		expect(compactSpy).toHaveBeenCalledTimes(1);
+	});
+
+	it("keeps the stored-context floor when Codex remote compaction is disabled", async () => {
+		const current = await createHarness(false);
+		const compactSpy = vi.spyOn(compactionModule, "compact");
+		const snapcompactSpy = mockSnapcompact("stored floor snapcompact");
+		const contextWindow = current.model.contextWindow ?? 0;
+		const remoteDisabledBreakdown = current.session.getContextBreakdown();
+		expect(current.session.getContextUsage()?.tokens).toBe(remoteDisabledBreakdown?.usedTokens);
+		current.session.agent.state.messages.unshift({
+			role: "user",
+			content: "x".repeat(contextWindow * 5),
+			timestamp: Date.now() - 1,
+		});
+
+		const end = triggerThreshold(current, 1_000);
+
+		expect(await end).toEqual({ action: "snapcompact", errorMessage: undefined });
+		expect(snapcompactSpy).toHaveBeenCalledTimes(1);
+		expect(compactSpy).not.toHaveBeenCalled();
+	});
+
+	it("shows Codex provider total occupancy while leaving the prompt breakdown intact", async () => {
+		const current = await createHarness();
+		const anchor = makeThresholdAssistant(current, 20);
+		anchor.usage.input = 10;
+		anchor.usage.output = 10;
+		current.sessionManager.appendMessage(anchor);
+		current.session.agent.state.messages.push(anchor);
+		const breakdown = current.session.getContextBreakdown();
+
+		expect(breakdown?.providerContextTokens).toBe((breakdown?.usedTokens ?? 0) + 10);
+		expect(current.session.getContextUsage()?.tokens).toBe(breakdown?.providerContextTokens);
+		expect(current.session.getSessionStats().contextUsage?.tokens).toBe(breakdown?.providerContextTokens);
 	});
 
 	it("falls back to snapcompact when automatic provider-native Codex compaction fails", async () => {

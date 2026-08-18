@@ -8723,7 +8723,8 @@ export class AgentSession {
 	 * Get session statistics.
 	 */
 	getSessionStats(): SessionStats {
-		return this.#stats.getSessionStats();
+		const stats = this.#stats.getSessionStats();
+		return { ...stats, contextUsage: this.getContextUsage() };
 	}
 
 	/**
@@ -8739,7 +8740,12 @@ export class AgentSession {
 	}
 
 	getContextUsage(options?: { contextWindow?: number }): ContextUsage | undefined {
-		return this.#stats.getContextUsage(options);
+		return this.#maintenance.getContextUsage(options);
+	}
+
+	/** Whether the active automatic compaction route uses Codex provider-native pressure semantics. */
+	get usesCodexRemoteAutoCompaction(): boolean {
+		return this.#maintenance.usesCodexRemoteAutoCompaction();
 	}
 
 	/**

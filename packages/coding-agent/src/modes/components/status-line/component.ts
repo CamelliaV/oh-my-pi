@@ -194,6 +194,7 @@ interface ContextUsageMemo {
 	lastFingerprint: string | undefined;
 	modelContextWindow: number;
 	contextUsageRevision: number;
+	usesCodexRemoteAutoCompaction: boolean;
 	usedTokens: number;
 	contextWindow: number;
 	systemPromptRef: readonly string[] | undefined;
@@ -409,10 +410,9 @@ export class StatusLineComponent implements Component {
 	#codexResetSnapshots = new Map<string, CodexResetUsageSnapshot>();
 	#onCodexResetFireworks: ((event: CodexResetFireworksEvent) => void) | undefined;
 	// Context-usage memo. The status line redraws on every agent event, so the
-	// hot path must not recompute context tokens unless an input changed.
-	// `getContextUsage()` anchors on the last assistant's real prompt-token
-	// count (matching the provider and the `/context` panel), so a stable
-	// message list + model window yields a stable result we can return verbatim.
+	// hot path must not recompute context tokens unless an input changed. Generic
+	// routes display the provider prompt anchor; Codex remote compaction displays
+	// the provider total-context anchor used by its automatic trigger.
 	#contextUsageCache: ContextUsageMemo | undefined;
 
 	constructor(private session: AgentSession) {
@@ -1473,11 +1473,10 @@ export class StatusLineComponent implements Component {
 	 * Used-tokens / context-window totals for the status-line context% segment,
 	 * memoized so the per-event redraw stays O(1) when nothing changed.
 	 *
-	 * The numerator comes from `session.getContextUsage()`, which anchors on the
-	 * last assistant's real prompt-token count — so the bar matches the provider
-	 * and the `/context` panel — and reports `null` while that count is unknown
-	 * (right after compaction, before the next response). Exposed (non-private)
-	 * for unit tests and the collab host's state broadcast.
+	 * The numerator comes from `session.getContextUsage()`: generic routes use
+	 * provider prompt tokens, while Codex provider-native auto-compaction uses
+	 * provider total-context tokens so visible pressure matches its trigger.
+	 * Exposed (non-private) for unit tests and the collab host's state broadcast.
 	 */
 	getCachedContextBreakdown(): { usedTokens: number; contextWindow: number } {
 		const messages = this.session.messages ?? EMPTY_MESSAGES;
@@ -1488,6 +1487,7 @@ export class StatusLineComponent implements Component {
 		// value computed mid-turn (estimate of the active tail) would survive after
 		// the turn ends/aborts, since clearing the snapshot touches no message.
 		const contextUsageRevision = this.session.contextUsageRevision ?? 0;
+		const usesCodexRemoteAutoCompaction = this.session.usesCodexRemoteAutoCompaction;
 
 		const systemPrompt = this.session.systemPrompt;
 		const tools = this.session.agent?.state?.tools;
@@ -1501,6 +1501,7 @@ export class StatusLineComponent implements Component {
 			cache.lastFingerprint === lastFingerprint &&
 			cache.modelContextWindow === modelContextWindow &&
 			cache.contextUsageRevision === contextUsageRevision &&
+			cache.usesCodexRemoteAutoCompaction === usesCodexRemoteAutoCompaction &&
 			cache.systemPromptRef === systemPrompt &&
 			cache.toolsRef === tools &&
 			cache.skillsRef === skills
@@ -1517,6 +1518,7 @@ export class StatusLineComponent implements Component {
 			lastFingerprint,
 			modelContextWindow,
 			contextUsageRevision,
+			usesCodexRemoteAutoCompaction,
 			usedTokens,
 			contextWindow,
 			systemPromptRef: systemPrompt,

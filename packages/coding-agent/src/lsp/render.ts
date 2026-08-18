@@ -10,6 +10,7 @@
 import type { RenderResultOptions } from "@oh-my-pi/pi-agent-core";
 import { type Component, Text } from "@oh-my-pi/pi-tui";
 import { getLanguageFromPath, highlightCode as highlightThemeCode, type Theme } from "../modes/theme/theme";
+import { classifyGroupedLines } from "../tools/grouped-file-output";
 import {
 	formatExpandHint,
 	formatMoreItems,
@@ -110,17 +111,19 @@ export function renderResult(
 
 	const text = content.text;
 	const lines = text.split("\n");
+	const request = args ?? result.details?.request;
+	const action = request?.action ?? result.details?.action;
 
 	// Static type detection (result content doesn't change between renders)
 	const codeBlockMatch = text.match(/```(\w*)\n([\s\S]*?)```/);
-	const errorMatch = text.match(/(\d+)\s+error\(s\)/);
-	const warningMatch = text.match(/(\d+)\s+warning\(s\)/);
+	const diagnosticSummary = parseDiagnosticSummary(text);
+	const hasStatusError = text.includes(theme.status.error);
+	const hasStatusWarning = text.includes(theme.status.warning);
+	const isDiagnostics = action === "diagnostics" || diagnosticSummary.hasCounts || hasStatusError;
 	const refMatch = text.match(/(\d+)\s+reference\(s\)/);
 	const symbolsMatch = text.match(/Symbols in (.+):/);
-	const hasStatusError = text.includes(theme.status.error);
 
 	// Static request info
-	const request = args ?? result.details?.request;
 	const requestLines: string[] = [];
 	if (request?.file) {
 		requestLines.push(theme.fg("toolOutput", request.file));
@@ -150,22 +153,22 @@ export function renderResult(
 			if (codeBlockMatch) {
 				label = "Hover";
 				bodyLines = renderHover(codeBlockMatch, text, lines, expanded, theme);
-			} else if (errorMatch || warningMatch || hasStatusError) {
+			} else if (isDiagnostics) {
 				label = "Diagnostics";
-				const errorCount = errorMatch ? Number.parseInt(errorMatch[1], 10) : 0;
-				const warnCount = warningMatch ? Number.parseInt(warningMatch[1], 10) : 0;
-				state = errorCount > 0 ? "error" : warnCount > 0 ? "warning" : "success";
-				bodyLines = renderDiagnostics(errorMatch, warningMatch, lines, expanded, theme);
+				const diagnosticsFailed =
+					result.isError ||
+					result.details?.success === false ||
+					hasStatusError ||
+					diagnosticSummary.counts.error > 0;
+				const diagnosticsWarned = hasStatusWarning || diagnosticSummary.counts.warning > 0;
+				state = diagnosticsFailed ? "error" : diagnosticsWarned ? "warning" : "success";
+				bodyLines = renderDiagnostics(diagnosticSummary, lines, expanded, theme, state, text.trim() === "OK");
 			} else if (refMatch) {
 				label = "References";
 				bodyLines = renderReferences(refMatch, lines, expanded, theme);
 			} else if (symbolsMatch) {
 				label = "Symbols";
 				bodyLines = renderSymbols(symbolsMatch, lines, expanded, theme);
-			} else if (result.details?.action === "diagnostics" && text === "OK") {
-				label = "Diagnostics";
-				state = "success";
-				bodyLines = [`${theme.styledSymbol("tool.lsp", "accent")} ${theme.fg("dim", "OK")}`];
 			} else {
 				label = "Response";
 				bodyLines = renderGeneric(text, lines, expanded, theme);
@@ -184,7 +187,7 @@ export function renderResult(
 					state,
 					sections: [
 						...(requestLines.length > 0 ? [{ lines: requestLines }] : []),
-						{ label: theme.fg("toolTitle", "Response"), lines: bodyLines },
+						{ label: theme.fg("toolTitle", label), lines: bodyLines },
 					],
 					width,
 					applyBg: false,
@@ -287,45 +290,41 @@ function formatDiagnosticLocation(file: string, line: string | number, col: stri
  * Render diagnostics with color-coded severity.
  */
 function renderDiagnostics(
-	errorMatch: RegExpMatchArray | null,
-	warningMatch: RegExpMatchArray | null,
+	summary: DiagnosticSummary,
 	lines: string[],
 	expanded: boolean,
 	theme: Theme,
+	state: "success" | "warning" | "error",
+	isClean: boolean,
 ): string[] {
-	const errorCount = errorMatch ? Number.parseInt(errorMatch[1], 10) : 0;
-	const warnCount = warningMatch ? Number.parseInt(warningMatch[1], 10) : 0;
-
 	const icon =
-		errorCount > 0
+		state === "error"
 			? theme.styledSymbol("status.error", "error")
-			: warnCount > 0
+			: state === "warning"
 				? theme.styledSymbol("status.warning", "warning")
 				: theme.styledSymbol("tool.lsp", "accent");
 
 	const meta: string[] = [];
-	if (errorCount > 0) meta.push(`${errorCount} error${errorCount !== 1 ? "s" : ""}`);
-	if (warnCount > 0) meta.push(`${warnCount} warning${warnCount !== 1 ? "s" : ""}`);
-	if (meta.length === 0) meta.push("No issues");
+	const { counts } = summary;
+	if (counts.error > 0) meta.push(`${counts.error} error${counts.error !== 1 ? "s" : ""}`);
+	if (counts.warning > 0) meta.push(`${counts.warning} warning${counts.warning !== 1 ? "s" : ""}`);
+	if (counts.info > 0) meta.push(`${counts.info} info`);
+	if (counts.hint > 0) meta.push(`${counts.hint} hint${counts.hint !== 1 ? "s" : ""}`);
+	if (isClean) meta.push("No issues");
 
-	const diagLines = lines.filter(l => l.includes(theme.status.error) || /:\d+:\d+/.test(l));
-	const parsedDiagnostics = diagLines
-		.map(line => parseDiagnosticLine(line))
-		.filter((diag): diag is ParsedDiagnostic => diag !== null);
-	const fallbackDiagnostics: RawDiagnostic[] = diagLines.map(line => ({
-		raw: sanitizeDiagnosticDisplayText(line.trim()),
-	}));
+	const items = isClean ? [] : parseDiagnosticItems(getDiagnosticDetailLines(lines));
+	const metaText = meta.length > 0 ? ` ${theme.fg("dim", meta.join(theme.sep.dot))}` : "";
 
 	if (expanded) {
-		let output = `${icon} ${theme.fg("dim", meta.join(theme.sep.dot))}`;
-		const items: DiagnosticItem[] = parsedDiagnostics.length > 0 ? parsedDiagnostics : fallbackDiagnostics;
+		let output = `${icon}${metaText}`;
 		for (let i = 0; i < items.length; i++) {
 			const item = items[i];
 			const isLast = i === items.length - 1;
 			const branch = isLast ? theme.tree.last : theme.tree.branch;
 			const detailPrefix = isLast ? "   " : `${theme.tree.vertical}  `;
 			if ("raw" in item) {
-				output += `\n ${theme.fg("dim", branch)} ${theme.fg("muted", item.raw)}`;
+				const raw = truncateToWidth(item.raw, TRUNCATE_LENGTHS.LINE);
+				output += `\n ${theme.fg("dim", branch)} ${theme.fg("muted", raw)}`;
 				continue;
 			}
 			const severityColor = severityToColor(item.severity);
@@ -344,19 +343,17 @@ function renderDiagnostics(
 		return output.split("\n");
 	}
 
-	// Collapsed view
-	const previewItems: DiagnosticItem[] =
-		parsedDiagnostics.length > 0 ? parsedDiagnostics.slice(0, 3) : fallbackDiagnostics.slice(0, 3);
-	const remaining =
-		(parsedDiagnostics.length > 0 ? parsedDiagnostics.length : fallbackDiagnostics.length) - previewItems.length;
+	const previewItems = items.slice(0, 3);
+	const remaining = items.length - previewItems.length;
 	const expandHint = formatExpandHint(theme, expanded, remaining > 0);
-	let output = `${icon} ${theme.fg("dim", meta.join(theme.sep.dot))}${expandHint}`;
+	let output = `${icon}${metaText}${expandHint}`;
 	for (let i = 0; i < previewItems.length; i++) {
 		const item = previewItems[i];
 		const isLast = i === previewItems.length - 1 && remaining <= 0;
 		const branch = isLast ? theme.tree.last : theme.tree.branch;
 		if ("raw" in item) {
-			output += `\n ${theme.fg("dim", branch)} ${theme.fg("muted", item.raw)}`;
+			const raw = truncateToWidth(item.raw, TRUNCATE_LENGTHS.CONTENT);
+			output += `\n ${theme.fg("dim", branch)} ${theme.fg("muted", raw)}`;
 			continue;
 		}
 		const severityColor = severityToColor(item.severity);
@@ -616,6 +613,18 @@ function renderGeneric(text: string, lines: string[], expanded: boolean, theme: 
 // Parsing Helpers
 // =============================================================================
 
+interface DiagnosticCounts {
+	error: number;
+	warning: number;
+	info: number;
+	hint: number;
+}
+
+interface DiagnosticSummary {
+	counts: DiagnosticCounts;
+	hasCounts: boolean;
+}
+
 interface ParsedDiagnostic {
 	file: string;
 	line: string;
@@ -634,10 +643,99 @@ function sanitizeDiagnosticDisplayText(text: string): string {
 	return replaceTabs(text);
 }
 
+function parseDiagnosticSummary(text: string): DiagnosticSummary {
+	const counts: DiagnosticCounts = { error: 0, warning: 0, info: 0, hint: 0 };
+	let hasCounts = false;
+	for (const match of text.matchAll(/(\d+)\s+(error|warning|info|hint)\(s\)/gi)) {
+		const severity = match[2].toLowerCase() as keyof DiagnosticCounts;
+		counts[severity] += Number.parseInt(match[1], 10);
+		hasCounts = true;
+	}
+	return { counts, hasCounts };
+}
+
+function isDiagnosticSummaryLine(line: string): boolean {
+	const normalized = line
+		.trim()
+		.replace(/^Diagnostics:\s*/i, "")
+		.replace(/:$/, "")
+		.trim();
+	return /^(?:\d+\s+(?:error|warning|info|hint)\(s\))(?:\s*,\s*\d+\s+(?:error|warning|info|hint)\(s\))*$/i.test(
+		normalized,
+	);
+}
+
+function getDiagnosticDetailLines(lines: string[]): string[] {
+	const start = lines[0] && isDiagnosticSummaryLine(lines[0]) ? 1 : 0;
+	return lines.slice(start).filter(line => line.trim().length > 0);
+}
+
+function joinGroupedDisplayPath(parent: string | undefined, child: string): string {
+	if (!parent || child.startsWith("/") || /^[A-Za-z]:\//.test(child)) return child;
+	return `${parent.replace(/\/+$/, "")}/${child.replace(/^\/+/, "")}`;
+}
+
+function parseDiagnosticItems(lines: string[]): DiagnosticItem[] {
+	const contexts = classifyGroupedLines(lines, undefined, undefined);
+	const directoryAtDepth = new Map<number, string>();
+	const items: DiagnosticItem[] = [];
+	let currentFile: string | undefined;
+
+	for (let index = 0; index < lines.length; index++) {
+		const line = lines[index];
+		const context = contexts[index];
+		if (context.kind !== "content") {
+			const header = /^(#+)\s+(.*)$/.exec(line);
+			if (!header) {
+				items.push({ raw: sanitizeDiagnosticDisplayText(line.trim()) });
+				continue;
+			}
+
+			const depth = context.depth;
+			const parent = depth > 1 ? directoryAtDepth.get(depth - 1) : undefined;
+			for (const storedDepth of directoryAtDepth.keys()) {
+				if (storedDepth >= depth) directoryAtDepth.delete(storedDepth);
+			}
+			const rawName = sanitizeDiagnosticDisplayText(header[2].trimEnd());
+			const name = context.kind === "dir" ? rawName.replace(/\/$/, "") : rawName;
+			const displayPath = joinGroupedDisplayPath(parent, name);
+			if (context.kind === "dir") {
+				directoryAtDepth.set(depth, displayPath);
+				currentFile = undefined;
+			} else {
+				currentFile = displayPath;
+			}
+			continue;
+		}
+
+		const item =
+			parseDiagnosticLine(line) ??
+			parseGroupedDiagnosticLine(line, currentFile) ??
+			({ raw: sanitizeDiagnosticDisplayText(line.trim()) } satisfies RawDiagnostic);
+		items.push(item);
+	}
+
+	return items;
+}
+
 function parseDiagnosticLine(line: string): ParsedDiagnostic | null {
 	const match = line.trim().match(/^(.*):(\d+):(\d+)\s+\[(\w+)\]\s*(.*)$/);
 	if (!match) return null;
 	const [, file, lineNum, colNum, severity, message] = match;
+	return {
+		file: sanitizeDiagnosticDisplayText(file),
+		line: lineNum,
+		col: colNum,
+		severity: severity.toLowerCase(),
+		message: sanitizeDiagnosticDisplayText(message),
+	};
+}
+
+function parseGroupedDiagnosticLine(line: string, file: string | undefined): ParsedDiagnostic | null {
+	if (!file) return null;
+	const match = line.trim().match(/^(\d+):(\d+)\s+\[(\w+)\]\s*(.*)$/);
+	if (!match) return null;
+	const [, lineNum, colNum, severity, message] = match;
 	return {
 		file: sanitizeDiagnosticDisplayText(file),
 		line: lineNum,

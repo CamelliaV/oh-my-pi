@@ -92,6 +92,28 @@ export type Provider = string;
 /** Token budgets for each thinking level (token-based providers only) */
 export type ThinkingBudgets = { [key in Effort]?: number };
 
+export type UsageTelemetryStatus = "reported" | "unavailable" | "not-applicable";
+
+/** Whether the provider supplied authoritative cache bucket values for a request. */
+export interface UsageCacheTelemetry {
+	read: UsageTelemetryStatus;
+	write: UsageTelemetryStatus;
+}
+
+/** Provenance for the cost attached to a normalized usage record. */
+export interface UsageCostTelemetry {
+	source: "provider" | "catalog" | "unavailable";
+	/** Catalog-rate estimate retained when a provider-reported amount supersedes it. */
+	estimatedTotal?: number;
+	/** Active per-million-token rates used for the catalog estimate. */
+	rates?: {
+		input: number;
+		output: number;
+		cacheRead: number;
+		cacheWrite: number;
+	};
+}
+
 export interface Usage {
 	/** Non-cached conversation input tokens (matches the bucket the provider bills as new input). */
 	input: number;
@@ -141,6 +163,8 @@ export interface Usage {
 		webSearch?: number;
 		webFetch?: number;
 	};
+	/** Raw provider cache-bucket availability; missing means legacy/unknown. */
+	cacheTelemetry?: UsageCacheTelemetry;
 	cost: {
 		input: number;
 		output: number;
@@ -148,6 +172,7 @@ export interface Usage {
 		cacheWrite: number;
 		total: number;
 	};
+	costTelemetry?: UsageCostTelemetry;
 }
 
 export type OpenAIReasoningFormat = "openai" | "openrouter" | "zai" | "kimi" | "qwen" | "qwen-chat-template";

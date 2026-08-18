@@ -706,6 +706,10 @@ function handleMetadata(event: MetadataEvent, model: Model<"bedrock-converse-str
 		output.usage.output = event.usage.outputTokens || 0;
 		output.usage.cacheRead = event.usage.cacheReadInputTokens || 0;
 		output.usage.cacheWrite = event.usage.cacheWriteInputTokens || 0;
+		output.usage.cacheTelemetry = {
+			read: typeof event.usage.cacheReadInputTokens === "number" ? "reported" : "unavailable",
+			write: typeof event.usage.cacheWriteInputTokens === "number" ? "reported" : "unavailable",
+		};
 		output.usage.totalTokens = event.usage.totalTokens || output.usage.input + output.usage.output;
 		calculateCost(model, output.usage);
 	}

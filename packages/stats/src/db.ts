@@ -70,7 +70,16 @@ interface AggregatedStatsRow {
 	total_cache_read_tokens: number | null;
 	total_cache_write_tokens: number | null;
 	total_premium_requests: number | null;
+	reported_cache_read_tokens: number | null;
+	reported_cache_prompt_tokens: number | null;
+	cache_telemetry_requests: number | null;
+	cache_eligible_requests: number | null;
 	total_cost: number | null;
+	actual_cost: number | null;
+	estimated_cost: number | null;
+	actual_cost_requests: number | null;
+	estimated_cost_requests: number | null;
+	unknown_cost_requests: number | null;
 	total_cached_prompt_cost: number | null;
 	total_no_cache_input_cost: number | null;
 	avg_duration: number | null;
@@ -84,6 +93,37 @@ interface ModelStatsRow extends AggregatedStatsRow {
 	model: string;
 	provider: string;
 }
+
+const CACHE_TELEMETRY_SELECT = `
+	SUM(CASE
+		WHEN cache_read_status = 'reported'
+			AND cache_write_status IN ('reported', 'not-applicable')
+			AND input_tokens + cache_read_tokens + cache_write_tokens > 0
+		THEN cache_read_tokens ELSE 0 END) as reported_cache_read_tokens,
+	SUM(CASE
+		WHEN cache_read_status = 'reported'
+			AND cache_write_status IN ('reported', 'not-applicable')
+			AND input_tokens + cache_read_tokens + cache_write_tokens > 0
+		THEN input_tokens + cache_read_tokens + cache_write_tokens ELSE 0 END) as reported_cache_prompt_tokens,
+	SUM(CASE
+		WHEN cache_read_status = 'reported'
+			AND cache_write_status IN ('reported', 'not-applicable')
+			AND input_tokens + cache_read_tokens + cache_write_tokens > 0
+		THEN 1 ELSE 0 END) as cache_telemetry_requests,
+	SUM(CASE WHEN input_tokens + cache_read_tokens + cache_write_tokens > 0 THEN 1 ELSE 0 END)
+		as cache_eligible_requests`;
+
+const COST_TELEMETRY_SELECT = `
+	SUM(CASE WHEN cost_source = 'provider' THEN cost_total ELSE 0 END) as actual_cost,
+	SUM(CASE
+		WHEN cost_estimated_total IS NOT NULL THEN cost_estimated_total
+		WHEN cost_source = 'catalog' THEN cost_total
+		ELSE 0 END) as estimated_cost,
+	SUM(CASE WHEN cost_source = 'provider' THEN 1 ELSE 0 END) as actual_cost_requests,
+	SUM(CASE WHEN cost_source = 'catalog' OR cost_estimated_total IS NOT NULL THEN 1 ELSE 0 END)
+		as estimated_cost_requests,
+	SUM(CASE WHEN cost_source IS NULL OR cost_source = 'unavailable' THEN 1 ELSE 0 END)
+		as unknown_cost_requests`;
 
 interface FolderStatsRow extends AggregatedStatsRow {
 	folder: string;
@@ -141,6 +181,8 @@ export async function initDb(): Promise<Database> {
 			output_tokens INTEGER NOT NULL,
 			cache_read_tokens INTEGER NOT NULL,
 			cache_write_tokens INTEGER NOT NULL,
+			cache_read_status TEXT,
+			cache_write_status TEXT,
 			total_tokens INTEGER NOT NULL,
 			premium_requests REAL NOT NULL,
 			cost_input REAL NOT NULL,
@@ -148,6 +190,8 @@ export async function initDb(): Promise<Database> {
 			cost_cache_read REAL NOT NULL,
 			cost_cache_write REAL NOT NULL,
 			cost_total REAL NOT NULL,
+			cost_source TEXT,
+			cost_estimated_total REAL,
 			cost_no_cache_input REAL,
 			agent_type TEXT NOT NULL DEFAULT 'main',
 			UNIQUE(session_file, entry_id)
@@ -222,6 +266,18 @@ export async function initDb(): Promise<Database> {
 	}
 	if (!messageColumns.some(column => column.name === "cost_no_cache_input")) {
 		db.run("ALTER TABLE messages ADD COLUMN cost_no_cache_input REAL");
+	}
+	if (!messageColumns.some(column => column.name === "cache_read_status")) {
+		db.run("ALTER TABLE messages ADD COLUMN cache_read_status TEXT");
+	}
+	if (!messageColumns.some(column => column.name === "cache_write_status")) {
+		db.run("ALTER TABLE messages ADD COLUMN cache_write_status TEXT");
+	}
+	if (!messageColumns.some(column => column.name === "cost_source")) {
+		db.run("ALTER TABLE messages ADD COLUMN cost_source TEXT");
+	}
+	if (!messageColumns.some(column => column.name === "cost_estimated_total")) {
+		db.run("ALTER TABLE messages ADD COLUMN cost_estimated_total REAL");
 	}
 	db.run("UPDATE messages SET premium_requests = 0 WHERE premium_requests IS NULL");
 	// Token-usage-by-agent: each message is classified main / subagent / advisor
@@ -389,7 +445,8 @@ function backfillMissingCatalogCosts(database: Database): void {
 
 	const update = database.prepare(`
 		UPDATE messages
-		SET cost_input = ?, cost_output = ?, cost_cache_read = ?, cost_cache_write = ?, cost_total = ?
+		SET cost_input = ?, cost_output = ?, cost_cache_read = ?, cost_cache_write = ?, cost_total = ?,
+			cost_source = 'catalog', cost_estimated_total = ?
 		WHERE id = ?
 	`);
 
@@ -404,7 +461,7 @@ function backfillMissingCatalogCosts(database: Database): void {
 
 			if (!cost || cost.total === 0) continue;
 
-			update.run(cost.input, cost.output, cost.cacheRead, cost.cacheWrite, cost.total, row.id);
+			update.run(cost.input, cost.output, cost.cacheRead, cost.cacheWrite, cost.total, cost.total, row.id);
 		}
 	});
 
@@ -483,17 +540,27 @@ export function insertMessageStats(stats: MessageStats[]): number {
 		INSERT INTO messages (
 			session_file, entry_id, folder, model, provider, api, timestamp,
 			duration, ttft, stop_reason, error_message,
-			input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, total_tokens, premium_requests,
-			cost_input, cost_output, cost_cache_read, cost_cache_write, cost_total, cost_no_cache_input, agent_type
+			input_tokens, output_tokens, cache_read_tokens, cache_write_tokens,
+			cache_read_status, cache_write_status, total_tokens, premium_requests,
+			cost_input, cost_output, cost_cache_read, cost_cache_write, cost_total,
+			cost_source, cost_estimated_total, cost_no_cache_input, agent_type
 		)
-		SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+		SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
 		WHERE NOT EXISTS (
 			SELECT 1 FROM messages
 			WHERE entry_id = ? AND timestamp = ? AND session_file <> ?
 		)
 		ON CONFLICT(session_file, entry_id) DO UPDATE SET
-			premium_requests = excluded.premium_requests
+			premium_requests = MAX(messages.premium_requests, excluded.premium_requests),
+			cache_read_status = COALESCE(excluded.cache_read_status, messages.cache_read_status),
+			cache_write_status = COALESCE(excluded.cache_write_status, messages.cache_write_status),
+			cost_source = COALESCE(excluded.cost_source, messages.cost_source),
+			cost_estimated_total = COALESCE(excluded.cost_estimated_total, messages.cost_estimated_total)
 		WHERE messages.premium_requests < excluded.premium_requests
+			OR (excluded.cache_read_status IS NOT NULL AND messages.cache_read_status IS NOT excluded.cache_read_status)
+			OR (excluded.cache_write_status IS NOT NULL AND messages.cache_write_status IS NOT excluded.cache_write_status)
+			OR (excluded.cost_source IS NOT NULL AND messages.cost_source IS NOT excluded.cost_source)
+			OR (excluded.cost_estimated_total IS NOT NULL AND messages.cost_estimated_total IS NOT excluded.cost_estimated_total)
 	`);
 
 	let inserted = 0;
@@ -501,6 +568,10 @@ export function insertMessageStats(stats: MessageStats[]): number {
 		for (const s of stats) {
 			const cost = resolveStoredCost(s);
 			const noCacheInputCost = calculateNoCacheInputCost(s.provider, s.model, s.usage) ?? 0;
+			const telemetrySource = s.usage.costTelemetry?.source;
+			const catalogDerived = telemetrySource === undefined && (s.usage.cost?.total ?? 0) === 0 && cost.total > 0;
+			const costSource = telemetrySource ?? (catalogDerived ? "catalog" : "unavailable");
+			const estimatedCost = s.usage.costTelemetry?.estimatedTotal ?? (costSource === "catalog" ? cost.total : null);
 			const result = stmt.run(
 				s.sessionFile,
 				s.entryId,
@@ -517,6 +588,8 @@ export function insertMessageStats(stats: MessageStats[]): number {
 				s.usage.output,
 				s.usage.cacheRead,
 				s.usage.cacheWrite,
+				s.usage.cacheTelemetry?.read ?? null,
+				s.usage.cacheTelemetry?.write ?? null,
 				s.usage.totalTokens,
 				s.usage.premiumRequests ?? 0,
 				cost.input,
@@ -524,6 +597,8 @@ export function insertMessageStats(stats: MessageStats[]): number {
 				cost.cacheRead,
 				cost.cacheWrite,
 				cost.total,
+				costSource,
+				estimatedCost,
 				noCacheInputCost,
 				s.agentType,
 				// `WHERE NOT EXISTS` binds: skip when a different session_file
@@ -554,8 +629,15 @@ function buildAggregatedStats(rows: AggregatedStatsRow[]): AggregatedStats {
 			totalOutputTokens: 0,
 			totalCacheReadTokens: 0,
 			totalCacheWriteTokens: 0,
-			cacheRate: 0,
+			cacheRate: null,
+			cacheTelemetryRequests: 0,
+			cacheEligibleRequests: 0,
 			cacheSavings: 0,
+			actualCost: 0,
+			estimatedCost: 0,
+			actualCostRequests: 0,
+			estimatedCostRequests: 0,
+			unknownCostRequests: 0,
 			totalCost: 0,
 			totalPremiumRequests: 0,
 			avgDuration: null,
@@ -575,6 +657,9 @@ function buildAggregatedStats(rows: AggregatedStatsRow[]): AggregatedStats {
 	const totalPremiumRequests = row.total_premium_requests || 0;
 	const noCacheInputCost = row.total_no_cache_input_cost || 0;
 	const cachedPromptCost = row.total_cached_prompt_cost || 0;
+	const reportedCachePromptTokens = row.reported_cache_prompt_tokens || 0;
+	const cacheTelemetryRequests = row.cache_telemetry_requests || 0;
+	const cacheEligibleRequests = row.cache_eligible_requests || 0;
 
 	return {
 		totalRequests,
@@ -586,10 +671,15 @@ function buildAggregatedStats(rows: AggregatedStatsRow[]): AggregatedStats {
 		totalCacheReadTokens,
 		totalCacheWriteTokens: row.total_cache_write_tokens || 0,
 		cacheRate:
-			totalInputTokens + totalCacheReadTokens > 0
-				? totalCacheReadTokens / (totalInputTokens + totalCacheReadTokens)
-				: 0,
+			reportedCachePromptTokens > 0 ? (row.reported_cache_read_tokens || 0) / reportedCachePromptTokens : null,
+		cacheTelemetryRequests,
+		cacheEligibleRequests,
 		cacheSavings: noCacheInputCost > 0 ? (noCacheInputCost - cachedPromptCost) / noCacheInputCost : 0,
+		actualCost: row.actual_cost || 0,
+		estimatedCost: row.estimated_cost || 0,
+		actualCostRequests: row.actual_cost_requests || 0,
+		estimatedCostRequests: row.estimated_cost_requests || 0,
+		unknownCostRequests: row.unknown_cost_requests || 0,
 		totalCost: row.total_cost || 0,
 		totalPremiumRequests,
 		avgDuration: row.avg_duration,
@@ -615,7 +705,9 @@ export function getOverallStats(cutoff?: number): AggregatedStats {
 			SUM(output_tokens) as total_output_tokens,
 			SUM(cache_read_tokens) as total_cache_read_tokens,
 			SUM(cache_write_tokens) as total_cache_write_tokens,
+			${CACHE_TELEMETRY_SELECT},
 			SUM(premium_requests) as total_premium_requests,
+			${COST_TELEMETRY_SELECT},
 			SUM(cost_total) as total_cost,
 			SUM(CASE WHEN cost_no_cache_input > 0
 				THEN cost_input + cost_cache_read + cost_cache_write
@@ -650,7 +742,9 @@ export function getStatsByModel(cutoff?: number): ModelStats[] {
 			SUM(output_tokens) as total_output_tokens,
 			SUM(cache_read_tokens) as total_cache_read_tokens,
 			SUM(cache_write_tokens) as total_cache_write_tokens,
+			${CACHE_TELEMETRY_SELECT},
 			SUM(premium_requests) as total_premium_requests,
+			${COST_TELEMETRY_SELECT},
 			SUM(cost_total) as total_cost,
 			SUM(CASE WHEN cost_no_cache_input > 0
 				THEN cost_input + cost_cache_read + cost_cache_write
@@ -691,7 +785,9 @@ export function getStatsByFolder(cutoff?: number): FolderStats[] {
 			SUM(output_tokens) as total_output_tokens,
 			SUM(cache_read_tokens) as total_cache_read_tokens,
 			SUM(cache_write_tokens) as total_cache_write_tokens,
+			${CACHE_TELEMETRY_SELECT},
 			SUM(premium_requests) as total_premium_requests,
+			${COST_TELEMETRY_SELECT},
 			SUM(cost_total) as total_cost,
 			SUM(CASE WHEN cost_no_cache_input > 0
 				THEN cost_input + cost_cache_read + cost_cache_write
@@ -1047,6 +1143,14 @@ function rowToMessageStats(row: any): MessageStats {
 			cacheWrite: row.cache_write_tokens,
 			totalTokens: row.total_tokens,
 			premiumRequests: row.premium_requests ?? 0,
+			...(row.cache_read_status && row.cache_write_status
+				? {
+						cacheTelemetry: {
+							read: row.cache_read_status as "reported" | "unavailable" | "not-applicable",
+							write: row.cache_write_status as "reported" | "unavailable" | "not-applicable",
+						},
+					}
+				: {}),
 			cost: {
 				input: row.cost_input,
 				output: row.cost_output,
@@ -1054,6 +1158,16 @@ function rowToMessageStats(row: any): MessageStats {
 				cacheWrite: row.cost_cache_write,
 				total: row.cost_total,
 			},
+			...(row.cost_source
+				? {
+						costTelemetry: {
+							source: row.cost_source as "provider" | "catalog" | "unavailable",
+							...(typeof row.cost_estimated_total === "number"
+								? { estimatedTotal: row.cost_estimated_total }
+								: {}),
+						},
+					}
+				: {}),
 		},
 		agentType: (row.agent_type as AgentType) ?? "main",
 	};

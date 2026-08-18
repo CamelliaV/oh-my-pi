@@ -36,10 +36,6 @@ import { ToolActivityContainer } from "../../modes/components/tool-activity";
 import { ToolExecutionComponent, type ToolExecutionHandle } from "../../modes/components/tool-execution";
 import { TranscriptBlock, TranscriptContainer } from "../../modes/components/transcript-container";
 import { createUsageRowBlock } from "../../modes/components/usage-row";
-import {
-	createTurnUsageRowBlock,
-	TurnUsageAccumulator,
-} from "../../modes/components/turn-usage";
 import { UserMessageComponent } from "../../modes/components/user-message";
 import { decodeStreamedToolArgs, streamingStringKeysForTool } from "../../modes/controllers/tool-args-reveal";
 import { materializeImageReferenceLinksSync } from "../../modes/image-references";
@@ -55,6 +51,7 @@ import {
 } from "../../session/messages";
 import type { SessionContext, StrippedToolCallsMarker } from "../../session/session-context";
 import { replaceTabs } from "../../tools/render-utils";
+import { createWorkUsageRowBlock, WorkUsageAccumulator } from "../components/work-usage";
 import { buildSkillCommandPrompt, invokeSkillCommandFromText, isKnownSkillCommand } from "../skill-command";
 import { createAssistantMessageComponent } from "./interactive-context-helpers";
 import {
@@ -371,13 +368,13 @@ export class UiHelpers {
 		let readGroup: ReadToolGroupComponent | null = null;
 		const readToolCallArgs = new Map<string, Record<string, unknown>>();
 		const readToolCallAssistantComponents = new Map<string, AssistantMessageComponent>();
-		// Defer per-turn metrics until the turn's tool results have materialized.
-		// Read-only invisible turns attach the metrics to their shared compact
-		// group; every other turn keeps the standalone row below its tool blocks.
-		const turnUsage = new TurnUsageAccumulator();
-		const flushTurnUsage = () => {
-			const snapshot = turnUsage.flush();
-			if (snapshot) this.ctx.chatContainer.addChild(createTurnUsageRowBlock(snapshot));
+		// Defer per-request metrics until the request's tool results have materialized.
+		// Read-only invisible requests attach metrics to their shared compact group;
+		// every other request keeps the standalone row below its tool blocks.
+		const workUsage = new WorkUsageAccumulator();
+		const flushWorkUsage = () => {
+			const snapshot = workUsage.flush();
+			if (snapshot) this.ctx.chatContainer.addChild(createWorkUsageRowBlock(snapshot));
 		};
 		let pendingUsage: Usage | undefined;
 		let pendingUsageDuration: number | undefined;
@@ -615,8 +612,9 @@ export class UiHelpers {
 				pendingUsageTtft = message.ttft;
 				pendingUsageTimestamp = message.timestamp;
 				pendingReadUsageCallIds = pendingUsage ? groupedReadUsageCallIds(message) : undefined;
-				if (assistantUsageIsBilled(message.usage)) turnUsage.add(message.usage, message.timestamp);
+				if (assistantUsageIsBilled(message.usage)) workUsage.add(message);
 			} else if (message.role === "toolResult") {
+				workUsage.addToolResult(message);
 				if (options.preservedLiveToolCallIds?.has(message.toolCallId)) continue;
 				const pendingReadComponent = this.ctx.pendingTools.get(message.toolCallId);
 				const isReadGroupResult =
@@ -688,13 +686,16 @@ export class UiHelpers {
 				// A user prompt closes the displacement window, same as the live path.
 				if (message.role === "user") resolveWaitingPoll();
 				if (message.role === "user") resolveTodoSnapshot();
-				if (message.role === "user") flushTurnUsage();
+				if (message.role === "user") {
+					flushWorkUsage();
+					workUsage.begin(message.timestamp);
+				}
 				// All other messages use standard rendering
 				this.ctx.addMessageToChat(message, options);
 			}
 		}
 		flushPendingUsage();
-		flushTurnUsage();
+		flushWorkUsage();
 
 		// The trailing read run has no following break to close it; seal so the
 		// rebuilt group freezes (even with a never-persisted result) and commits to

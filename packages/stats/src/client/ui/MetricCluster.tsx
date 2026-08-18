@@ -1,4 +1,5 @@
 import {
+	formatCacheCoverage,
 	formatCompact,
 	formatCost,
 	formatDurationMs,
@@ -15,15 +16,20 @@ export interface MetricClusterProps {
 
 export function MetricCluster({ stats }: MetricClusterProps) {
 	const conversationTokens = sumConversationTokens(stats);
+	const costParts: string[] = [];
+	if (stats.actualCostRequests > 0) costParts.push(`${formatCost(stats.actualCost)} actual`);
+	if (stats.estimatedCostRequests > 0) costParts.push(`~${formatCost(stats.estimatedCost)} estimate`);
+	if (stats.unknownCostRequests > 0) costParts.push(`${formatInteger(stats.unknownCostRequests)} req N/A`);
+	if (costParts.length === 0) costParts.push(formatCost(stats.totalCost));
 
 	return (
 		<div className="stats-metric-cluster">
 			<div className="stats-metric-primary-grid">
 				<div className="stats-metric-card primary">
-					<div className="stats-metric-label">Total Cost</div>
-					<div className="stats-metric-value">
-						{formatCost(stats.totalCost, stats.totalCost > 0 && stats.totalCost < 0.01 ? 4 : 2)}
+					<div className="stats-metric-label">
+						Cost · A{stats.actualCostRequests}/E{stats.estimatedCostRequests}/?{stats.unknownCostRequests}
 					</div>
+					<div className="stats-metric-value">{costParts.join(" / ")}</div>
 				</div>
 				<div className="stats-metric-card primary">
 					<div className="stats-metric-label">Requests</div>
@@ -38,9 +44,11 @@ export function MetricCluster({ stats }: MetricClusterProps) {
 				</div>
 				<div
 					className="stats-metric-card primary"
-					title="Prompt input served from cache: cache reads / (uncached input + cache reads)"
+					title="Provider-reported prompt cache reads / (uncached input + cache reads + cache writes)"
 				>
-					<div className="stats-metric-label">Cache Rate</div>
+					<div className="stats-metric-label">
+						Cache Rate · {formatCacheCoverage(stats.cacheTelemetryRequests, stats.cacheEligibleRequests)}
+					</div>
 					<div className="stats-metric-value">{formatPercent(stats.cacheRate)}</div>
 				</div>
 				<div className="stats-metric-card primary">

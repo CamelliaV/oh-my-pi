@@ -64,6 +64,21 @@ export function calculateCost<TApi extends Api>(model: Model<TApi>, usage: Usage
 	usage.cost.cacheRead = (rates.cacheRead / 1000000) * (usage.cacheRead + (orchestration?.cacheRead ?? 0));
 	usage.cost.cacheWrite = cacheWriteCost(rates, usage);
 	usage.cost.total = usage.cost.input + usage.cost.output + usage.cost.cacheRead + usage.cost.cacheWrite;
+	const hasRates = rates.input !== 0 || rates.output !== 0 || rates.cacheRead !== 0 || rates.cacheWrite !== 0;
+	usage.costTelemetry = {
+		source: hasRates ? "catalog" : "unavailable",
+		...(hasRates
+			? {
+					estimatedTotal: usage.cost.total,
+					rates: {
+						input: rates.input,
+						output: rates.output,
+						cacheRead: rates.cacheRead,
+						cacheWrite: rates.cacheWrite,
+					},
+				}
+			: {}),
+	};
 	return usage.cost;
 }
 

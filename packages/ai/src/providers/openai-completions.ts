@@ -70,15 +70,15 @@ import type {
 import {
 	applyOpenAIReasoningEffortFallback,
 	clearOpenAIReasoningEffortFallbackState,
+	completionsParamsContainThinkTags,
 	createOpenAIReasoningEffortFallbackKey,
 	createOpenAIReasoningEffortFallbackState,
 	getOpenAIReasoningEffortFallback,
+	isAlwaysThinkingRejection,
 	type OpenAIReasoningEffortFallback,
 	type OpenAIReasoningEffortFallbackState,
 	rememberOpenAIReasoningEffortFallback,
 	resolveOpenAIReasoningEffortFallback,
-	completionsParamsContainThinkTags,
-	isAlwaysThinkingRejection,
 	stripThinkTagsFromCompletionsParams,
 } from "./openai-reasoning-fallback";
 import {
@@ -764,40 +764,40 @@ const streamOpenAICompletionsOnce = (
 								})
 							: undefined;
 					if (reasoningEffortFallback !== undefined && activeReasoningEffortFallbackKey) {
-					const retryMarker = `${activeReasoningEffortFallbackKey}:${String(reasoningEffortFallback)}`;
-					if (attemptedReasoningEffortFallbacks.has(retryMarker)) throw error;
-					attemptedReasoningEffortFallbacks.add(retryMarker);
-					requestReasoningEffortFallbacks.set(activeReasoningEffortFallbackKey, reasoningEffortFallback);
-					openaiStream = await createCompletionsStream();
-					rememberOpenAIReasoningEffortFallback(
-						providerSessionState,
-						activeReasoningEffortFallbackKey,
-						reasoningEffortFallback,
-					);
-				} else if (
-					isOpenRouterAnthropicModel(model) &&
-					!disableStrictTools &&
-					isCompiledGrammarTooLargeStrictError(error, capturedErrorResponse)
-				) {
-					disableStrictToolsForScope(providerSessionState, strictToolsScope);
-					disableStrictTools = true;
-					openaiStream = await createCompletionsStream("none");
-				} else {
-					if (
-						!shouldRetryWithoutStrictTools(error, capturedErrorResponse, {
-							model,
-							strictToolsApplied: appliedStrictTools,
-							tools: context.tools,
-						})
+						const retryMarker = `${activeReasoningEffortFallbackKey}:${String(reasoningEffortFallback)}`;
+						if (attemptedReasoningEffortFallbacks.has(retryMarker)) throw error;
+						attemptedReasoningEffortFallbacks.add(retryMarker);
+						requestReasoningEffortFallbacks.set(activeReasoningEffortFallbackKey, reasoningEffortFallback);
+						openaiStream = await createCompletionsStream();
+						rememberOpenAIReasoningEffortFallback(
+							providerSessionState,
+							activeReasoningEffortFallbackKey,
+							reasoningEffortFallback,
+						);
+					} else if (
+						isOpenRouterAnthropicModel(model) &&
+						!disableStrictTools &&
+						isCompiledGrammarTooLargeStrictError(error, capturedErrorResponse)
 					) {
-						throw error;
+						disableStrictToolsForScope(providerSessionState, strictToolsScope);
+						disableStrictTools = true;
+						openaiStream = await createCompletionsStream("none");
+					} else {
+						if (
+							!shouldRetryWithoutStrictTools(error, capturedErrorResponse, {
+								model,
+								strictToolsApplied: appliedStrictTools,
+								tools: context.tools,
+							})
+						) {
+							throw error;
+						}
+						// Remember the rejection for the rest of the session so every
+						// subsequent request doesn't pay a strict-400 + retry round-trip.
+						disableStrictToolsForScope(providerSessionState, strictToolsScope);
+						disableStrictTools = true;
+						openaiStream = await createCompletionsStream("none");
 					}
-					// Remember the rejection for the rest of the session so every
-					// subsequent request doesn't pay a strict-400 + retry round-trip.
-					disableStrictToolsForScope(providerSessionState, strictToolsScope);
-					disableStrictTools = true;
-					openaiStream = await createCompletionsStream("none");
-				}
 				}
 			}
 			if (premiumRequestsTotal !== undefined) {
@@ -1799,6 +1799,15 @@ export function parseChunkUsage(
 	});
 	const usage: AssistantMessage["usage"] = {
 		...accounting,
+		cacheTelemetry: {
+			read:
+				typeof cachedTokens === "number" ||
+				typeof promptCacheHitTokens === "number" ||
+				typeof promptTokenCachedTokens === "number"
+					? "reported"
+					: "unavailable",
+			write: typeof cacheWriteTokens === "number" ? "reported" : "not-applicable",
+		},
 		cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
 		...(premiumRequests !== undefined ? { premiumRequests } : {}),
 	};

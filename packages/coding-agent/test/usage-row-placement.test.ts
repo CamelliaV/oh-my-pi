@@ -14,6 +14,7 @@ import { UiHelpers } from "@oh-my-pi/pi-coding-agent/modes/utils/ui-helpers";
 import type { SessionContext } from "@oh-my-pi/pi-coding-agent/session/session-context";
 import { Container, type TUI } from "@oh-my-pi/pi-tui";
 import { formatNumber } from "@oh-my-pi/pi-utils";
+import { formatWorkUsageRow, WorkUsageAccumulator } from "../src/modes/components/work-usage";
 
 // 4242 → "4.2K": distinctive enough not to collide with a read group's render.
 const USAGE_INPUT = 4242;
@@ -103,8 +104,9 @@ describe("UiHelpers.renderSessionContext token-usage row placement", () => {
 		const rendered = group!.render(120).join("\n");
 		expect(rendered).toContain(USAGE_LABEL);
 		expect(rendered).toContain(USAGE_TS_LABEL);
-		expect(children[children.length - 1]).toBe(group!);
-		expect(children.filter(component => component.render(120).join("\n").includes(USAGE_LABEL))).toHaveLength(1);
+		expect(children.indexOf(group!)).toBeLessThan(children.length - 1);
+		expect(children[children.length - 1]?.render(120).join("\n")).toContain("work");
+		expect(children.filter(component => component.render(120).join("\n").includes(USAGE_TS_LABEL))).toHaveLength(1);
 	});
 
 	it("interleaves consecutive read-only turns with their paths in one group", () => {
@@ -126,14 +128,13 @@ describe("UiHelpers.renderSessionContext token-usage row placement", () => {
 		expect(barIndex).toBeLessThan(secondUsageIndex);
 	});
 
-	it("renders no usage row when showTokenUsage is off", () => {
+	it("keeps the work summary when per-request token rows are off", () => {
 		const { ctx, helpers } = makeHarness(false);
 		helpers.renderSessionContext({ messages: readTurn() } as SessionContext);
 
 		const children = ctx.chatContainer.children;
-		expect(children.some(c => c.render(120).join("\n").includes(USAGE_LABEL))).toBe(false);
-		// Last block is the read group, not a usage row.
-		expect(children[children.length - 1]).toBeInstanceOf(ReadToolGroupComponent);
+		expect(children.some(c => c.render(120).join("\n").includes(USAGE_TS_LABEL))).toBe(false);
+		expect(children[children.length - 1]?.render(120).join("\n")).toContain("work");
 	});
 });
 
@@ -171,9 +172,9 @@ describe("ChatTranscriptBuilder token-usage row timestamp", () => {
 		} as unknown as AgentMessage;
 		builder.rebuild([{ type: "message", id: "m1", parentId: null, timestamp: new Date(0).toISOString(), message }]);
 		const children = builder.container.children;
-		const last = children[children.length - 1]!;
-		const rendered = last.render(120).join("\n");
+		const rendered = children.map(child => child.render(120).join("\n")).join("\n");
 		expect(rendered).toContain(USAGE_TS_LABEL);
+		expect(children[children.length - 1]?.render(120).join("\n")).toContain("work");
 		expect(rendered).toContain(USAGE_LABEL);
 	});
 
@@ -204,5 +205,111 @@ describe("ChatTranscriptBuilder token-usage row timestamp", () => {
 		expect(
 			builder.container.children.filter(component => component.render(120).join("\n").includes(USAGE_LABEL)),
 		).toEqual([groups[0]!]);
+	});
+});
+
+function workAssistant(options: {
+	timestamp: number;
+	duration: number;
+	input: number;
+	cacheRead: number;
+	cacheWrite: number;
+	cacheTelemetry?: { read: "reported" | "unavailable"; write: "reported" | "unavailable" | "not-applicable" };
+	cost: number;
+	costSource?: "provider" | "catalog" | "unavailable";
+	toolCallId?: string;
+}): Extract<AgentMessage, { role: "assistant" }> {
+	return {
+		role: "assistant",
+		content: options.toolCallId
+			? [{ type: "toolCall", id: options.toolCallId, name: "read", arguments: { path: "src/foo.ts" } }]
+			: [],
+		api: "anthropic-messages",
+		provider: "anthropic",
+		model: "claude-sonnet-4-6",
+		stopReason: options.toolCallId ? "toolUse" : "stop",
+		usage: {
+			input: options.input,
+			output: 10,
+			cacheRead: options.cacheRead,
+			cacheWrite: options.cacheWrite,
+			totalTokens: options.input + options.cacheRead + options.cacheWrite + 10,
+			...(options.cacheTelemetry ? { cacheTelemetry: options.cacheTelemetry } : {}),
+			cost: { input: options.cost, output: 0, cacheRead: 0, cacheWrite: 0, total: options.cost },
+			...(options.costSource ? { costTelemetry: { source: options.costSource } } : {}),
+		},
+		timestamp: options.timestamp,
+		duration: options.duration,
+	} as Extract<AgentMessage, { role: "assistant" }>;
+}
+
+describe("work usage accounting", () => {
+	it("separates wall, model, tool, and wait time while weighting reported cache tokens", () => {
+		const usage = new WorkUsageAccumulator();
+		usage.begin(1_000);
+		usage.add(
+			workAssistant({
+				timestamp: 1_100,
+				duration: 400,
+				input: 100,
+				cacheRead: 800,
+				cacheWrite: 100,
+				cacheTelemetry: { read: "reported", write: "reported" },
+				cost: 0.2,
+				costSource: "provider",
+				toolCallId: "r1",
+			}),
+		);
+		usage.startTool("r1", 1_600);
+		usage.endTool("r1", 2_100);
+		usage.add(
+			workAssistant({
+				timestamp: 2_200,
+				duration: 300,
+				input: 1_000,
+				cacheRead: 0,
+				cacheWrite: 0,
+				cacheTelemetry: { read: "unavailable", write: "not-applicable" },
+				cost: 0.3,
+				costSource: "catalog",
+			}),
+		);
+
+		const snapshot = usage.flush(2_600)!;
+		expect(snapshot.wallMs).toBe(1_600);
+		expect(snapshot.modelMs).toBe(700);
+		expect(snapshot.toolMs).toBe(500);
+		expect(snapshot.waitMs).toBe(400);
+		expect(snapshot.cacheRate).toBe(0.8);
+		expect(snapshot.cacheReportedRequests).toBe(1);
+		expect(snapshot.cacheEligibleRequests).toBe(2);
+		expect(snapshot.actualCost).toBeCloseTo(0.2, 8);
+		expect(snapshot.estimatedCost).toBeCloseTo(0.3, 8);
+		const row = formatWorkUsageRow(snapshot);
+		expect(row).toContain("cache 80.0% (1/2)");
+		expect(row).toContain("$0.20 actual");
+		expect(row).toContain("~$0.30 catalog");
+	});
+
+	it("shows unavailable cache and cost telemetry instead of measured zero", () => {
+		const usage = new WorkUsageAccumulator();
+		usage.add(
+			workAssistant({
+				timestamp: 1_000,
+				duration: 250,
+				input: 100,
+				cacheRead: 0,
+				cacheWrite: 0,
+				cost: 0,
+			}),
+		);
+
+		const snapshot = usage.flush()!;
+		expect(snapshot.cacheRate).toBeNull();
+		expect(snapshot.cacheReportedRequests).toBe(0);
+		expect(snapshot.cacheEligibleRequests).toBe(1);
+		expect(snapshot.unknownCostRequests).toBe(1);
+		expect(formatWorkUsageRow(snapshot)).toContain("cache N/A (0/1)");
+		expect(formatWorkUsageRow(snapshot)).toContain("cost N/A (1)");
 	});
 });

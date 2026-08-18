@@ -1,6 +1,6 @@
 import { useMemo } from "react";
 import { getFolderStats } from "../api";
-import { formatCost, formatDurationMs, formatInteger, formatPercent } from "../data/formatters";
+import { formatCacheCoverage, formatCost, formatDurationMs, formatInteger, formatPercent } from "../data/formatters";
 import { useResource } from "../data/useResource";
 import { buildFolderRows, type FolderRowView } from "../data/view-models";
 import type { TimeRange } from "../types";
@@ -87,7 +87,12 @@ export function ProjectsRoute({ active, range, refreshTrigger }: ProjectsRoutePr
 				key: "cacheRate",
 				header: "Cache Rate",
 				numeric: true,
-				render: (item: FolderRowView) => <span className="font-mono">{formatPercent(item.cacheRate)}</span>,
+				render: (item: FolderRowView) => (
+					<span className="font-mono">
+						{formatPercent(item.cacheRate)} ·{" "}
+						{formatCacheCoverage(item.cacheTelemetryRequests, item.cacheEligibleRequests)}
+					</span>
+				),
 			},
 			{
 				key: "cacheSavings",
@@ -138,7 +143,10 @@ export function ProjectsRoute({ active, range, refreshTrigger }: ProjectsRoutePr
 				</div>
 				<div>
 					<div className="stats-mobile-card-label">Cache Rate</div>
-					<div className="stats-mobile-card-value">{formatPercent(item.cacheRate)}</div>
+					<div className="stats-mobile-card-value">
+						{formatPercent(item.cacheRate)} ·{" "}
+						{formatCacheCoverage(item.cacheTelemetryRequests, item.cacheEligibleRequests)}
+					</div>
 				</div>
 				<div>
 					<div className="stats-mobile-card-label">Cache Savings</div>

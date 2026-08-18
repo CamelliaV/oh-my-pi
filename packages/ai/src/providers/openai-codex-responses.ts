@@ -1326,6 +1326,7 @@ function applyCodexServiceTierPricing(
 	usage.cost.cacheRead *= multiplier;
 	usage.cost.cacheWrite *= multiplier;
 	usage.cost.total = usage.cost.input + usage.cost.output + usage.cost.cacheRead + usage.cost.cacheWrite;
+	if (usage.costTelemetry?.source === "catalog") usage.costTelemetry.estimatedTotal = usage.cost.total;
 }
 
 function resetOutputState(output: AssistantMessage): void {

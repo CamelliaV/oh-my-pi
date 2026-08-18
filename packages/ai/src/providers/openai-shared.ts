@@ -380,6 +380,7 @@ export function applyOpenAIResponsesServiceTierCost(
 	usage.cost.cacheRead *= multiplier;
 	usage.cost.cacheWrite *= multiplier;
 	usage.cost.total = usage.cost.input + usage.cost.output + usage.cost.cacheRead + usage.cost.cacheWrite;
+	if (usage.costTelemetry?.source === "catalog") usage.costTelemetry.estimatedTotal = usage.cost.total;
 }
 
 /** Reconcile token-price estimates with OpenRouter's authoritative account charge. */
@@ -403,6 +404,11 @@ export function applyOpenRouterReportedCost(model: Pick<Model, "provider">, usag
 		usage.cost.cacheWrite = 0;
 	}
 	usage.cost.total = reportedCost;
+	usage.costTelemetry = {
+		...usage.costTelemetry,
+		source: "provider",
+		...(Number.isFinite(estimatedCost) && estimatedCost > 0 ? { estimatedTotal: estimatedCost } : {}),
+	};
 }
 
 export interface OpenAIUsageAccountingInput {
@@ -3507,6 +3513,13 @@ export function populateResponsesUsageFromResponse(
 	const premiumRequests = output.usage.premiumRequests;
 	output.usage = {
 		...accounting,
+		cacheTelemetry: {
+			read:
+				typeof details?.cached_tokens === "number" || typeof usage.prompt_cache_hit_tokens === "number"
+					? "reported"
+					: "unavailable",
+			write: typeof details?.cache_write_tokens === "number" ? "reported" : "not-applicable",
+		},
 		cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
 	};
 	if (premiumRequests !== undefined) {

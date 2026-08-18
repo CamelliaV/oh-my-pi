@@ -18,6 +18,7 @@ import {
 	TrendEmpty,
 } from "../components/models-table-shared";
 import { formatRangeTick, rangeMeta } from "../components/range-meta";
+import { formatCacheCoverage, formatPercent } from "../data/formatters";
 import { useResource } from "../data/useResource";
 import { buildModelPerformanceLookup } from "../data/view-models";
 import type { ModelPerformancePoint, ModelStats, ModelTimeSeriesPoint, TimeRange } from "../types";
@@ -336,7 +337,13 @@ function ModelsTable({
 												</div>
 												<div className="flex items-center justify-between">
 													<span>Cache rate</span>
-													<span className="font-mono">{(model.cacheRate * 100).toFixed(1)}%</span>
+													<span className="font-mono">
+														{formatPercent(model.cacheRate)} ·{" "}
+														{formatCacheCoverage(
+															model.cacheTelemetryRequests,
+															model.cacheEligibleRequests,
+														)}
+													</span>
 												</div>
 												<div className="flex items-center justify-between">
 													<span>Cache savings</span>

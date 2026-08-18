@@ -1610,6 +1610,8 @@ function createEmptyUsage(premiumRequests?: number): Usage {
 }
 
 export type AnthropicUsageLike = {
+	cache_read_input_tokens?: number | null;
+	cache_creation_input_tokens?: number | null;
 	cache_creation?: { ephemeral_5m_input_tokens?: number | null; ephemeral_1h_input_tokens?: number | null } | null;
 	server_tool_use?: { web_search_requests?: number | null; web_fetch_requests?: number | null } | null;
 };
@@ -1620,6 +1622,12 @@ export type AnthropicUsageLike = {
  * zero-valued objects clear prior extras from earlier stream usage snapshots.
  */
 export function applyAnthropicUsageExtras(usage: Usage, source: AnthropicUsageLike): void {
+	const priorTelemetry = usage.cacheTelemetry;
+	usage.cacheTelemetry = {
+		read: typeof source.cache_read_input_tokens === "number" ? "reported" : (priorTelemetry?.read ?? "unavailable"),
+		write:
+			typeof source.cache_creation_input_tokens === "number" ? "reported" : (priorTelemetry?.write ?? "unavailable"),
+	};
 	const cacheCreation = source.cache_creation;
 	if (cacheCreation != null) {
 		const fiveMinute = cacheCreation.ephemeral_5m_input_tokens ?? 0;
@@ -1772,6 +1780,8 @@ function calculateFallbackTurnCost(
 	}
 	if (!applied) return false;
 	usage.cost = cost;
+	usage.costTelemetry =
+		cost.total !== 0 ? { source: "catalog", estimatedTotal: cost.total } : { source: "unavailable" };
 	return true;
 }
 

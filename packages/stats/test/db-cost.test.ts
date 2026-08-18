@@ -27,6 +27,7 @@ function createCodexGptStats(entryId: string): MessageStats {
 			cacheRead: 200,
 			cacheWrite: 0,
 			totalTokens: 1700,
+			cacheTelemetry: { read: "reported", write: "not-applicable" },
 			cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
 		},
 		agentType: "main",
@@ -66,6 +67,7 @@ function createAnthropicCacheStats(entryId: string, cacheRead: number, cacheWrit
 			cacheRead,
 			cacheWrite,
 			totalTokens: 1_000,
+			cacheTelemetry: { read: "reported", write: "reported" },
 			cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
 		},
 		agentType: "main",
@@ -84,7 +86,15 @@ describe("stats GPT cost correction", () => {
 		expect(request?.usage.cost.input).toBeCloseTo(expected.input, 8);
 		expect(request?.usage.cost.output).toBeCloseTo(expected.output, 8);
 		expect(request?.usage.cost.cacheRead).toBeCloseTo(expected.cacheRead, 8);
+		expect(request?.usage.costTelemetry?.source).toBe("catalog");
+		expect(request?.usage.costTelemetry?.estimatedTotal).toBeCloseTo(expected.total, 8);
 		expect(request?.usage.cost.total).toBeCloseTo(expected.total, 8);
+		const overall = getOverallStats();
+		expect(overall.actualCost).toBe(0);
+		expect(overall.estimatedCost).toBeCloseTo(expected.total, 8);
+		expect(overall.actualCostRequests).toBe(0);
+		expect(overall.estimatedCostRequests).toBe(1);
+		expect(overall.unknownCostRequests).toBe(0);
 	});
 
 	it("backfills existing zero-cost OpenAI Codex GPT rows on database init", async () => {
@@ -131,6 +141,22 @@ describe("stats GPT cost correction", () => {
 
 		const request = getRecentRequests(1)[0];
 		expect(request?.usage.cost.total).toBeCloseTo(expectedCodexGptCost().total, 8);
+		expect(request?.usage.costTelemetry?.source).toBe("catalog");
+	});
+
+	it("keeps provider charges separate from their catalog comparison", async () => {
+		await initDb();
+		const stats = createAnthropicCacheStats("provider-cost", 800, 100);
+		stats.usage.cost = { input: 0.4, output: 0, cacheRead: 0, cacheWrite: 0, total: 0.4 };
+		stats.usage.costTelemetry = { source: "provider", estimatedTotal: 0.5 };
+		insertMessageStats([stats]);
+
+		const overall = getOverallStats();
+		expect(overall.actualCost).toBeCloseTo(0.4, 8);
+		expect(overall.estimatedCost).toBeCloseTo(0.5, 8);
+		expect(overall.actualCostRequests).toBe(1);
+		expect(overall.estimatedCostRequests).toBe(1);
+		expect(overall.unknownCostRequests).toBe(0);
 	});
 });
 
@@ -142,7 +168,35 @@ describe("stats cache metrics", () => {
 		// 100 uncached + 800 reads at 0.1x + 100 writes at 1.25x = 305,
 		// versus 1,000 tokens at the uncached input rate.
 		expect(getOverallStats().cacheSavings).toBeCloseTo(0.695, 8);
-		expect(getOverallStats().cacheRate).toBeCloseTo(800 / 900, 8);
+		expect(getOverallStats().cacheRate).toBeCloseTo(800 / 1_000, 8);
+		expect(getOverallStats().cacheTelemetryRequests).toBe(1);
+		expect(getOverallStats().cacheEligibleRequests).toBe(1);
+		expect(getRecentRequests(1)[0]?.usage.cacheTelemetry).toEqual({ read: "reported", write: "reported" });
+	});
+
+	it("excludes requests without complete provider telemetry and reports coverage", async () => {
+		await initDb();
+		const reported = createAnthropicCacheStats("reported", 800, 100);
+		const unavailable = createAnthropicCacheStats("unavailable", 500, 0);
+		unavailable.usage.cacheTelemetry = { read: "unavailable", write: "unavailable" };
+		insertMessageStats([reported, unavailable]);
+
+		const overall = getOverallStats();
+		expect(overall.cacheRate).toBeCloseTo(800 / 1_000, 8);
+		expect(overall.cacheTelemetryRequests).toBe(1);
+		expect(overall.cacheEligibleRequests).toBe(2);
+	});
+
+	it("returns N/A when no request has complete provider cache telemetry", async () => {
+		await initDb();
+		const unavailable = createAnthropicCacheStats("unavailable-only", 0, 0);
+		unavailable.usage.cacheTelemetry = { read: "unavailable", write: "unavailable" };
+		insertMessageStats([unavailable]);
+
+		const overall = getOverallStats();
+		expect(overall.cacheRate).toBeNull();
+		expect(overall.cacheTelemetryRequests).toBe(0);
+		expect(overall.cacheEligibleRequests).toBe(1);
 	});
 
 	it("reports cache writes without reads as negative savings", async () => {

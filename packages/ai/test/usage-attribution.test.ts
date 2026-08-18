@@ -65,6 +65,7 @@ describe("openai-completions parseChunkUsage", () => {
 		expect(usage.cacheRead).toBe(200);
 		expect(usage.totalTokens).toBe(1_100);
 		expect(usage.reasoningTokens).toBe(40);
+		expect(usage.cacheTelemetry).toEqual({ read: "reported", write: "not-applicable" });
 	});
 
 	it("uses OpenRouter's reported account charge instead of the catalog estimate", () => {
@@ -80,6 +81,8 @@ describe("openai-completions parseChunkUsage", () => {
 
 		expect(usage.cost.total).toBe(0.42);
 		expect(usage.cost.input + usage.cost.output + usage.cost.cacheRead + usage.cost.cacheWrite).toBeCloseTo(0.42);
+		expect(usage.costTelemetry?.source).toBe("provider");
+		expect(usage.costTelemetry?.estimatedTotal).toBeGreaterThan(0);
 	});
 
 	it("omits reasoningTokens when no reasoning_tokens are reported", () => {
@@ -108,6 +111,7 @@ describe("openai-completions parseChunkUsage", () => {
 		expect(usage.cacheWrite).toBe(5_500);
 		expect(usage.cacheRead).toBe(0);
 		expect(usage.totalTokens).toBe(6_250);
+		expect(usage.cacheTelemetry).toEqual({ read: "reported", write: "reported" });
 	});
 
 	it("attributes OpenRouter cache_read_tokens correctly when cache is warm", () => {
@@ -150,6 +154,7 @@ describe("openai-completions parseChunkUsage", () => {
 		// to avoid downstream double-counting (input already equals miss).
 		expect(usage.cacheWrite).toBe(0);
 		expect(usage.totalTokens).toBe(350); // 50 + 200 + 100 + 0
+		expect(usage.cacheTelemetry).toEqual({ read: "reported", write: "not-applicable" });
 	});
 
 	it("handles DeepSeek with only cache hits (miss=0)", () => {
@@ -350,6 +355,24 @@ describe("openai-responses usage attribution", () => {
 		expect(output.usage.output).toBe(29);
 		expect(output.usage.orchestration).toEqual({ input: 5_629 });
 		expect(output.usage.totalTokens).toBe(185_882);
+		expect(output.usage.cacheTelemetry).toEqual({ read: "reported", write: "not-applicable" });
+	});
+
+	it("marks missing Responses cache details as unavailable", () => {
+		const output = {
+			role: "assistant",
+			content: [],
+			api: "openai-responses",
+			provider: "openai",
+			model: "gpt-5",
+			stopReason: "stop",
+			usage: blankUsage(),
+			timestamp: 0,
+		} as AssistantMessage;
+
+		populateResponsesUsageFromResponse(output, { input_tokens: 100, output_tokens: 10, total_tokens: 110 });
+
+		expect(output.usage.cacheTelemetry).toEqual({ read: "unavailable", write: "not-applicable" });
 	});
 });
 
@@ -364,6 +387,16 @@ describe("anthropic applyAnthropicUsageExtras", () => {
 		});
 
 		expect(usage.cttl).toEqual({ ephemeral5m: 1_200, ephemeral1h: 800 });
+	});
+
+	it("records authoritative Anthropic cache bucket availability", () => {
+		const usage = blankUsage();
+		applyAnthropicUsageExtras(usage, {
+			cache_read_input_tokens: 800,
+			cache_creation_input_tokens: 200,
+		});
+
+		expect(usage.cacheTelemetry).toEqual({ read: "reported", write: "reported" });
 	});
 
 	it("only sets the bucket the provider populated", () => {

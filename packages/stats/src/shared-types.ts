@@ -25,13 +25,27 @@ export interface AggregatedStats {
 	totalCacheReadTokens: number;
 	/** Total cache write tokens */
 	totalCacheWriteTokens: number;
-	/** Percentage of prompt input tokens served from cache (0-1). */
-	cacheRate: number;
+	/** Provider-reported prompt cache reads / (input + cache reads + cache writes); null when unavailable. */
+	cacheRate: number | null;
+	/** Requests with complete provider cache telemetry used in cacheRate. */
+	cacheTelemetryRequests: number;
+	/** Requests carrying conversation prompt tokens, including telemetry-unavailable requests. */
+	cacheEligibleRequests: number;
 	/**
 	 * Prompt-input cost saved relative to billing the same tokens uncached
 	 * (0-1; negative when cache writes cost more than reads save).
 	 */
 	cacheSavings: number;
+	/** Provider-reported account charge total. */
+	actualCost: number;
+	/** Catalog-rate estimate total, including estimates retained beside provider charges. */
+	estimatedCost: number;
+	/** Requests with a provider-reported account charge. */
+	actualCostRequests: number;
+	/** Requests with a catalog estimate. */
+	estimatedCostRequests: number;
+	/** Requests whose cost provenance is unavailable. */
+	unknownCostRequests: number;
 	/** Total cost */
 	totalCost: number;
 	/** Total premium requests */

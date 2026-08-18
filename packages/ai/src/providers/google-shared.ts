@@ -753,6 +753,10 @@ export async function consumeGoogleStream<T extends GoogleApiType>(args: {
 				cacheWrite: 0,
 				totalTokens: chunk.usageMetadata.totalTokenCount || 0,
 				...(thinkingTokens > 0 ? { reasoningTokens: thinkingTokens } : {}),
+				cacheTelemetry: {
+					read: typeof chunk.usageMetadata.cachedContentTokenCount === "number" ? "reported" : "unavailable",
+					write: "not-applicable",
+				},
 				cost: {
 					input: 0,
 					output: 0,

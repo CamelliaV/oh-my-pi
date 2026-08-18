@@ -893,6 +893,13 @@ export const streamGoogleGeminiCli: StreamFunction<"google-gemini-cli"> = (
 							cacheWrite: 0,
 							totalTokens: responseData.usageMetadata.totalTokenCount || 0,
 							...(thinkingTokens > 0 ? { reasoningTokens: thinkingTokens } : {}),
+							cacheTelemetry: {
+								read:
+									typeof responseData.usageMetadata.cachedContentTokenCount === "number"
+										? "reported"
+										: "unavailable",
+								write: "not-applicable",
+							},
 							cost: {
 								input: 0,
 								output: 0,

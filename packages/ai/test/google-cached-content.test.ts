@@ -351,6 +351,7 @@ describe("Google caller-owned cachedContent", () => {
 			expect(done.message.usage.cacheWrite).toBe(0);
 			expect(done.message.usage.output).toBe(5);
 			expect(done.message.usage.totalTokens).toBe(105);
+			expect(done.message.usage.cacheTelemetry).toEqual({ read: "reported", write: "not-applicable" });
 		}
 	});
 

@@ -58,6 +58,7 @@ function normalizePremiumRequests(n: number): number {
 async function printStats(): Promise<void> {
 	const stats = await getDashboardStats();
 	const { overall, byModel, byFolder } = stats;
+	const cacheRate = overall.cacheRate === null ? "N/A" : formatPercent(overall.cacheRate);
 
 	console.log("\n=== AI Usage Statistics ===\n");
 
@@ -67,9 +68,18 @@ async function printStats(): Promise<void> {
 	console.log(`  Total Tokens: ${formatNumber(overall.totalInputTokens + overall.totalOutputTokens)}`);
 	console.log(`  Input Tokens: ${formatNumber(overall.totalInputTokens)}`);
 	console.log(`  Output Tokens: ${formatNumber(overall.totalOutputTokens)}`);
-	console.log(`  Cache Rate: ${formatPercent(overall.cacheRate)}`);
+	console.log(
+		`  Cache Rate: ${cacheRate} (${formatNumber(overall.cacheTelemetryRequests)}/${formatNumber(overall.cacheEligibleRequests)} requests reported)`,
+	);
 	console.log(`  Cache Savings: ${formatPercent(overall.cacheSavings)}`);
 	console.log(`  Total Cost: ${formatCost(overall.totalCost)}`);
+	console.log(
+		`  Provider Cost: ${formatCost(overall.actualCost)} (${formatNumber(overall.actualCostRequests)} requests)`,
+	);
+	console.log(
+		`  Catalog Estimate: ~${formatCost(overall.estimatedCost)} (${formatNumber(overall.estimatedCostRequests)} requests)`,
+	);
+	console.log(`  Cost Provenance Unknown: ${formatNumber(overall.unknownCostRequests)} requests`);
 	console.log(`  Premium Requests: ${formatNumber(normalizePremiumRequests(overall.totalPremiumRequests ?? 0))}`);
 	console.log(`  Avg Duration: ${overall.avgDuration !== null ? formatDuration(overall.avgDuration) : "-"}`);
 	console.log(`  Avg TTFT: ${overall.avgTtft !== null ? formatDuration(overall.avgTtft) : "-"}`);
@@ -80,8 +90,9 @@ async function printStats(): Promise<void> {
 	if (byModel.length > 0) {
 		console.log("\nBy Model:");
 		for (const m of byModel.slice(0, 10)) {
+			const modelCacheRate = m.cacheRate === null ? "N/A" : formatPercent(m.cacheRate);
 			console.log(
-				`  ${m.model}: ${formatNumber(m.totalRequests)} reqs, ${formatCost(m.totalCost)}, ${formatPercent(m.cacheRate)} cache rate, ${formatPercent(m.cacheSavings)} cache savings`,
+				`  ${m.model}: ${formatNumber(m.totalRequests)} reqs, ${formatCost(m.totalCost)}, ${modelCacheRate} cache rate (${formatNumber(m.cacheTelemetryRequests)}/${formatNumber(m.cacheEligibleRequests)} reported), ${formatPercent(m.cacheSavings)} cache savings`,
 			);
 		}
 	}

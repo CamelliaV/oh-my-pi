@@ -20,10 +20,6 @@ import { TodoReminderComponent } from "../../modes/components/todo-reminder";
 import { ToolExecutionComponent, type ToolExecutionHandle } from "../../modes/components/tool-execution";
 import { TtsrNotificationComponent } from "../../modes/components/ttsr-notification";
 import { createUsageRowBlock } from "../../modes/components/usage-row";
-import {
-	createTurnUsageRowBlock,
-	TurnUsageAccumulator,
-} from "../../modes/components/turn-usage";
 import { getSymbolTheme, theme } from "../../modes/theme/theme";
 import type { InteractiveModeContext, TodoPhase } from "../../modes/types";
 import idleRecapPrompt from "../../prompts/system/recap-user.md" with { type: "text" };
@@ -37,6 +33,7 @@ import { SpeechEnhancer } from "../../tts/speech-enhancer";
 import { vocalizer } from "../../tts/vocalizer";
 import { canonicalizeMessage } from "../../utils/thinking-display";
 import { setTerminalTitleState } from "../../utils/title-generator";
+import { createWorkUsageRowBlock, WorkUsageAccumulator } from "../components/work-usage";
 import { interruptHint } from "../shared";
 import { createAssistantMessageComponent } from "../utils/interactive-context-helpers";
 import {
@@ -139,9 +136,9 @@ export class EventController {
 	// per turn, and the map is cleared with the other transcript anchors.
 	#orphanedToolCompletions = new Map<string, Extract<AgentSessionEvent, { type: "tool_execution_end" }>>();
 	#postToolAssistantComponents = new Map<string, AssistantMessageComponent>();
-	// Turn-level usage aggregate (between user prompts); flushed when the next
-	// user message lands, mirroring the rebuild paths.
-	#turnUsage = new TurnUsageAccumulator();
+	// Work-level usage aggregate (between user prompts); terminal agent_end or
+	// the next user message flushes it, matching transcript rebuilds.
+	#workUsage = new WorkUsageAccumulator();
 	#lastAssistantComponent: AssistantMessageComponent | undefined = undefined;
 	// Assistant component whose turn-ending error is currently mirrored in the
 	// pinned banner. Its inline `Error: …` line is suppressed while pinned and
@@ -653,7 +650,7 @@ export class EventController {
 		this.#syntheticFailureCards.clear();
 		this.#orphanedToolCompletions.clear();
 		this.#postToolAssistantComponents.clear();
-		this.#turnUsage = new TurnUsageAccumulator();
+		this.#workUsage = new WorkUsageAccumulator();
 		this.#backgroundTaskCallIds.clear();
 		this.#approvalAttentionToolCallIds.clear();
 		this.#readToolCallArgs.clear();
@@ -749,7 +746,7 @@ export class EventController {
 		this.#syntheticFailureCards.clear();
 		this.#orphanedToolCompletions.clear();
 		this.#postToolAssistantComponents.clear();
-		this.#turnUsage = new TurnUsageAccumulator();
+		this.#workUsage.begin();
 		this.#lastIntent = undefined;
 		this.#readToolCallArgs.clear();
 		this.#readToolCallAssistantComponents.clear();
@@ -798,9 +795,10 @@ export class EventController {
 		} else if (event.message.role === "user") {
 			vocalizer.clear();
 			{
-				const snapshot = this.#turnUsage.flush();
-				if (snapshot) this.ctx.chatContainer.addChild(createTurnUsageRowBlock(snapshot));
+				const snapshot = this.#workUsage.flush();
+				if (snapshot) this.ctx.chatContainer.addChild(createWorkUsageRowBlock(snapshot));
 			}
+			this.#workUsage.begin(event.message.timestamp);
 			const textContent = this.ctx.getUserMessageText(event.message);
 			const imageBlocks =
 				typeof event.message.content === "string"
@@ -1312,7 +1310,7 @@ export class EventController {
 			}
 			this.#lastAssistantComponent = lastPostToolAssistantComponent ?? this.ctx.streamingComponent;
 			if (assistantUsageIsBilled(event.message.usage)) {
-				this.#turnUsage.add(event.message.usage, event.message.timestamp);
+				this.#workUsage.add(event.message);
 			}
 			if (settings.get("display.showTokenUsage") && assistantUsageIsBilled(event.message.usage)) {
 				const readCallIds = groupedReadUsageCallIds(event.message);
@@ -1366,6 +1364,7 @@ export class EventController {
 
 	async #handleToolExecutionStart(event: Extract<AgentSessionEvent, { type: "tool_execution_start" }>): Promise<void> {
 		if (this.#retractedToolCallIds.has(event.toolCallId)) return;
+		this.#workUsage.startTool(event.toolCallId);
 		this.#ensureWorkingLoaderWhileStreaming();
 		this.#updateWorkingMessageFromIntent(event.intent);
 		if (event.toolName === "ask" || this.#toolWillPromptForApproval(event.toolName, event.args)) {
@@ -1526,6 +1525,7 @@ export class EventController {
 		// assistant message. The matching card was deliberately retracted at
 		// message_end; consume the completion instead of recreating/updating UI.
 		if (this.#retractedToolCallIds.delete(event.toolCallId)) return;
+		this.#workUsage.endTool(event.toolCallId);
 		// A synthetic aborted/error completion (agent-loop's placeholder for a
 		// never-run call on a terminal error/abort) settles the card in place so a
 		// terminal failure stays visible. Remember it so `#handleAutoRetryStart`
@@ -1787,7 +1787,10 @@ export class EventController {
 		this.#syntheticFailureCards.clear();
 		this.#orphanedToolCompletions.clear();
 		this.#postToolAssistantComponents.clear();
-		this.#turnUsage = new TurnUsageAccumulator();
+		{
+			const snapshot = this.#workUsage.flush(Date.now());
+			if (snapshot) this.ctx.chatContainer.addChild(createWorkUsageRowBlock(snapshot));
+		}
 		this.#resetReadGroup();
 		// The turn is over: nothing else lands this turn, so the waiting poll is
 		// final history — seal it instead of letting its spinner tick while idle.

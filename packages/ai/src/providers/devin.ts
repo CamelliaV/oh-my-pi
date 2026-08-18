@@ -387,6 +387,7 @@ export const streamDevin: StreamFunction<"devin-agent"> = (
 						output.usage.output = Number(msg.usage.outputTokens);
 						output.usage.cacheRead = Number(msg.usage.cacheReadTokens);
 						output.usage.cacheWrite = Number(msg.usage.cacheWriteTokens);
+						output.usage.cacheTelemetry = { read: "reported", write: "reported" };
 						output.usage.totalTokens =
 							output.usage.input + output.usage.output + output.usage.cacheRead + output.usage.cacheWrite;
 					}

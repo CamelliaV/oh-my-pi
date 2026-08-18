@@ -14,7 +14,14 @@ const stats: AggregatedStats = {
 	totalCacheReadTokens: 300,
 	totalCacheWriteTokens: 40,
 	cacheRate: 0.75,
+	cacheTelemetryRequests: 3,
+	cacheEligibleRequests: 4,
 	cacheSavings: 0.695,
+	actualCost: 0.5,
+	estimatedCost: 0.6,
+	actualCostRequests: 2,
+	estimatedCostRequests: 3,
+	unknownCostRequests: 1,
 	totalCost: 0,
 	totalPremiumRequests: 0,
 	avgDuration: 1000,
@@ -37,6 +44,10 @@ describe("overview token metrics", () => {
 		expect(html).toContain("75.0%");
 		expect(html).toContain("69.5%");
 		expect(html).toContain("cache writes can make this negative");
+		expect(html).toContain("3/4");
+		expect(html).toContain("$0.50 actual");
+		expect(html).toContain("~$0.60 estimate");
+		expect(html).toContain("1 req N/A");
 
 		const expectedTotal = formatCompact(
 			stats.totalInputTokens +
@@ -45,5 +56,16 @@ describe("overview token metrics", () => {
 				stats.totalCacheWriteTokens,
 		);
 		expect(html).toContain(`<div class="stats-metric-value">${expectedTotal}</div>`);
+	});
+
+	it("renders N/A when provider cache telemetry is unavailable", () => {
+		const html = renderToStaticMarkup(
+			<MetricCluster
+				stats={{ ...stats, cacheRate: null, cacheTelemetryRequests: 0, cacheEligibleRequests: 1 }}
+			/>,
+		);
+
+		expect(html).toContain("Cache Rate · 0/1");
+		expect(html).toContain("N/A");
 	});
 });

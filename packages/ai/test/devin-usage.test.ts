@@ -62,5 +62,6 @@ describe("streamDevin usage", () => {
 			cacheWrite: 13,
 			totalTokens: 131,
 		});
+		expect(result.usage.cacheTelemetry).toEqual({ read: "reported", write: "reported" });
 	});
 });

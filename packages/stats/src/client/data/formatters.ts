@@ -17,8 +17,12 @@ export function formatCost(value: number, digits?: number): string {
 	})}`;
 }
 
-export function formatPercent(value: number, digits = 1): string {
-	return `${(value * 100).toFixed(digits)}%`;
+export function formatPercent(value: number | null, digits = 1): string {
+	return value === null ? "N/A" : `${(value * 100).toFixed(digits)}%`;
+}
+
+export function formatCacheCoverage(reported: number, eligible: number): string {
+	return `${reported}/${eligible}`;
 }
 
 export function formatDurationMs(value: number | null, digits?: number): string {

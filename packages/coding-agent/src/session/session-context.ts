@@ -377,6 +377,7 @@ export function buildSessionContext(
 						undefined,
 						snapcompactHistoryBlocksForContext(snapcompactArchive, options),
 						entry.warning,
+						entry.requestUsage,
 					),
 				);
 			} else {
@@ -419,6 +420,7 @@ export function buildSessionContext(
 			undefined,
 			snapcompactHistoryBlocksForContext(snapcompactArchive, options),
 			compaction.warning,
+			compaction.requestUsage,
 		);
 		// Agent context (non-transcript): summary first so the LLM sees the
 		// compacted context before recent messages.

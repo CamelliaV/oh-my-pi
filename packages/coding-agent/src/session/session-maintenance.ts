@@ -16,6 +16,7 @@ import {
 	applyShakeRegions,
 	CompactionCancelledError,
 	type CompactionPreparation,
+	type CompactionRequestUsage,
 	type CompactionResult,
 	type CompactionSettings,
 	calculateContextTokens,
@@ -866,6 +867,7 @@ export class SessionMaintenance {
 			let firstKeptEntryId: string;
 			let tokensBefore: number;
 			let details: unknown;
+			let requestUsage: CompactionRequestUsage | undefined;
 
 			// The configured snapcompact fallback runs locally. The frame cap is sized
 			// from the live model window via #computeSnapcompactMaxFrames so the
@@ -938,6 +940,7 @@ export class SessionMaintenance {
 				tokensBefore = compactionPrep.tokensBefore;
 				details = compactionPrep.details;
 				preserveData = compactionPrep.preserveData;
+				requestUsage = compactionPrep.requestUsage;
 			} else if (preferredCodexRemoteResult) {
 				summary = preferredCodexRemoteResult.summary;
 				shortSummary = preferredCodexRemoteResult.shortSummary;
@@ -948,6 +951,7 @@ export class SessionMaintenance {
 					compactionPrep.preserveData,
 					preferredCodexRemoteResult.preserveData,
 				);
+				requestUsage = preferredCodexRemoteResult.requestUsage;
 			} else if (snapcompactResult) {
 				summary = snapcompactResult.summary;
 				shortSummary = snapcompactResult.shortSummary;
@@ -994,6 +998,7 @@ export class SessionMaintenance {
 					tokensBefore = result.tokensBefore;
 					details = result.details;
 					preserveData = mergeLlmCompactionPreserveData(compactionPrep.preserveData, result.preserveData);
+					requestUsage = result.requestUsage;
 				} catch (err) {
 					if (err instanceof CompactionCancelledError) {
 						throw err;
@@ -1017,6 +1022,7 @@ export class SessionMaintenance {
 				details,
 				fromExtension,
 				preserveData,
+				requestUsage,
 			);
 			const newEntries = this.#host.sessionManager.getEntries();
 			const sessionContext = this.#host.buildDisplaySessionContext();
@@ -1054,6 +1060,7 @@ export class SessionMaintenance {
 				tokensBefore,
 				details,
 				preserveData: snapcompact.stripPreservedArchive(preserveData),
+				requestUsage,
 			};
 			options?.onComplete?.(compactionResult);
 			return compactionResult;
@@ -1830,6 +1837,7 @@ export class SessionMaintenance {
 				tokensBefore: number;
 				details: unknown;
 				preserveData: Record<string, unknown> | undefined;
+				requestUsage: CompactionRequestUsage | undefined;
 		  }
 		| {
 				kind: "needsLlm";
@@ -1870,6 +1878,7 @@ export class SessionMaintenance {
 				tokensBefore: hookCompaction.tokensBefore,
 				details: hookCompaction.details,
 				preserveData,
+				requestUsage: hookCompaction.requestUsage,
 			};
 		}
 
@@ -2765,6 +2774,7 @@ export class SessionMaintenance {
 			let firstKeptEntryId: string;
 			let tokensBefore: number;
 			let details: unknown;
+			let requestUsage: CompactionRequestUsage | undefined;
 
 			// The configured snapcompact fallback runs locally. The post-compaction
 			// context = kept-recent + a summary message carrying the imaged archive at
@@ -2861,6 +2871,7 @@ export class SessionMaintenance {
 				tokensBefore = compactionPrep.tokensBefore;
 				details = compactionPrep.details;
 				preserveData = compactionPrep.preserveData;
+				requestUsage = compactionPrep.requestUsage;
 			} else if (preferredCodexRemoteResult) {
 				summary = preferredCodexRemoteResult.summary;
 				shortSummary = preferredCodexRemoteResult.shortSummary;
@@ -2871,6 +2882,7 @@ export class SessionMaintenance {
 					compactionPrep.preserveData,
 					preferredCodexRemoteResult.preserveData,
 				);
+				requestUsage = preferredCodexRemoteResult.requestUsage;
 			} else if (snapcompactResult) {
 				summary = snapcompactResult.summary;
 				shortSummary = snapcompactResult.shortSummary;
@@ -3050,6 +3062,7 @@ export class SessionMaintenance {
 				tokensBefore = compactResult.tokensBefore;
 				details = compactResult.details;
 				preserveData = mergeLlmCompactionPreserveData(compactionPrep.preserveData, compactResult.preserveData);
+				requestUsage = compactResult.requestUsage;
 			}
 
 			if (autoCompactionSignal.aborted) {
@@ -3074,6 +3087,7 @@ export class SessionMaintenance {
 				details,
 				fromExtension,
 				preserveData,
+				requestUsage,
 			);
 			const newEntries = this.#host.sessionManager.getEntries();
 			const sessionContext = this.#host.buildDisplaySessionContext();
@@ -3120,6 +3134,7 @@ export class SessionMaintenance {
 				tokensBefore,
 				details,
 				preserveData: snapcompact.stripPreservedArchive(preserveData),
+				requestUsage,
 			};
 			// Post-maintenance progress guard — evaluated BEFORE emitting
 			// auto_compaction_end so the TUI rebuild triggered by that event

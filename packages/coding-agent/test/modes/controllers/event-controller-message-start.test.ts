@@ -1,11 +1,13 @@
 import { afterEach, beforeAll, describe, expect, it, vi } from "bun:test";
-import type { TextContent, UserMessage } from "@oh-my-pi/pi-ai";
+import type { AssistantMessage, TextContent, UserMessage } from "@oh-my-pi/pi-ai";
 import { TranscriptContainer } from "@oh-my-pi/pi-coding-agent/modes/components/transcript-container";
+import { UserMessageComponent } from "@oh-my-pi/pi-coding-agent/modes/components/user-message";
 import { EventController } from "@oh-my-pi/pi-coding-agent/modes/controllers/event-controller";
 import { initTheme } from "@oh-my-pi/pi-coding-agent/modes/theme/theme";
 import type { InteractiveModeContext } from "@oh-my-pi/pi-coding-agent/modes/types";
 import { UiHelpers } from "@oh-my-pi/pi-coding-agent/modes/utils/ui-helpers";
 import type { CustomMessage } from "@oh-my-pi/pi-coding-agent/session/messages";
+import type { SessionEntry } from "@oh-my-pi/pi-coding-agent/session/session-entries";
 import type { Component } from "@oh-my-pi/pi-tui";
 
 beforeAll(() => {
@@ -47,6 +49,7 @@ function createContext(options: {
 		statusLine: { invalidate: vi.fn() },
 		updateEditorTopBorder: vi.fn(),
 		ui: { requestRender: vi.fn() },
+		chatContainer: new TranscriptContainer(),
 		editor,
 		addMessageToChat,
 		updatePendingMessagesDisplay,
@@ -74,6 +77,43 @@ function createContext(options: {
 		clearOptimisticUserMessage,
 		replaceOptimisticUserMessage,
 	};
+}
+function createUsageContext(entries: readonly SessionEntry[]): InteractiveModeContext {
+	const chatContainer = new TranscriptContainer();
+	let helpers: UiHelpers;
+	const sessionManager = {
+		getBranch: () => entries,
+		putBlobSync: () => "local://unused",
+	};
+	const ctx = {
+		isInitialized: true,
+		statusLine: { invalidate: vi.fn() },
+		updateEditorTopBorder: vi.fn(),
+		ui: { requestRender: vi.fn() },
+		chatContainer,
+		editor: { setText: vi.fn(), getText: () => "" },
+		addMessageToChat: (message: UserMessage, options?: Parameters<UiHelpers["addMessageToChat"]>[1]) =>
+			helpers.addMessageToChat(message, options),
+		updatePendingMessagesDisplay: vi.fn(),
+		getUserMessageText: (message: UserMessage) =>
+			typeof message.content === "string"
+				? message.content
+				: message.content
+						.filter((content): content is TextContent => content.type === "text")
+						.map(content => content.text)
+						.join(""),
+		optimisticUserMessageSignature: undefined,
+		locallySubmittedUserSignatures: new Set<string>(),
+		clearOptimisticUserMessage: vi.fn(),
+		replaceOptimisticUserMessage: vi.fn(),
+		transcriptMessageComponents: new WeakMap(),
+		pendingTools: new Map(),
+		viewSession: { isStreaming: false, sessionManager, retryAttempt: 0 },
+		session: { isAborting: false },
+		toolOutputExpanded: false,
+	} as unknown as InteractiveModeContext;
+	helpers = new UiHelpers(ctx);
+	return ctx;
 }
 
 describe("EventController message_start (user role)", () => {
@@ -166,6 +206,55 @@ describe("EventController message_start (user role)", () => {
 		expect(addMessageToChat).toHaveBeenCalledTimes(1);
 		expect(addMessageToChat).toHaveBeenCalledWith(message);
 		await pending;
+	});
+	it("attaches restored cumulative usage inside the next live user card", async () => {
+		const priorUser: UserMessage = {
+			role: "user",
+			content: [{ type: "text", text: "first request" }],
+			attribution: "user",
+			timestamp: 1_000,
+		};
+		const assistant: AssistantMessage = {
+			role: "assistant",
+			content: [{ type: "text", text: "done" }],
+			api: "anthropic-messages",
+			provider: "anthropic",
+			model: "claude-sonnet-4-6",
+			stopReason: "stop",
+			usage: {
+				input: 100,
+				output: 10,
+				cacheRead: 0,
+				cacheWrite: 0,
+				totalTokens: 110,
+				cost: { input: 0.1, output: 0, cacheRead: 0, cacheWrite: 0, total: 0.1 },
+				costTelemetry: { source: "catalog" },
+			},
+			timestamp: 1_100,
+			duration: 200,
+		};
+		const entries = [priorUser, assistant].map((message, index) => ({
+			type: "message" as const,
+			id: `m${index}`,
+			parentId: index === 0 ? null : `m${index - 1}`,
+			timestamp: new Date(message.timestamp).toISOString(),
+			message,
+		}));
+		const ctx = createUsageContext(entries);
+		const controller = new EventController(ctx);
+		controller.syncSessionUsageFromBranch();
+
+		await controller.handleEvent({
+			type: "message_start",
+			message: { ...createUserMessage("second request"), timestamp: 2_000 },
+		});
+
+		const user = ctx.chatContainer.children.findLast(
+			(component): component is UserMessageComponent => component instanceof UserMessageComponent,
+		);
+		expect(user).toBeDefined();
+		expect(user!.render(160).join("\n")).toContain("SESSION");
+		expect(user!.render(160).join("\n")).toContain("1 req");
 	});
 });
 

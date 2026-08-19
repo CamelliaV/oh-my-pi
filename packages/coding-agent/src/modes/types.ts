@@ -38,6 +38,7 @@ import type { HookSelectorComponent, HookSelectorOptions } from "./components/ho
 import type { StatusLineComponent } from "./components/status-line";
 import type { ToolExecutionHandle } from "./components/tool-execution";
 import type { TranscriptContainer } from "./components/transcript-container";
+import type { SessionUsageSnapshot } from "./components/work-usage";
 import type { EventController } from "./controllers/event-controller";
 import type { LoopLimitRuntime } from "./loop-limit";
 import type { OAuthManualInputManager } from "./oauth-manual-input";
@@ -320,6 +321,7 @@ export interface InteractiveModeContext {
 			populateHistory?: boolean;
 			imageLinks?: readonly (string | undefined)[];
 			reuseSettledComponent?: boolean;
+			sessionUsage?: SessionUsageSnapshot;
 		},
 	): Component[];
 	renderSessionContext(sessionContext: SessionContext, options?: RenderSessionContextOptions): void;

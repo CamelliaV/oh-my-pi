@@ -1834,7 +1834,15 @@ describe("compact() remote compaction failure handling", () => {
 				{ type: "response.output_item.done", output_index: 0, item: compactionItem },
 				{
 					type: "response.completed",
-					response: { usage: { input_tokens: 55, output_tokens: 3, total_tokens: 58 } },
+					response: {
+						usage: {
+							input_tokens: 55,
+							input_tokens_details: { cached_tokens: 40 },
+							output_tokens: 3,
+							output_tokens_details: { reasoning_tokens: 1 },
+							total_tokens: 58,
+						},
+					},
 				},
 			]);
 		};
@@ -1872,6 +1880,21 @@ describe("compact() remote compaction failure handling", () => {
 		expect(remote?.usedTokens).toBe(55);
 		expect(remote?.replacementHistory.at(-1)).toEqual(compactionItem);
 		expect(result.summary).toContain("Remote compaction preserved provider-native history");
+		expect(result.requestUsage).toMatchObject({
+			kind: "remote-v2",
+			provider: "openai",
+			model: "gpt-5",
+			usage: {
+				input: 15,
+				output: 3,
+				cacheRead: 40,
+				cacheWrite: 0,
+				totalTokens: 58,
+				reasoningTokens: 1,
+				cacheTelemetry: { read: "reported", write: "not-applicable" },
+			},
+		});
+		expect(result.requestUsage?.duration).toBeGreaterThanOrEqual(0);
 		expect(completeSpy).not.toHaveBeenCalled();
 	});
 

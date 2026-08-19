@@ -168,6 +168,7 @@ import { StatusLineComponent } from "./components/status-line";
 import type { ToolExecutionHandle } from "./components/tool-execution";
 import { TranscriptContainer } from "./components/transcript-container";
 import { WelcomeComponent, type LspServerInfo as WelcomeLspServerInfo } from "./components/welcome";
+import type { SessionUsageSnapshot } from "./components/work-usage";
 import { BtwController } from "./controllers/btw-controller";
 import { CommandController } from "./controllers/command-controller";
 import { EventController } from "./controllers/event-controller";
@@ -4631,6 +4632,7 @@ export class InteractiveMode implements InteractiveModeContext {
 			populateHistory?: boolean;
 			imageLinks?: readonly (string | undefined)[];
 			reuseSettledComponent?: boolean;
+			sessionUsage?: SessionUsageSnapshot;
 		},
 	): Component[] {
 		return this.#uiHelpers.addMessageToChat(message, options);

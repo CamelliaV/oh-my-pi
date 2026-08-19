@@ -59,7 +59,7 @@ import { ToolExecutionComponent } from "./tool-execution";
 import { TranscriptContainer } from "./transcript-container";
 import { createUsageRowBlock } from "./usage-row";
 import { CollapsedSyntheticMessageComponent, UserMessageComponent } from "./user-message";
-import { createWorkUsageRowBlock, WorkUsageAccumulator } from "./work-usage";
+import { createWorkUsageRowBlock, SessionUsageAccumulator, WorkUsageAccumulator } from "./work-usage";
 
 export interface ChatTranscriptBuilderDeps {
 	ui: TUI;
@@ -94,6 +94,7 @@ export class ChatTranscriptBuilder {
 	#pendingReadUsageCallIds: string[] | undefined;
 	#lastAssistantUsage: Usage | undefined;
 	#workUsage = new WorkUsageAccumulator();
+	#sessionUsage = new SessionUsageAccumulator();
 	#waitingPoll: ToolExecutionComponent | null = null;
 	#todoSnapshot: ToolExecutionComponent | null = null;
 	#expandables: Array<{ setExpanded(expanded: boolean): void }> = [];
@@ -115,15 +116,19 @@ export class ChatTranscriptBuilder {
 		// Flush the trailing work summary only once its tools are materialized
 		// (a read whose result has not arrived stays pending); otherwise the row
 		// would sit above its tools. The drain happens here at the end of the pass.
-		if (this.#readArgs.size === 0 && this.#pendingTools.size === 0) this.#flushPendingUsage();
-		this.#flushWorkUsage();
+		if (this.#readArgs.size === 0 && this.#pendingTools.size === 0) {
+			this.#flushPendingUsage();
+			this.#flushWorkUsage();
+		}
 	}
 
 	/** Append newly persisted entries without rebuilding already rendered rows. */
 	append(entries: SessionMessageEntry[]): void {
 		for (const entry of entries) this.#appendChatMessage(entry.message);
-		if (this.#readArgs.size === 0 && this.#pendingTools.size === 0) this.#flushPendingUsage();
-		this.#flushWorkUsage();
+		if (this.#readArgs.size === 0 && this.#pendingTools.size === 0) {
+			this.#flushPendingUsage();
+			this.#flushWorkUsage();
+		}
 	}
 
 	/** Toggle tool-output expansion across every expandable component. */
@@ -149,6 +154,7 @@ export class ChatTranscriptBuilder {
 		this.#pendingReadUsageCallIds = undefined;
 		this.#lastAssistantUsage = undefined;
 		this.#workUsage = new WorkUsageAccumulator();
+		this.#sessionUsage = new SessionUsageAccumulator();
 		this.#waitingPoll = null;
 		this.#todoSnapshot = null;
 		this.#expandables = [];
@@ -244,7 +250,9 @@ export class ChatTranscriptBuilder {
 	/** Close the work aggregate: the next real user prompt ended the prior work unit. */
 	#flushWorkUsage(): void {
 		const snapshot = this.#workUsage.flush();
-		if (snapshot) this.container.addChild(createWorkUsageRowBlock(snapshot));
+		if (!snapshot) return;
+		this.#sessionUsage.add(snapshot);
+		this.container.addChild(createWorkUsageRowBlock(snapshot));
 	}
 
 	#appendChatMessage(message: AgentMessage): void {
@@ -282,7 +290,9 @@ export class ChatTranscriptBuilder {
 						this.#trackExpandable(collapsed);
 						this.container.addChild(collapsed);
 					} else {
-						this.container.addChild(new UserMessageComponent(textContent, false));
+						this.container.addChild(
+							new UserMessageComponent(textContent, false, undefined, this.#sessionUsage.current()),
+						);
 					}
 				}
 				break;
@@ -306,6 +316,7 @@ export class ChatTranscriptBuilder {
 				this.#appendCustomMessage(message);
 				break;
 			case "compactionSummary": {
+				if (message.requestUsage) this.#workUsage.addRequestUsage(message.requestUsage);
 				const component = new CompactionSummaryMessageComponent(message);
 				this.#trackExpandable(component);
 				this.container.addChild(component);

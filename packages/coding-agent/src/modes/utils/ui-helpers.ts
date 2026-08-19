@@ -51,7 +51,13 @@ import {
 } from "../../session/messages";
 import type { SessionContext, StrippedToolCallsMarker } from "../../session/session-context";
 import { replaceTabs } from "../../tools/render-utils";
-import { createWorkUsageRowBlock, WorkUsageAccumulator } from "../components/work-usage";
+import {
+	buildSessionUsageTimeline,
+	createWorkUsageRowBlock,
+	cumulativeSessionUsageForWork,
+	type SessionUsageSnapshot,
+	WorkUsageAccumulator,
+} from "../components/work-usage";
 import { buildSkillCommandPrompt, invokeSkillCommandFromText, isKnownSkillCommand } from "../skill-command";
 import { createAssistantMessageComponent } from "./interactive-context-helpers";
 import {
@@ -88,6 +94,7 @@ type AddMessageOptions = {
 	populateHistory?: boolean;
 	imageLinks?: readonly (string | undefined)[];
 	reuseSettledComponent?: boolean;
+	sessionUsage?: SessionUsageSnapshot;
 };
 
 function imageLinksForMessage(
@@ -280,7 +287,7 @@ export class UiHelpers {
 								message,
 								this.ctx.viewSession.sessionManager.putBlobSync.bind(this.ctx.viewSession.sessionManager),
 							);
-						userComponent = new UserMessageComponent(textContent, isSynthetic, imageLinks);
+						userComponent = new UserMessageComponent(textContent, isSynthetic, imageLinks, options?.sessionUsage);
 						this.ctx.transcriptMessageComponents.set(message, userComponent);
 					}
 					this.ctx.chatContainer.addChild(userComponent);
@@ -372,9 +379,16 @@ export class UiHelpers {
 		// Read-only invisible requests attach metrics to their shared compact group;
 		// every other request keeps the standalone row below its tool blocks.
 		const workUsage = new WorkUsageAccumulator();
+		const sessionUsageTimeline = buildSessionUsageTimeline(this.ctx.viewSession.sessionManager.getBranch?.() ?? []);
+		const sessionUsageBeforeWork = new Map(
+			sessionUsageTimeline.map(entry => [entry.work.startedAt, entry.before] as const),
+		);
+		let latestSessionUsage: SessionUsageSnapshot | undefined;
 		const flushWorkUsage = () => {
 			const snapshot = workUsage.flush();
-			if (snapshot) this.ctx.chatContainer.addChild(createWorkUsageRowBlock(snapshot));
+			if (!snapshot) return;
+			latestSessionUsage = cumulativeSessionUsageForWork(sessionUsageTimeline, snapshot);
+			this.ctx.chatContainer.addChild(createWorkUsageRowBlock(snapshot));
 		};
 		let pendingUsage: Usage | undefined;
 		let pendingUsageDuration: number | undefined;
@@ -681,6 +695,9 @@ export class UiHelpers {
 					}
 				}
 			} else {
+				if (message.role === "compactionSummary" && message.requestUsage) {
+					workUsage.addRequestUsage(message.requestUsage);
+				}
 				readGroup?.seal();
 				readGroup = null;
 				// A user prompt closes the displacement window, same as the live path.
@@ -690,13 +707,24 @@ export class UiHelpers {
 					flushWorkUsage();
 					workUsage.begin(message.timestamp);
 				}
-				// All other messages use standard rendering
-				this.ctx.addMessageToChat(message, options);
+				const userSessionUsage =
+					message.role === "user" && message.synthetic !== true
+						? sessionUsageBeforeWork.has(message.timestamp)
+							? sessionUsageBeforeWork.get(message.timestamp)
+							: latestSessionUsage
+						: undefined;
+				// All other messages use standard rendering.
+				this.ctx.addMessageToChat(
+					message,
+					userSessionUsage ? { ...options, sessionUsage: userSessionUsage } : options,
+				);
 			}
 		}
 		flushPendingUsage();
-		flushWorkUsage();
-
+		// A streaming rebuild (notably auto-compaction) is only a partial view of
+		// the current user work. EventController restores that open accumulator
+		// from the branch and emits one complete WORK card at terminal agent_end.
+		if (!this.ctx.viewSession.isStreaming) flushWorkUsage();
 		// The trailing read run has no following break to close it; seal so the
 		// rebuilt group freezes (even with a never-persisted result) and commits to
 		// native scrollback like every other historical block.
@@ -738,6 +766,7 @@ export class UiHelpers {
 			}
 			this.ctx.pendingTools.clear();
 		}
+		this.ctx.eventController?.syncSessionUsageFromBranch?.();
 		this.ctx.ui.requestRender();
 	}
 

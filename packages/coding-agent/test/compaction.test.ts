@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "bun:test";
 import * as path from "node:path";
 import type { AgentMessage } from "@oh-my-pi/pi-agent-core";
 import {
+	type CompactionRequestUsage,
 	type CompactionSettings,
 	calculateContextTokens,
 	compact,
@@ -1215,6 +1216,34 @@ describe("buildSessionContext", () => {
 		expect(loaded.messages.length).toBe(5);
 		expect(loaded.messages[0].role).toBe("compactionSummary");
 		expect((loaded.messages[0] as any).summary).toContain("Summary of 1,a,2,b");
+	});
+
+	it("replays compaction request usage into collapsed and full transcripts", () => {
+		const u1 = createMessageEntry(createUserMessage("1"));
+		const a1 = createMessageEntry(createAssistantMessage("a"));
+		const requestUsage: CompactionRequestUsage = {
+			kind: "remote-v2",
+			provider: "openai",
+			model: "gpt-5",
+			usage: {
+				...createMockUsage(20, 5, 80),
+				cacheTelemetry: { read: "reported", write: "not-applicable" },
+			},
+			timestamp: 1_000,
+			duration: 250,
+		};
+		const compaction: CompactionEntry = {
+			...createCompactionEntry("Summary", u1.id),
+			requestUsage,
+		};
+
+		for (const loaded of [
+			buildSessionContext([u1, a1, compaction]),
+			buildSessionContext([u1, a1, compaction], undefined, undefined, { transcript: true }),
+		]) {
+			const summary = loaded.messages.find(message => message.role === "compactionSummary");
+			expect(summary?.requestUsage).toEqual(requestUsage);
+		}
 	});
 
 	it("re-attaches snapcompact frames from preserveData as compaction summary images", () => {

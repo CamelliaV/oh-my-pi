@@ -1,7 +1,9 @@
 import type { AgentMessage } from "@oh-my-pi/pi-agent-core";
+import type { CompactionRequestUsage } from "@oh-my-pi/pi-agent-core/compaction";
 import type { Usage } from "@oh-my-pi/pi-ai";
 import { Container, Spacer, Text } from "@oh-my-pi/pi-tui";
 import { formatDuration, formatNumber } from "@oh-my-pi/pi-utils";
+import type { SessionEntry } from "../../session/session-entries";
 import { theme } from "../theme/theme";
 import { DynamicBorder } from "./dynamic-border";
 
@@ -25,11 +27,18 @@ export interface WorkUsageSnapshot {
 	cacheRate: number | null;
 	cacheReportedRequests: number;
 	cacheEligibleRequests: number;
+	/** Raw weighted-cache numerator and denominator for higher-level aggregation. */
+	cacheReadTokens: number;
+	cachePromptTokens: number;
 	actualCost: number;
 	actualCostRequests: number;
 	estimatedCost: number;
 	estimatedCostRequests: number;
 	unknownCostRequests: number;
+}
+
+export interface SessionUsageSnapshot extends WorkUsageSnapshot {
+	works: number;
 }
 
 function intervalDuration(intervals: Interval[]): number {
@@ -62,6 +71,79 @@ function formatCost(cost: number): string {
 	return `$${cost.toFixed(2)}`;
 }
 
+function createEmptyUsage(): Usage {
+	return {
+		input: 0,
+		output: 0,
+		cacheRead: 0,
+		cacheWrite: 0,
+		totalTokens: 0,
+		cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+	};
+}
+
+function addUsage(aggregate: Usage, usage: Usage): void {
+	aggregate.input += usage.input;
+	aggregate.output += usage.output;
+	aggregate.cacheRead += usage.cacheRead;
+	aggregate.cacheWrite += usage.cacheWrite;
+	aggregate.totalTokens += usage.totalTokens;
+	aggregate.cost.input += usage.cost.input;
+	aggregate.cost.output += usage.cost.output;
+	aggregate.cost.cacheRead += usage.cost.cacheRead;
+	aggregate.cost.cacheWrite += usage.cost.cacheWrite;
+	aggregate.cost.total += usage.cost.total;
+	if (usage.contextTokens !== undefined) {
+		aggregate.contextTokens = Math.max(aggregate.contextTokens ?? 0, usage.contextTokens);
+	}
+	if (usage.reasoningTokens !== undefined) {
+		aggregate.reasoningTokens = (aggregate.reasoningTokens ?? 0) + usage.reasoningTokens;
+	}
+	if (usage.premiumRequests !== undefined) {
+		aggregate.premiumRequests = (aggregate.premiumRequests ?? 0) + usage.premiumRequests;
+	}
+	if (usage.orchestration) {
+		aggregate.orchestration ??= {};
+		if (usage.orchestration.input !== undefined) {
+			aggregate.orchestration.input = (aggregate.orchestration.input ?? 0) + usage.orchestration.input;
+		}
+		if (usage.orchestration.cacheRead !== undefined) {
+			aggregate.orchestration.cacheRead = (aggregate.orchestration.cacheRead ?? 0) + usage.orchestration.cacheRead;
+		}
+		if (usage.orchestration.output !== undefined) {
+			aggregate.orchestration.output = (aggregate.orchestration.output ?? 0) + usage.orchestration.output;
+		}
+	}
+	if (usage.cttl) {
+		aggregate.cttl ??= {};
+		if (usage.cttl.ephemeral5m !== undefined) {
+			aggregate.cttl.ephemeral5m = (aggregate.cttl.ephemeral5m ?? 0) + usage.cttl.ephemeral5m;
+		}
+		if (usage.cttl.ephemeral1h !== undefined) {
+			aggregate.cttl.ephemeral1h = (aggregate.cttl.ephemeral1h ?? 0) + usage.cttl.ephemeral1h;
+		}
+	}
+	if (usage.server) {
+		aggregate.server ??= {};
+		if (usage.server.webSearch !== undefined) {
+			aggregate.server.webSearch = (aggregate.server.webSearch ?? 0) + usage.server.webSearch;
+		}
+		if (usage.server.webFetch !== undefined) {
+			aggregate.server.webFetch = (aggregate.server.webFetch ?? 0) + usage.server.webFetch;
+		}
+	}
+}
+
+function usageIsBilled(usage: Usage): boolean {
+	return (
+		usage.input > 0 ||
+		usage.output > 0 ||
+		usage.cacheRead > 0 ||
+		usage.cacheWrite > 0 ||
+		(usage.premiumRequests ?? 0) > 0
+	);
+}
+
 /**
  * Aggregates one user-initiated unit of work across every model request and
  * tool execution. Provider-reported cache buckets and cost provenance remain
@@ -90,6 +172,11 @@ export class WorkUsageAccumulator {
 		return this.#usage !== undefined;
 	}
 
+	/** True after a user/agent boundary started this work, even before the first billed request. */
+	get begun(): boolean {
+		return this.#startedAt !== undefined;
+	}
+
 	/** Record the user-visible start of this unit of work. */
 	begin(timestamp = Date.now()): void {
 		if (!Number.isFinite(timestamp)) return;
@@ -97,78 +184,30 @@ export class WorkUsageAccumulator {
 	}
 
 	add(message: AssistantMessage): void {
-		const usage = message.usage;
-		if (this.#usage === undefined) {
-			this.#usage = {
-				input: 0,
-				output: 0,
-				cacheRead: 0,
-				cacheWrite: 0,
-				totalTokens: 0,
-				cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
-			};
-		}
-		const aggregate = this.#usage;
-		aggregate.input += usage.input;
-		aggregate.output += usage.output;
-		aggregate.cacheRead += usage.cacheRead;
-		aggregate.cacheWrite += usage.cacheWrite;
-		aggregate.totalTokens += usage.totalTokens;
-		aggregate.cost.input += usage.cost.input;
-		aggregate.cost.output += usage.cost.output;
-		aggregate.cost.cacheRead += usage.cost.cacheRead;
-		aggregate.cost.cacheWrite += usage.cost.cacheWrite;
-		aggregate.cost.total += usage.cost.total;
-		if (usage.contextTokens !== undefined) {
-			aggregate.contextTokens = Math.max(aggregate.contextTokens ?? 0, usage.contextTokens);
-		}
-		if (usage.reasoningTokens !== undefined) {
-			aggregate.reasoningTokens = (aggregate.reasoningTokens ?? 0) + usage.reasoningTokens;
-		}
-		if (usage.premiumRequests !== undefined) {
-			aggregate.premiumRequests = (aggregate.premiumRequests ?? 0) + usage.premiumRequests;
-		}
-		if (usage.orchestration) {
-			aggregate.orchestration ??= {};
-			if (usage.orchestration.input !== undefined) {
-				aggregate.orchestration.input = (aggregate.orchestration.input ?? 0) + usage.orchestration.input;
-			}
-			if (usage.orchestration.cacheRead !== undefined) {
-				aggregate.orchestration.cacheRead =
-					(aggregate.orchestration.cacheRead ?? 0) + usage.orchestration.cacheRead;
-			}
-			if (usage.orchestration.output !== undefined) {
-				aggregate.orchestration.output = (aggregate.orchestration.output ?? 0) + usage.orchestration.output;
-			}
-		}
-		if (usage.cttl) {
-			aggregate.cttl ??= {};
-			if (usage.cttl.ephemeral5m !== undefined) {
-				aggregate.cttl.ephemeral5m = (aggregate.cttl.ephemeral5m ?? 0) + usage.cttl.ephemeral5m;
-			}
-			if (usage.cttl.ephemeral1h !== undefined) {
-				aggregate.cttl.ephemeral1h = (aggregate.cttl.ephemeral1h ?? 0) + usage.cttl.ephemeral1h;
-			}
-		}
-		if (usage.server) {
-			aggregate.server ??= {};
-			if (usage.server.webSearch !== undefined) {
-				aggregate.server.webSearch = (aggregate.server.webSearch ?? 0) + usage.server.webSearch;
-			}
-			if (usage.server.webFetch !== undefined) {
-				aggregate.server.webFetch = (aggregate.server.webFetch ?? 0) + usage.server.webFetch;
-			}
-		}
-
-		this.#requests++;
+		if (!usageIsBilled(message.usage)) return;
 		const requestStart = message.timestamp;
-		const requestEnd = requestStart + Math.max(0, message.duration ?? 0);
-		this.begin(requestStart);
-		this.#endedAt = Math.max(this.#endedAt ?? requestEnd, requestEnd);
-		appendInterval(this.#modelIntervals, requestStart, requestEnd);
+		const requestDuration = Math.max(0, message.duration ?? 0);
+		this.#addRequest(message.usage, requestStart, requestDuration);
+		const requestEnd = requestStart + requestDuration;
 		for (const content of message.content) {
 			if (content.type === "toolCall") this.#toolStarts.set(content.id, requestEnd);
 		}
+	}
+
+	/** Record a provider request made outside an assistant message, such as native compaction. */
+	addRequestUsage(request: CompactionRequestUsage): void {
+		this.#addRequest(request.usage, request.timestamp, request.duration);
+	}
+
+	#addRequest(usage: Usage, requestStart: number, duration: number): void {
+		if (!Number.isFinite(requestStart) || !Number.isFinite(duration)) return;
+		this.#usage ??= createEmptyUsage();
+		addUsage(this.#usage, usage);
+		this.#requests++;
+		const requestEnd = requestStart + Math.max(0, duration);
+		this.begin(requestStart);
+		this.#endedAt = Math.max(this.#endedAt ?? requestEnd, requestEnd);
+		appendInterval(this.#modelIntervals, requestStart, requestEnd);
 
 		const promptTokens = usage.input + usage.cacheRead + usage.cacheWrite;
 		if (promptTokens > 0) {
@@ -228,10 +267,10 @@ export class WorkUsageAccumulator {
 		if (endedAt !== undefined && Number.isFinite(endedAt)) {
 			this.#endedAt = Math.max(this.#endedAt ?? endedAt, endedAt);
 		}
-		const startedAt = this.#startedAt ?? this.#endedAt ?? 0;
-		const finalEndedAt = Math.max(startedAt, this.#endedAt ?? startedAt);
-		const modelMs = intervalDuration(this.#modelIntervals);
-		const activeMs = intervalDuration([...this.#modelIntervals, ...this.#toolIntervals]);
+		const startedAt = Math.round(this.#startedAt ?? this.#endedAt ?? 0);
+		const finalEndedAt = Math.max(startedAt, Math.round(this.#endedAt ?? startedAt));
+		const modelMs = Math.round(intervalDuration(this.#modelIntervals));
+		const activeMs = Math.round(intervalDuration([...this.#modelIntervals, ...this.#toolIntervals]));
 		const toolMs = Math.max(0, activeMs - modelMs);
 		const wallMs = finalEndedAt - startedAt;
 		const snapshot: WorkUsageSnapshot = {
@@ -246,6 +285,8 @@ export class WorkUsageAccumulator {
 			cacheRate: this.#cachePromptTokens > 0 ? this.#cacheReadTokens / this.#cachePromptTokens : null,
 			cacheReportedRequests: this.#cacheReportedRequests,
 			cacheEligibleRequests: this.#cacheEligibleRequests,
+			cacheReadTokens: this.#cacheReadTokens,
+			cachePromptTokens: this.#cachePromptTokens,
 			actualCost: this.#actualCost,
 			actualCostRequests: this.#actualCostRequests,
 			estimatedCost: this.#estimatedCost,
@@ -272,8 +313,126 @@ export class WorkUsageAccumulator {
 	}
 }
 
-/** Format the work aggregate with the same accent hierarchy as prompt chrome. */
-export function formatWorkUsageRow(snapshot: WorkUsageSnapshot): string {
+/** Cumulative totals for completed work units in one persisted session branch. */
+export class SessionUsageAccumulator {
+	#snapshot: SessionUsageSnapshot | undefined;
+
+	constructor(seed?: SessionUsageSnapshot) {
+		this.#snapshot = seed;
+	}
+
+	current(): SessionUsageSnapshot | undefined {
+		return this.#snapshot;
+	}
+
+	add(work: WorkUsageSnapshot): SessionUsageSnapshot {
+		const previous = this.#snapshot;
+		const usage = createEmptyUsage();
+		if (previous) addUsage(usage, previous.usage);
+		addUsage(usage, work.usage);
+		const cacheReadTokens = (previous?.cacheReadTokens ?? 0) + work.cacheReadTokens;
+		const cachePromptTokens = (previous?.cachePromptTokens ?? 0) + work.cachePromptTokens;
+		const snapshot: SessionUsageSnapshot = {
+			usage,
+			works: (previous?.works ?? 0) + 1,
+			requests: (previous?.requests ?? 0) + work.requests,
+			startedAt: Math.min(previous?.startedAt ?? work.startedAt, work.startedAt),
+			endedAt: Math.max(previous?.endedAt ?? work.endedAt, work.endedAt),
+			wallMs: (previous?.wallMs ?? 0) + work.wallMs,
+			modelMs: (previous?.modelMs ?? 0) + work.modelMs,
+			toolMs: (previous?.toolMs ?? 0) + work.toolMs,
+			waitMs: (previous?.waitMs ?? 0) + work.waitMs,
+			cacheRate: cachePromptTokens > 0 ? cacheReadTokens / cachePromptTokens : null,
+			cacheReportedRequests: (previous?.cacheReportedRequests ?? 0) + work.cacheReportedRequests,
+			cacheEligibleRequests: (previous?.cacheEligibleRequests ?? 0) + work.cacheEligibleRequests,
+			cacheReadTokens,
+			cachePromptTokens,
+			actualCost: (previous?.actualCost ?? 0) + work.actualCost,
+			actualCostRequests: (previous?.actualCostRequests ?? 0) + work.actualCostRequests,
+			estimatedCost: (previous?.estimatedCost ?? 0) + work.estimatedCost,
+			estimatedCostRequests: (previous?.estimatedCostRequests ?? 0) + work.estimatedCostRequests,
+			unknownCostRequests: (previous?.unknownCostRequests ?? 0) + work.unknownCostRequests,
+		};
+		this.#snapshot = snapshot;
+		return snapshot;
+	}
+}
+
+export interface SessionUsageTimelineEntry {
+	work: WorkUsageSnapshot;
+	before: SessionUsageSnapshot | undefined;
+	session: SessionUsageSnapshot;
+}
+
+interface ReplayedSessionUsage {
+	workUsage: WorkUsageAccumulator;
+	sessionUsage: SessionUsageAccumulator;
+	timeline: SessionUsageTimelineEntry[];
+}
+
+function replaySessionUsage(entries: readonly SessionEntry[], flushTrailing: boolean): ReplayedSessionUsage {
+	const workUsage = new WorkUsageAccumulator();
+	const sessionUsage = new SessionUsageAccumulator();
+	const timeline: SessionUsageTimelineEntry[] = [];
+	const flush = () => {
+		const snapshot = workUsage.flush();
+		if (!snapshot) return;
+		const before = sessionUsage.current();
+		timeline.push({ work: snapshot, before, session: sessionUsage.add(snapshot) });
+	};
+
+	for (const entry of entries) {
+		if (entry.type === "compaction") {
+			if (entry.requestUsage) workUsage.addRequestUsage(entry.requestUsage);
+			continue;
+		}
+		if (entry.type !== "message") continue;
+		const message = entry.message;
+		switch (message.role) {
+			case "user":
+				flush();
+				workUsage.begin(message.timestamp);
+				break;
+			case "assistant":
+				workUsage.add(message);
+				break;
+			case "toolResult":
+				workUsage.addToolResult(message);
+				break;
+		}
+	}
+	if (flushTrailing) flush();
+	return { workUsage, sessionUsage, timeline };
+}
+
+/** Reconstruct work and cumulative session accounting from the full persisted branch. */
+export function buildSessionUsageTimeline(entries: readonly SessionEntry[]): SessionUsageTimelineEntry[] {
+	return replaySessionUsage(entries, true).timeline;
+}
+
+/** Restore completed session totals plus the still-open work at a live focus boundary. */
+export function restoreLiveSessionUsage(entries: readonly SessionEntry[]): {
+	workUsage: WorkUsageAccumulator;
+	sessionUsage: SessionUsageAccumulator;
+} {
+	const { workUsage, sessionUsage } = replaySessionUsage(entries, false);
+	return { workUsage, sessionUsage };
+}
+
+/** Replace an exact persisted work with current timing; retain full totals for a compacted partial work. */
+export function cumulativeSessionUsageForWork(
+	timeline: readonly SessionUsageTimelineEntry[],
+	work: WorkUsageSnapshot,
+): SessionUsageSnapshot {
+	const exact = timeline.findLast(entry => entry.work.startedAt === work.startedAt);
+	if (exact) return new SessionUsageAccumulator(exact.before).add(work);
+	const containing = timeline.findLast(
+		entry => entry.work.startedAt <= work.startedAt && entry.work.endedAt >= work.endedAt,
+	);
+	return containing?.session ?? new SessionUsageAccumulator().add(work);
+}
+
+function formatUsageAggregateRow(snapshot: WorkUsageSnapshot, label: "WORK" | "SESSION"): string {
 	const { usage } = snapshot;
 	const timing = [
 		`work ${formatDuration(snapshot.wallMs)}`,
@@ -287,7 +446,7 @@ export function formatWorkUsageRow(snapshot: WorkUsageSnapshot): string {
 		`${theme.icon.cache} R${formatNumber(usage.cacheRead)}/W${formatNumber(usage.cacheWrite)}`,
 	].join("  ");
 	const headerParts = [
-		theme.fg("accent", theme.bold(`${theme.icon.time} WORK`)),
+		theme.fg("accent", theme.bold(`${theme.icon.time} ${label}`)),
 		theme.fg("muted", timing),
 		theme.fg("accent", `${snapshot.requests} req`),
 	];
@@ -320,7 +479,17 @@ export function formatWorkUsageRow(snapshot: WorkUsageSnapshot): string {
 	return `${headerParts.join("  ")}\n${detailParts.join("  ")}`;
 }
 
-/** Render the work total with prompt-style accent chrome, not recap-level dim text. */
+/** Format the work aggregate with the same accent hierarchy as prompt chrome. */
+export function formatWorkUsageRow(snapshot: WorkUsageSnapshot): string {
+	return formatUsageAggregateRow(snapshot, "WORK");
+}
+
+/** Format cumulative branch totals as one compact line for the user-input card. */
+export function formatSessionUsageRow(snapshot: SessionUsageSnapshot): string {
+	return formatUsageAggregateRow(snapshot, "SESSION").replace("\n", "  ");
+}
+
+/** Render the completed work total with prompt-style accent chrome. */
 export function createWorkUsageRowBlock(snapshot: WorkUsageSnapshot): Container {
 	const block = new Container();
 	const border = new DynamicBorder(str => theme.fg("borderAccent", str));

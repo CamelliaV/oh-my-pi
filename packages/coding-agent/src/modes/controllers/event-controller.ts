@@ -20,6 +20,7 @@ import { TodoReminderComponent } from "../../modes/components/todo-reminder";
 import { ToolExecutionComponent, type ToolExecutionHandle } from "../../modes/components/tool-execution";
 import { TtsrNotificationComponent } from "../../modes/components/ttsr-notification";
 import { createUsageRowBlock } from "../../modes/components/usage-row";
+import { UserMessageComponent } from "../../modes/components/user-message";
 import { getSymbolTheme, theme } from "../../modes/theme/theme";
 import type { InteractiveModeContext, TodoPhase } from "../../modes/types";
 import idleRecapPrompt from "../../prompts/system/recap-user.md" with { type: "text" };
@@ -33,7 +34,13 @@ import { SpeechEnhancer } from "../../tts/speech-enhancer";
 import { vocalizer } from "../../tts/vocalizer";
 import { canonicalizeMessage } from "../../utils/thinking-display";
 import { setTerminalTitleState } from "../../utils/title-generator";
-import { createWorkUsageRowBlock, WorkUsageAccumulator } from "../components/work-usage";
+import {
+	buildSessionUsageTimeline,
+	createWorkUsageRowBlock,
+	restoreLiveSessionUsage,
+	SessionUsageAccumulator,
+	WorkUsageAccumulator,
+} from "../components/work-usage";
 import { interruptHint } from "../shared";
 import { createAssistantMessageComponent } from "../utils/interactive-context-helpers";
 import {
@@ -139,6 +146,7 @@ export class EventController {
 	// Work-level usage aggregate (between user prompts); terminal agent_end or
 	// the next user message flushes it, matching transcript rebuilds.
 	#workUsage = new WorkUsageAccumulator();
+	#sessionUsage = new SessionUsageAccumulator();
 	#lastAssistantComponent: AssistantMessageComponent | undefined = undefined;
 	// Assistant component whose turn-ending error is currently mirrored in the
 	// pinned banner. Its inline `Error: …` line is suppressed while pinned and
@@ -313,6 +321,27 @@ export class EventController {
 	#resetReadGroup(): void {
 		this.#lastReadGroup?.finalize();
 		this.#lastReadGroup = undefined;
+	}
+
+	#flushWorkUsage(endedAt?: number): void {
+		const snapshot = this.#workUsage.flush(endedAt);
+		if (!snapshot) return;
+		this.#sessionUsage.add(snapshot);
+		this.ctx.chatContainer.addChild(createWorkUsageRowBlock(snapshot));
+	}
+
+	/** Reseed cumulative totals after an idle transcript rebuild or session switch. */
+	syncSessionUsageFromBranch(): void {
+		if (this.#workUsage.begun) return;
+		const entries = this.ctx.viewSession?.sessionManager?.getBranch?.() ?? [];
+		if (this.ctx.viewSession?.isStreaming) {
+			const restored = restoreLiveSessionUsage(entries);
+			this.#workUsage = restored.workUsage;
+			this.#sessionUsage = restored.sessionUsage;
+			return;
+		}
+		const timeline = buildSessionUsageTimeline(entries);
+		this.#sessionUsage = new SessionUsageAccumulator(timeline.at(-1)?.session);
 	}
 	#approvalPreviewGate(toolCallId: string): ApprovalPreviewGate {
 		let gate = this.#approvalPreviewGates.get(toolCallId);
@@ -651,6 +680,8 @@ export class EventController {
 		this.#orphanedToolCompletions.clear();
 		this.#postToolAssistantComponents.clear();
 		this.#workUsage = new WorkUsageAccumulator();
+		this.#sessionUsage = new SessionUsageAccumulator();
+		this.syncSessionUsageFromBranch();
 		this.#backgroundTaskCallIds.clear();
 		this.#approvalAttentionToolCallIds.clear();
 		this.#readToolCallArgs.clear();
@@ -794,10 +825,7 @@ export class EventController {
 			this.ctx.ui.requestRender();
 		} else if (event.message.role === "user") {
 			vocalizer.clear();
-			{
-				const snapshot = this.#workUsage.flush();
-				if (snapshot) this.ctx.chatContainer.addChild(createWorkUsageRowBlock(snapshot));
-			}
+			this.#flushWorkUsage();
 			this.#workUsage.begin(event.message.timestamp);
 			const textContent = this.ctx.getUserMessageText(event.message);
 			const imageBlocks =
@@ -832,6 +860,12 @@ export class EventController {
 				// live-region block boundaries. addMessageToChat materializes clickable image
 				// links via the synchronous putBlobSync fallback, so no await is needed here.
 				this.ctx.addMessageToChat(event.message);
+			}
+			if (textContent && event.message.synthetic !== true) {
+				const userComponent = this.ctx.chatContainer?.children.findLast(
+					(component): component is UserMessageComponent => component instanceof UserMessageComponent,
+				);
+				userComponent?.setSessionUsage(this.#sessionUsage.current());
 			}
 
 			// Clear the editor only when the submission did not originate from a
@@ -1787,10 +1821,7 @@ export class EventController {
 		this.#syntheticFailureCards.clear();
 		this.#orphanedToolCompletions.clear();
 		this.#postToolAssistantComponents.clear();
-		{
-			const snapshot = this.#workUsage.flush(Date.now());
-			if (snapshot) this.ctx.chatContainer.addChild(createWorkUsageRowBlock(snapshot));
-		}
+		this.#flushWorkUsage(Date.now());
 		this.#resetReadGroup();
 		// The turn is over: nothing else lands this turn, so the waiting poll is
 		// final history — seal it instead of letting its spinner tick while idle.
@@ -1886,6 +1917,9 @@ export class EventController {
 			this.ctx.autoCompactionLoader.stop();
 			this.ctx.autoCompactionLoader = undefined;
 			this.ctx.statusContainer.disposeChildren();
+		}
+		if (event.result?.requestUsage && this.#workUsage.begun) {
+			this.#workUsage.addRequestUsage(event.result.requestUsage);
 		}
 		const isHandoffAction = event.action === "handoff";
 		const isShakeAction = event.action === "shake";

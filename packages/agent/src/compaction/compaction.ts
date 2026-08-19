@@ -26,10 +26,15 @@ import {
 import * as AIError from "@oh-my-pi/pi-ai/error";
 import { createOpenAICodexCompactionRequestContext } from "@oh-my-pi/pi-ai/providers/openai-codex-responses";
 import { convertTools } from "@oh-my-pi/pi-ai/providers/openai-responses";
-import { buildResponsesInput, resolveOpenAICompatPolicy } from "@oh-my-pi/pi-ai/providers/openai-shared";
+import {
+	buildResponsesInput,
+	calculateOpenAIUsageAccounting,
+	resolveOpenAICompatPolicy,
+} from "@oh-my-pi/pi-ai/providers/openai-shared";
 import { stripOpenAIResponsesOutputOnlyStatusesForReplay } from "@oh-my-pi/pi-ai/utils";
 import { preferredDialect } from "@oh-my-pi/pi-catalog/identity";
 import { clampThinkingLevelForModel } from "@oh-my-pi/pi-catalog/model-thinking";
+import { calculateCost } from "@oh-my-pi/pi-catalog/models";
 import { isRecord, logger, prompt, stringifyJson } from "@oh-my-pi/pi-utils";
 import * as snapcompact from "@oh-my-pi/snapcompact";
 import { type AgentTelemetry, instrumentedCompleteSimple } from "../telemetry";
@@ -38,6 +43,7 @@ import { countTokens } from "../tokenizer";
 import type { AgentMessage } from "../types";
 import {
 	buildCompactionV2Request,
+	type CompactionV2Usage,
 	getCompactionV2PreserveData,
 	requestCompactionV2Streaming,
 	shouldUseCompactionV2Streaming,
@@ -146,6 +152,16 @@ function getMessageFromEntry(entry: SessionEntry): AgentMessage | undefined {
 	return undefined;
 }
 
+/** Provider request charged while producing a compaction result. */
+export interface CompactionRequestUsage {
+	kind: "remote-v2";
+	provider: string;
+	model: string;
+	usage: Usage;
+	timestamp: number;
+	duration: number;
+}
+
 /** Result from compact() - SessionManager adds uuid/parentUuid when saving */
 export interface CompactionResult<T = unknown> {
 	summary: string;
@@ -157,6 +173,29 @@ export interface CompactionResult<T = unknown> {
 	details?: T;
 	/** Hook-provided data to persist alongside compaction entry. */
 	preserveData?: Record<string, unknown>;
+	/** Billable provider request made by native V2 compaction. */
+	requestUsage?: CompactionRequestUsage;
+}
+
+function normalizeCompactionV2Usage(model: Model, raw: CompactionV2Usage): Usage {
+	const usage: Usage = {
+		...calculateOpenAIUsageAccounting({
+			promptTokens: raw.inputTokens,
+			outputTokens: raw.outputTokens,
+			cachedTokens: raw.cachedInputTokens ?? 0,
+			reasoningTokens: raw.reasoningOutputTokens ?? 0,
+			cacheWriteOpenRouter: undefined,
+			cacheWriteDeepSeek: undefined,
+			hasDeepSeekCacheHitAndMiss: false,
+		}),
+		cacheTelemetry: {
+			read: raw.cachedInputTokens === undefined ? "unavailable" : "reported",
+			write: "not-applicable",
+		},
+		cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+	};
+	calculateCost(model, usage);
+	return usage;
 }
 
 // ============================================================================
@@ -1502,6 +1541,7 @@ export async function compact(
 	];
 	let usedRemoteCompaction = false;
 	let nativeCompactionError: unknown;
+	let requestUsage: CompactionRequestUsage | undefined;
 	if (
 		settings.remoteEnabled !== false &&
 		settings.remoteStreamingV2Enabled !== false &&
@@ -1546,6 +1586,7 @@ export async function compact(
 					promptCacheKey: summaryOptions.promptCacheKey,
 					retainedMessageBudget: settings.v2RetainedMessageBudget,
 				});
+				const requestTimestamp = Date.now();
 				const remote = await withAuth(
 					apiKey,
 					key =>
@@ -1557,7 +1598,18 @@ export async function compact(
 						}),
 					{ signal },
 				);
+				const requestEndedAt = Date.now();
 				preserveData = { ...(preserveData ?? {}), ...storeCompactionV2PreserveData(remote, model) };
+				if (remote.usage) {
+					requestUsage = {
+						kind: "remote-v2",
+						provider: model.provider,
+						model: model.id,
+						usage: normalizeCompactionV2Usage(model, remote.usage),
+						timestamp: requestTimestamp,
+						duration: requestEndedAt - requestTimestamp,
+					};
+				}
 				usedRemoteCompaction = true;
 			} catch (err) {
 				// A user/session abort is a cancellation, not a remote failure —
@@ -1713,6 +1765,7 @@ export async function compact(
 		tokensBefore,
 		details: { readFiles, modifiedFiles } as CompactionDetails,
 		preserveData: finalPreserveData,
+		requestUsage,
 	};
 }
 

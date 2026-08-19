@@ -1,8 +1,9 @@
-import { Box, type Component, Container, Markdown } from "@oh-my-pi/pi-tui";
+import { Box, type Component, Container, Markdown, Text } from "@oh-my-pi/pi-tui";
 import { formatBytes } from "@oh-my-pi/pi-utils";
 import { getMarkdownTheme, theme } from "../../modes/theme/theme";
 import { imageReferenceHyperlink, renderPlaceholders } from "../image-references";
 import { highlightMagicKeywords } from "../magic-keywords";
+import { formatSessionUsageRow, type SessionUsageSnapshot } from "./work-usage";
 
 // OSC 133 shell integration: marks prompt zones for terminal multiplexers.
 //
@@ -36,8 +37,15 @@ export class UserMessageComponent extends Container {
 	// never mutates the container's cached array.
 	#zoneSource: readonly string[] | undefined;
 	#zoneLines: string[] | undefined;
+	readonly #frame: Box;
+	#sessionLine: Text | undefined;
 
-	constructor(text: string, synthetic = false, imageLinks?: readonly (string | undefined)[]) {
+	constructor(
+		text: string,
+		synthetic = false,
+		imageLinks?: readonly (string | undefined)[],
+		sessionUsage?: SessionUsageSnapshot,
+	) {
 		super();
 		const bgColor = (value: string) => theme.bg("userMessageBg", value);
 		// Paint the magic keywords ("ultrathink"/"orchestrate"/"workflowz") inside the rendered
@@ -66,13 +74,33 @@ export class UserMessageComponent extends Container {
 		// Frame the bubble with the same rounded outline tool cards use, so user
 		// input reads as a card even when userMessageBg is "" (terminal default,
 		// transparent under terminal background opacity).
-		const frame = new Box(0, 0, undefined, {
+		this.#frame = new Box(0, 0, undefined, {
 			chars: theme.boxRound,
 			color: str => theme.fg("borderAccent", str),
 		});
-		frame.setIgnoreTight(true);
-		frame.addChild(md);
-		this.addChild(frame);
+		this.#frame.setIgnoreTight(true);
+		this.#frame.addChild(md);
+		this.addChild(this.#frame);
+		if (sessionUsage) this.setSessionUsage(sessionUsage);
+	}
+
+	/** Show cumulative completed-session usage as a dedicated row inside this input card. */
+	setSessionUsage(snapshot: SessionUsageSnapshot | undefined): void {
+		if (!snapshot) {
+			if (this.#sessionLine) this.#frame.removeChild(this.#sessionLine);
+			this.#sessionLine = undefined;
+		} else {
+			const text = formatSessionUsageRow(snapshot);
+			if (this.#sessionLine) {
+				this.#sessionLine.setText(text);
+			} else {
+				this.#sessionLine = new Text(text, 1, 0).setStyleFn(value => theme.bg("userMessageBg", value));
+				this.#frame.addChild(this.#sessionLine);
+			}
+		}
+		this.#zoneSource = undefined;
+		this.#zoneLines = undefined;
+		this.invalidate();
 	}
 
 	override render(width: number): readonly string[] {

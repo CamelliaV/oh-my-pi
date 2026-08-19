@@ -49,6 +49,7 @@ providers:
     authHeader: true
     auth: apiKey
     disableStrictTools: false # set true for Anthropic-compatible endpoints that reject the strict field
+    webSearchDelayMs: 1000 # minimum interval between Codex hosted-search requests for this provider; 0 disables pacing
     discovery:
       type: ollama
       timeoutMs: 10000 # optional per-provider HTTP probe timeout in milliseconds
@@ -102,6 +103,7 @@ providers:
 - `auth`: `apiKey` (default), `none`, or `oauth`; for `models.yml` custom models, `oauth` is accepted by schema but does not waive the `apiKey` requirement
 - `discovery.type`: `ollama`, `llama.cpp`, `lm-studio`, `openai-models-list`, `proxy`, or `litellm`
 - `transport`: `pi-native` only. When set, every model under that provider is sent to an `omp auth-gateway` compatible `baseUrl` via `POST /v1/pi/stream`; `apiKey` is the gateway bearer.
+- `webSearchDelayMs`: non-negative minimum interval, in milliseconds, between Codex hosted web-search requests routed through this provider. Pacing state is independent per provider ID; omitted or `0` means no delay.
 - `imageInputDecoder`: `stb` only. Set this on a custom model or `modelOverrides` entry when the serving backend uses an STB-compatible image decoder that cannot accept WebP; OMP converts attached and historical WebP images before provider dispatch.
 
 ## Validation rules (current)
@@ -127,6 +129,7 @@ Must define at least one of:
 - `modelOverrides`
 - `discovery`
 - `remoteCompaction`
+- `webSearchDelayMs`
 
 ### Discovery
 

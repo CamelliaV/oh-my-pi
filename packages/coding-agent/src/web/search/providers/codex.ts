@@ -28,6 +28,7 @@ import type { ModelRegistry } from "../../../config/model-registry";
 import type { SearchResponse, SearchSource } from "../../../web/search/types";
 import { SearchProviderError } from "../../../web/search/types";
 import { formatQuery, GOOGLE_QUERY_SYNTAX, parseSearchQuery } from "../query";
+import { RequestPacer } from "../utils";
 import type { SearchParams, SearchProviderAvailabilityContext } from "./base";
 import { SearchProvider } from "./base";
 import { classifyProviderHttpError, withHardTimeout } from "./utils";
@@ -49,6 +50,12 @@ const DEFAULT_MODEL_PREFERENCES = [
 const DEFAULT_INSTRUCTIONS =
 	"You are a helpful assistant with web search capabilities. Search the web to answer the user's question accurately and cite your sources.";
 
+const codexSearchPacer = new RequestPacer();
+
+export function resetCodexSearchThrottleForTest(): void {
+	codexSearchPacer.reset();
+}
+
 type CodexSearchModel = Model<"openai-codex-responses">;
 
 interface CodexModelCandidate {
@@ -64,6 +71,7 @@ interface CodexSearchTransport {
 	protocol: "codex" | "responses";
 	authMode: "api-key" | "codex-oauth";
 	rejectOfficialOAuth: boolean;
+	searchDelayMs: number;
 }
 
 interface CodexSearchResult {
@@ -396,6 +404,7 @@ function resolveCodexSearchTransport(
 			protocol,
 			authMode: usesOfficialCodexOAuth ? "codex-oauth" : "api-key",
 			rejectOfficialOAuth: protocol === "codex" && !usesOfficialCodexOAuth,
+			searchDelayMs: modelRegistry?.getProviderWebSearchDelayMs?.(activeModel.provider) ?? 0,
 		};
 	}
 
@@ -411,7 +420,6 @@ function resolveCodexSearchTransport(
 	) {
 		baseUrl = registryModel.baseUrl;
 	}
-
 	const url = resolveCodexResponsesUrl(baseUrl);
 	const customEndpoint = url !== resolveCodexResponsesUrl(CODEX_BASE_URL);
 	return {
@@ -425,6 +433,7 @@ function resolveCodexSearchTransport(
 		protocol: "codex",
 		authMode: customEndpoint ? "api-key" : "codex-oauth",
 		rejectOfficialOAuth: customEndpoint,
+		searchDelayMs: modelRegistry?.getProviderWebSearchDelayMs?.("openai-codex") ?? 0,
 	};
 }
 
@@ -656,7 +665,6 @@ function finalizeCodexSearchEventState(state: CodexSearchEventState): CodexSearc
 	if (!state.webSearchInvoked) {
 		throw new CodexNoWebSearchError();
 	}
-
 	const finalAnswer = state.answerParts.join("\n\n").trim();
 	const streamedAnswer = state.streamedAnswerParts.join("").trim();
 	const finalIsPlaceholder = finalAnswer.length > 0 && isImagePlaceholderAnswer(finalAnswer);
@@ -667,13 +675,11 @@ function finalizeCodexSearchEventState(state: CodexSearchEventState): CodexSearc
 		throw new SearchProviderError("codex", "Codex returned image-only response", 502);
 	}
 	const answer = hasFinalText ? finalAnswer : hasStreamedText ? streamedAnswer : "";
-
 	if (state.sources.length === 0 && answer.length > 0) {
 		for (const source of extractTextSources(answer)) {
 			addSource(state.sources, source);
 		}
 	}
-
 	return {
 		answer,
 		sources: state.sources,
@@ -705,6 +711,7 @@ async function callCodexSearch(
 		transport: CodexSearchTransport;
 	},
 ): Promise<CodexSearchResult> {
+	await codexSearchPacer.wait(options.transport.provider, options.transport.searchDelayMs, options.signal);
 	const headers = buildCodexHeaders(
 		auth.accessToken,
 		auth.accountId,
@@ -742,7 +749,6 @@ async function callCodexSearch(
 		body: JSON.stringify(body),
 		signal: withHardTimeout(options.signal, options.timeoutMs),
 	});
-
 	if (!response.ok) {
 		const errorText = await response.text();
 		const classified = classifyProviderHttpError("codex", response.status, errorText);
@@ -752,7 +758,6 @@ async function callCodexSearch(
 	if (!response.body) {
 		throw new SearchProviderError("codex", "Codex API returned no response body", 500);
 	}
-
 	const state: CodexSearchEventState = {
 		answerParts: [],
 		streamedAnswerParts: [],
@@ -784,8 +789,11 @@ async function callCodexSearchWithProviderTransport(
 		fetch?: FetchImpl;
 		headers: Record<string, string>;
 		sessionId?: string;
+		provider: string;
+		searchDelayMs: number;
 	},
 ): Promise<CodexSearchResult> {
+	await codexSearchPacer.wait(options.provider, options.searchDelayMs, options.signal);
 	const requestedModel = options.model.requestModelId ?? options.model.id;
 	const state: CodexSearchEventState = {
 		answerParts: [],
@@ -971,6 +979,8 @@ export async function searchCodex(params: SearchParams): Promise<SearchResponse>
 						fetch: params.fetch,
 						headers: transport.headers,
 						sessionId: params.sessionId,
+						provider: transport.provider,
+						searchDelayMs: transport.searchDelayMs,
 					});
 				}
 				return runCodexSearchCandidates({

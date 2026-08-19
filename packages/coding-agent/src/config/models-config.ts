@@ -28,6 +28,7 @@ export interface ProviderValidationConfig {
 	compat?: ModelSpec<Api>["compat"];
 	remoteCompaction?: unknown;
 	disableStrictTools?: boolean;
+	webSearchDelayMs?: number;
 	modelOverrides?: Record<string, unknown>;
 	models: ProviderValidationModel[];
 }
@@ -51,11 +52,12 @@ export function validateProviderConfiguration(
 				config.auth !== "none" &&
 				!config.disableStrictTools &&
 				!config.remoteCompaction &&
+				config.webSearchDelayMs === undefined &&
 				!hasModelOverrides &&
 				!config.discovery
 			) {
 				throw new Error(
-					`Provider ${providerName}: must specify "baseUrl", "headers", "apiKey", "auth: none", "compat", "disableStrictTools", "remoteCompaction", "modelOverrides", "discovery", or "models"`,
+					`Provider ${providerName}: must specify "baseUrl", "headers", "apiKey", "auth: none", "compat", "disableStrictTools", "remoteCompaction", "webSearchDelayMs", "modelOverrides", "discovery", or "models"`,
 				);
 			}
 		}

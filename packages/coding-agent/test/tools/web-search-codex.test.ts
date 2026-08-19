@@ -2,7 +2,12 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "bun:test";
 import type { AuthStorage, FetchImpl, Model } from "@oh-my-pi/pi-ai";
 import type { ModelRegistry } from "@oh-my-pi/pi-coding-agent/config/model-registry";
 import type { SearchParams } from "@oh-my-pi/pi-coding-agent/web/search/providers/base";
-import { CodexProvider, hasCodexSearch, searchCodex } from "@oh-my-pi/pi-coding-agent/web/search/providers/codex";
+import {
+	CodexProvider,
+	hasCodexSearch,
+	resetCodexSearchThrottleForTest,
+	searchCodex,
+} from "@oh-my-pi/pi-coding-agent/web/search/providers/codex";
 
 type CapturedRequest = {
 	url: string;
@@ -283,6 +288,7 @@ describe("searchCodex model selection", () => {
 
 	afterEach(() => {
 		vi.restoreAllMocks();
+		resetCodexSearchThrottleForTest();
 		capturedRequest = null;
 		if (originalCodexSearchModel === undefined) {
 			delete process.env.PI_CODEX_WEB_SEARCH_MODEL;
@@ -516,6 +522,86 @@ describe("searchCodex model selection", () => {
 			answer: "Codex answer",
 			sources: [{ title: "Example Article", url: "https://example.com/article" }],
 		});
+	});
+
+	it("paces Codex searches independently for each configured model provider", async () => {
+		const requestTimes: Record<string, number[]> = { alpha: [], beta: [] };
+		const activeAuthStorage = {
+			hasAuth() {
+				return true;
+			},
+			getCredentialOrigin() {
+				return { kind: "config" as const };
+			},
+		} as unknown as AuthStorage;
+		const registry = {
+			authStorage: activeAuthStorage,
+			hasConfiguredAuth() {
+				return true;
+			},
+			getProviderHeaders() {
+				return undefined;
+			},
+			getProviderWebSearchDelayMs() {
+				return 25;
+			},
+			hasCommandBackedApiKey() {
+				return false;
+			},
+			resolver() {
+				return async () => "provider-key";
+			},
+		} as unknown as ModelRegistry;
+		const model = (provider: string) =>
+			({
+				provider,
+				id: "gpt-5.6-sol",
+				requestModelId: "gpt-5.6-sol-wire",
+				api: "openai-codex-responses",
+				baseUrl: `https://${provider}.example/v1/responses`,
+				name: provider,
+				reasoning: true,
+				input: ["text"],
+				contextWindow: 200_000,
+				maxTokens: 32_000,
+				cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+			}) as unknown as Model;
+		const fetchMock: FetchImpl = (url, _init) => {
+			const provider = String(url).includes("alpha") ? "alpha" : "beta";
+			requestTimes[provider]!.push(Date.now());
+			return Promise.resolve(
+				new Response(makeSseResponse("gpt-5.6-sol-wire"), {
+					status: 200,
+					headers: { "Content-Type": "text/event-stream" },
+				}),
+			);
+		};
+
+		await searchCodex({
+			...makeSearchParams("alpha first", fetchMock),
+			authStorage: activeAuthStorage,
+			modelRegistry: registry,
+			activeModel: model("alpha"),
+		});
+		await Promise.all([
+			searchCodex({
+				...makeSearchParams("alpha second", fetchMock),
+				authStorage: activeAuthStorage,
+				modelRegistry: registry,
+				activeModel: model("alpha"),
+			}),
+			searchCodex({
+				...makeSearchParams("beta first", fetchMock),
+				authStorage: activeAuthStorage,
+				modelRegistry: registry,
+				activeModel: model("beta"),
+			}),
+		]);
+
+		expect(requestTimes.alpha).toHaveLength(2);
+		expect(requestTimes.alpha[1]! - requestTimes.alpha[0]!).toBeGreaterThanOrEqual(20);
+		expect(requestTimes.beta).toHaveLength(1);
+		expect(requestTimes.beta[0]!).toBeLessThan(requestTimes.alpha[1]!);
 	});
 
 	it("keeps the standalone Codex route for a non-GPT active model", async () => {

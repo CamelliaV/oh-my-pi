@@ -13,7 +13,7 @@ import { parseSSE } from "../../../mcp/json-rpc";
 import type { SearchResponse, SearchSource } from "../../../web/search/types";
 import { SearchProviderError } from "../../../web/search/types";
 import { formatQuery, parseSearchQuery, type StructuredQuery } from "../query";
-import { dateToAgeSeconds } from "../utils";
+import { dateToAgeSeconds, RequestPacer } from "../utils";
 import type { SearchParams } from "./base";
 import { SearchProvider } from "./base";
 import { classifyProviderHttpError, withHardTimeout } from "./utils";
@@ -24,8 +24,7 @@ const EXA_MCP_SOURCE = "oh-my-pi";
 const MAX_EXA_SNIPPET_CHARS = 500;
 const DEFAULT_EXA_SEARCH_DELAY_MS = getDefault("exa.searchDelayMs");
 
-let nextExaSearchRequestAt = 0;
-let exaSearchThrottle = Promise.resolve();
+const exaSearchPacer = new RequestPacer();
 
 function configuredExaSearchDelayMs(): number {
 	try {
@@ -36,73 +35,13 @@ function configuredExaSearchDelayMs(): number {
 	}
 }
 
-function rejectWithAbortReason(reject: (reason?: unknown) => void, signal: AbortSignal): void {
-	try {
-		signal.throwIfAborted();
-		reject(new DOMException("The operation was aborted.", "AbortError"));
-	} catch (error) {
-		reject(error);
-	}
-}
-
-function abortableSleep(ms: number, signal: AbortSignal | undefined): Promise<void> {
-	if (ms <= 0) return Promise.resolve();
-	signal?.throwIfAborted();
-	const { promise, resolve, reject } = Promise.withResolvers<void>();
-	let timer: NodeJS.Timeout | undefined;
-	const cleanup = (): void => {
-		if (timer) {
-			clearTimeout(timer);
-			timer = undefined;
-		}
-		signal?.removeEventListener("abort", onAbort);
-	};
-	const onAbort = (): void => {
-		cleanup();
-		if (signal) rejectWithAbortReason(reject, signal);
-	};
-	timer = setTimeout(() => {
-		cleanup();
-		resolve();
-	}, ms);
-	signal?.addEventListener("abort", onAbort, { once: true });
-	if (signal?.aborted) onAbort();
-	return promise;
-}
-
-function waitUntilDoneOrAborted<T>(promise: Promise<T>, signal: AbortSignal | undefined): Promise<T> {
-	if (!signal) return promise;
-	signal.throwIfAborted();
-	const { promise: aborted, reject } = Promise.withResolvers<never>();
-	const onAbort = (): void => rejectWithAbortReason(reject, signal);
-	signal.addEventListener("abort", onAbort, { once: true });
-	return Promise.race([promise, aborted]).finally(() => {
-		signal.removeEventListener("abort", onAbort);
-	});
-}
-
 async function waitForExaSearchSlot(signal: AbortSignal | undefined): Promise<void> {
-	const delayMs = configuredExaSearchDelayMs();
-	if (delayMs <= 0) return;
-
-	const prior = exaSearchThrottle.catch(() => {});
-	const queued = prior.then(async () => {
-		signal?.throwIfAborted();
-		const waitMs = Math.max(0, nextExaSearchRequestAt - Date.now());
-		if (waitMs > 0) {
-			await abortableSleep(waitMs, signal);
-		}
-		signal?.throwIfAborted();
-		nextExaSearchRequestAt = Date.now() + delayMs;
-	});
-	exaSearchThrottle = queued.catch(() => {});
-	await waitUntilDoneOrAborted(queued, signal);
+	await exaSearchPacer.wait("exa", configuredExaSearchDelayMs(), signal);
 }
 
 /** Reset Exa request pacing state for isolated provider tests. */
 export function resetExaSearchThrottleForTest(): void {
-	nextExaSearchRequestAt = 0;
-	exaSearchThrottle = Promise.resolve();
+	exaSearchPacer.reset();
 }
 
 type ExaSearchType = "neural" | "fast" | "auto" | "deep";

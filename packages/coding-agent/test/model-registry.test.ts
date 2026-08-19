@@ -491,6 +491,30 @@ describe("ModelRegistry", () => {
 			expect(getModelsForProvider(registry, "anthropic")[0].baseUrl).toBe("https://second-proxy.example.com/v1");
 		});
 
+		test("exposes per-provider web search pacing from models config", () => {
+			writeRawModelsJson({
+				"relay-codex": {
+					baseUrl: "https://relay.example/v1/responses",
+					apiKey: "relay-key",
+					api: "openai-codex-responses",
+					webSearchDelayMs: 750,
+					models: [
+						{
+							id: "gpt-5.6-sol",
+							reasoning: true,
+							input: ["text"],
+							contextWindow: 272_000,
+							maxTokens: 32_000,
+						},
+					],
+				},
+			});
+			const registry = new ModelRegistry(authStorage, modelsJsonPath);
+
+			expect(registry.getProviderWebSearchDelayMs("relay-codex")).toBe(750);
+			expect(registry.getProviderWebSearchDelayMs("other-provider")).toBeUndefined();
+		});
+
 		test("refresh keeps transport override on built-in provider (#2555 openrouter gateway)", async () => {
 			// Reporter ran `omp` with the auth-gateway broker proxying OpenRouter.
 			// Default model worked; switching via `/model` produced

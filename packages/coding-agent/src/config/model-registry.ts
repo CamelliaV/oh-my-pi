@@ -940,7 +940,6 @@ export class ModelRegistry {
 		const configuredProviders = new Set(Object.keys(value.providers ?? {}));
 		for (const [providerName, providerConfig] of providerEntries) {
 			const resolvedProviderHeaders = resolveConfigHeaders(providerConfig.headers);
-			// Always set overrides when baseUrl/headers/apiKey/authHeader/compat/disableStrictTools/transport are present
 			if (
 				providerConfig.baseUrl ||
 				resolvedProviderHeaders ||
@@ -949,7 +948,8 @@ export class ModelRegistry {
 				providerConfig.compat ||
 				providerConfig.disableStrictTools ||
 				providerConfig.remoteCompaction ||
-				providerConfig.transport
+				providerConfig.transport ||
+				providerConfig.webSearchDelayMs !== undefined
 			) {
 				const disableStrictCompat = providerConfig.disableStrictTools ? { disableStrictTools: true } : undefined;
 				overrides.set(providerName, {
@@ -963,6 +963,7 @@ export class ModelRegistry {
 					compat: mergeCompat(providerConfig.compat, disableStrictCompat),
 					remoteCompaction: providerConfig.remoteCompaction,
 					transport: providerConfig.transport,
+					webSearchDelayMs: providerConfig.webSearchDelayMs,
 				});
 			}
 
@@ -1756,6 +1757,14 @@ export class ModelRegistry {
 			this.#providerOverrides.get(provider)?.headers,
 			this.#runtimeProviderOverrides.get(provider)?.headers,
 		]);
+	}
+
+	/** Get the configured minimum interval between this provider's web searches. */
+	getProviderWebSearchDelayMs(provider: string): number | undefined {
+		return (
+			this.#providerOverrides.get(provider)?.webSearchDelayMs ??
+			this.#runtimeProviderOverrides.get(provider)?.webSearchDelayMs
+		);
 	}
 
 	/**

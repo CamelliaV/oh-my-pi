@@ -13,6 +13,7 @@ export interface ProviderOverride {
 	compat?: ModelSpec<Api>["compat"];
 	remoteCompaction?: RemoteCompactionConfig<Api>;
 	transport?: Model<Api>["transport"];
+	webSearchDelayMs?: number;
 }
 
 /**

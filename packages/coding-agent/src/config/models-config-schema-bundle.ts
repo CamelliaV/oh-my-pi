@@ -283,6 +283,8 @@ export const getModelsConfigSchemaBundle = once(() => {
 		"models?": ModelDefinitionSchema.array(),
 		"modelOverrides?": { "[string]": ModelOverrideSchema },
 		"disableStrictTools?": "boolean",
+		/** Optional minimum interval between hosted web-search requests, in milliseconds. */
+		"webSearchDelayMs?": "number >= 0",
 		/**
 		 * Streaming transport override. When set to `"pi-native"`, omp dispatches
 		 * every model under this provider via the auth-gateway's

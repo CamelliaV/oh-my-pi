@@ -315,7 +315,10 @@ source-level rebase (below).
 - Baseline commit = pristine upstream tag source (from the release **tarball**,
   not a git clone — GitHub cloning is unreliable from this network; use
   `aria2c -x8 <tarball-url>`). Every commit after it is a local patch; keep
-  patches small and self-contained. No `origin` remote; history is local-only.
+  patches small and self-contained. Backup remote `origin` =
+  `https://github.com/CamelliaV/oh-my-pi` (private); push all branches there
+  (`git push origin --all`) after accepted work — never force-push over it
+  during rebase without a fresh backup.
 - `packages/natives/native/pi_natives.linux-x64-{baseline,modern}.node` are
   reused binaries copied from `~/.omp/natives/<version>/` — cargo is never
   needed. **natives are version-coupled**: after rebasing onto a new tag, run
@@ -419,3 +422,16 @@ Never run `bun run release`, never push, never edit CHANGELOG sections.
    overlay mouseTracking off (selection-first: plain drag selects/copies text;
    kitty translates wheel to arrow keys on the alt screen). PTY-verified
    marker/jump/expansion/rewind + no-mouse-tracking-bytes paths.
+11. `feat(extensions)` history_search recall over full session history —
+   runtime extension at `extensions/recall.ts`, deployed by symlink to
+   `~/.omp/agent/extensions/recall.ts` (rebase-immune, no binary rebuild).
+   Compaction never deletes data: old entries stay on the branch tree, so a
+   stateless `history_search` tool reads `ctx.sessionManager.getBranch()` and
+   queries pre-compaction / pre-`/clear` messages directly (zero I/O, no JSONL
+   parsing). BM25 with tier weights (user > assistant > tool I/O > thinking) +
+   CJK bigram tokenizer for Chinese sessions; regex mode (`/re/` or
+   `regex:true`); turn-grouped excerpts with 8k char budget + pagination;
+   `expand:[entryId]` renders full originals and `include_images:true`
+   re-attaches persisted image blobs (screenshots) the model lost to
+   compaction. `loadMode: "essential"`, `approval: "read"`. Driver-tested on
+   synthetic + real session JSONL; PTY-registered via live `/tools`.

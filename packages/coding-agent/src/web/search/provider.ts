@@ -8,8 +8,11 @@
 // Provider modules are loaded lazily; display metadata lives in types.ts so UI
 // listings can share it without importing provider implementations.
 
-import type { AuthStorage } from "@oh-my-pi/pi-ai";
+import type { AuthStorage, Model } from "@oh-my-pi/pi-ai";
 import type { SearchProvider, SearchProviderAvailabilityContext } from "./providers/base";
+// Light predicate module (catalog identity only) — importing it here must not
+// pull a provider implementation; that would break the lazy registry above.
+import { isCodexSearchAffinityModel } from "./providers/codex-affinity";
 import {
 	SEARCH_PROVIDER_LABELS,
 	SEARCH_PROVIDER_ORDER,
@@ -259,21 +262,51 @@ export interface SearchProviderCandidate {
 	explicit: boolean;
 }
 
+/** Options that steer candidate ordering from the running agent session. */
+export interface ProviderChainOptions {
+	/**
+	 * Model currently selected by the agent session. A Codex-affinity model
+	 * promotes the codex provider ahead of the configured order because its
+	 * search reuses the running model's own provider transport.
+	 */
+	activeModel?: Model;
+}
+
 /**
  * Return provider candidates in fallback order without loading their modules.
  * `forcedProvider` (a per-request `provider` argument) is terminal-first and
  * bypasses exclusion; configured-order entries carry `explicit: true`.
+ *
+ * Codex search follows the running model's family: a Codex-affinity active
+ * model promotes codex ahead of the configured order, while any other active
+ * model drops codex from the chain entirely (its standalone config serves
+ * codex/GPT sessions and explicit `provider: "codex"` requests, not foreign
+ * models). Per-request forcing and exclusions always win; without an active
+ * model (sessionless CLI) the configured order applies unchanged.
  */
-export function resolveProviderCandidates(forcedProvider?: SearchProviderId): SearchProviderCandidate[] {
+export function resolveProviderCandidates(
+	forcedProvider?: SearchProviderId,
+	options?: ProviderChainOptions,
+): SearchProviderCandidate[] {
 	const candidates: SearchProviderCandidate[] = [];
 
 	if (forcedProvider !== undefined && !isSearchProviderExcluded(forcedProvider)) {
 		candidates.push({ id: forcedProvider, explicit: true });
 	}
 
+	const affinityModel = options?.activeModel !== undefined && isCodexSearchAffinityModel(options.activeModel);
+	const preferred: SearchProviderId | undefined =
+		forcedProvider === undefined && affinityModel && !isSearchProviderExcluded("codex") ? "codex" : undefined;
+	const suppressed: SearchProviderId | undefined =
+		forcedProvider === undefined && options?.activeModel !== undefined && !affinityModel ? "codex" : undefined;
+
 	for (const id of orderedProvIds) {
-		if (id === forcedProvider || isSearchProviderExcluded(id)) continue;
+		if (id === forcedProvider || id === preferred || id === suppressed || isSearchProviderExcluded(id)) continue;
 		candidates.push({ id, explicit: explicitProvIds.has(id) });
+	}
+
+	if (preferred !== undefined) {
+		candidates.unshift({ id: preferred, explicit: explicitProvIds.has(preferred) });
 	}
 
 	return candidates;
@@ -292,7 +325,7 @@ export async function resolveProviderChain(
 ): Promise<SearchProvider[]> {
 	const providers: SearchProvider[] = [];
 
-	for (const candidate of resolveProviderCandidates(forcedProvider)) {
+	for (const candidate of resolveProviderCandidates(forcedProvider, { activeModel: context?.activeModel })) {
 		const provider = await getSearchProvider(candidate.id);
 		const available = candidate.explicit
 			? await provider.isExplicitlyAvailable(authStorage, context)

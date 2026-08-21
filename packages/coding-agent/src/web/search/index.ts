@@ -160,9 +160,9 @@ async function executeSearch(
 	if (explicitProvider && explicitProvider !== "auto") {
 		candidates = [{ id: explicitProvider, explicit: true }];
 	} else {
-		// `--provider auto` and the default both walk the configured chain;
-		// exclusions still apply.
-		candidates = resolveProviderCandidates();
+		// `--provider auto` and the default both walk the configured chain,
+		// affinity-promoted for the running model; exclusions still apply.
+		candidates = resolveProviderCandidates(undefined, { activeModel });
 	}
 
 	const parsedQuery = parseSearchQuery(params.query);

@@ -14,7 +14,6 @@ import {
 	withOAuthAccess,
 } from "@oh-my-pi/pi-ai";
 import { resolveCodexResponsesUrl, streamOpenAICodexResponses } from "@oh-my-pi/pi-ai/providers/openai-codex-responses";
-import { bareModelId, parseOpenAIModel } from "@oh-my-pi/pi-catalog/identity";
 import { getBundledModels } from "@oh-my-pi/pi-catalog/models";
 import {
 	CODEX_BASE_URL,
@@ -31,6 +30,7 @@ import { formatQuery, GOOGLE_QUERY_SYNTAX, parseSearchQuery } from "../query";
 import { RequestPacer } from "../utils";
 import type { SearchParams, SearchProviderAvailabilityContext } from "./base";
 import { SearchProvider } from "./base";
+import { isCodexSearchAffinityModel } from "./codex-affinity";
 import { classifyProviderHttpError, withHardTimeout } from "./utils";
 
 const FALLBACK_MODEL = "gpt-5.5";
@@ -119,18 +119,6 @@ function getDefaultModelCandidates(): CodexModelCandidate[] {
 
 	const fallbackModel = bundledModels[0];
 	return fallbackModel ? [{ modelId: fallbackModel.id, catalogModel: fallbackModel }] : [{ modelId: FALLBACK_MODEL }];
-}
-const ACTIVE_GPT_PROVIDER_APIS: Readonly<Record<string, true>> = {
-	"openai-codex-responses": true,
-	"openai-responses": true,
-	"openai-completions": true,
-};
-
-/** Whether Codex search can safely reuse the running model's provider transport. */
-export function isCodexSearchAffinityModel(model: Model | undefined): model is Model {
-	if (!model || ACTIVE_GPT_PROVIDER_APIS[model.api] !== true) return false;
-	const identityIds = model.requestModelId ? [model.id, model.requestModelId] : [model.id];
-	return identityIds.some(id => parseOpenAIModel(bareModelId(id)) !== null);
 }
 
 function isCodexProviderTransportModel(model: Model | undefined): model is CodexSearchModel {

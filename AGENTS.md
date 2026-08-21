@@ -388,3 +388,12 @@ Never run `bun run release`, never push, never edit CHANGELOG sections.
    cache ⚡ span`); flushed on next user message / transcript end; wired into
    chat-transcript-builder, ui-helpers rebuild, event-controller live path.
    Esc-aborted requests count (provider billed them).
+8. `feat(web)` codex-affinity search chain gating — codex search follows the
+   running model's family: a GPT-family active model (api
+   codex-responses/responses/completions + GPT id) prepends the codex provider
+   ahead of `webSearchOrder`; any other active model drops codex from the auto
+   chain entirely (explicit per-request `provider: codex` and sessionless
+   `omp search` still work; `webSearchExclude` still wins). Predicate moved to
+   `web/search/providers/codex-affinity.ts` (light, importable by the lazy
+   registry). Regression driver: `test/web-search-affinity-driver.ts` (local
+   mock codex relay; affinity → codex first, GLM → codex not attempted).

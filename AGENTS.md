@@ -415,5 +415,7 @@ Never run `bun run release`, never push, never edit CHANGELOG sections.
    assembly rules), viewport jumps to the selected block (n/p block-to-block,
    SGR wheel 3 rows/notch, ctrl+o tool-output expansion, turn/line footer
    synced from scroll offset, ⊕/☰ icons + accent numbers). ctrl+r rewind /
-   ctrl+b branch are explicit isIdle-guarded secondary actions. PTY-verified
-   marker/jump/wheel/expansion/rewind paths.
+   ctrl+b branch are explicit isIdle-guarded secondary actions. Viewer leaves
+   overlay mouseTracking off (selection-first: plain drag selects/copies text;
+   kitty translates wheel to arrow keys on the alt screen). PTY-verified
+   marker/jump/expansion/rewind + no-mouse-tracking-bytes paths.

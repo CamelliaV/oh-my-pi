@@ -15,6 +15,9 @@
  *   n / p     jump to next / previous user-message block
  *   ↑↓ pgup/pgdn g/G home/end — free scroll
  *   ctrl+o    toggle tool-output expansion (same as the live transcript)
+ *   Pointer note: SGR mouse tracking stays OFF for the whole viewer — plain
+ *   drag selects/copies text natively; the terminal translates wheel to arrow
+ *   keys on the alt screen (kitty), so scrolling still works without grabs.
  *   esc       back to the picker
  *
  * The viewer renders through the REAL transcript pipeline: ChatTranscriptBuilder
@@ -35,7 +38,7 @@ import {
 	UserMessageComponent,
 } from "@oh-my-pi/pi-coding-agent";
 import { ChatTranscriptBuilder } from "@oh-my-pi/pi-coding-agent/modes/components/chat-transcript-builder";
-import type { Component, TUI } from "@oh-my-pi/pi-tui";
+import type { Component, OverlayOptions, TUI } from "@oh-my-pi/pi-tui";
 import {
 	extractPrintableText,
 	fuzzyFilter,
@@ -154,6 +157,14 @@ class TranscriptViewer implements Component {
 	#builtWidth = -1;
 	#totalRows = 0;
 	#disposed = false;
+	#overlayOptions: OverlayOptions = {
+		mouseTracking: false,
+		fullscreen: true,
+		width: "100%",
+		maxHeight: "100%",
+		anchor: "top-left",
+		margin: 0,
+	};
 
 	constructor(
 		branch: readonly BranchEntryLike[],
@@ -176,13 +187,7 @@ class TranscriptViewer implements Component {
 			theme: { track: t => this.theme.fg("dim", t), thumb: t => this.theme.fg("accent", t) },
 		});
 		this.#targetTurn = Math.max(0, startTurn);
-		this.#handle = tui.showOverlay(this, {
-			fullscreen: true,
-			width: "100%",
-			maxHeight: "100%",
-			anchor: "top-left",
-			margin: 0,
-		});
+		this.#handle = tui.showOverlay(this, this.#overlayOptions);
 	}
 
 	#dispose(): void {

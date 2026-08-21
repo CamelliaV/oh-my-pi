@@ -548,8 +548,25 @@ Provider-level `compat` is the baseline; per-model `compat` is deep-merged on to
 For `anthropic-messages` models the runtime uses a separate `AnthropicCompat` shape
 (`packages/catalog/src/types.ts`). The `models.yml` schema exposes the strict-tools opt-out as a
 top-level provider field plus `requiresToolResultId`, `replayUnsignedThinking`,
-`supportsEagerToolInputStreaming`, and `allowAnthropicHeaderOverrides` in `compat`. Other
-Anthropic-side knobs are supplied by built-in catalog metadata and are not configurable here.
+`supportsEagerToolInputStreaming`, and `allowAnthropicHeaderOverrides` in `compat`. Anthropic-side knobs beyond those are supplied by built-in catalog metadata and are not configurable here.
+
+#### Extra betas (`headers.anthropic-beta`)
+
+`anthropic-beta` is an enforced header — OMP computes the beta list from the model's capabilities and the request shape. On **API-key** requests the value you set in provider/model `headers` is now merged into that computed list (tokens split on commas, trimmed, deduplicated) instead of being dropped, so a provider can opt into a beta OMP never advertises on its own:
+
+```yaml
+providers:
+  my-relay:
+    baseUrl: https://relay.example.com
+    apiKey: RELAY_API_KEY
+    api: anthropic-messages
+    headers:
+      anthropic-beta: context-1m-2025-08-07
+```
+
+The merge is a union, never a replacement: the betas the request body depends on (`effort-…`, `context-management-…`) always survive. Some third-party relays fronting Anthropic require `context-1m-2025-08-07` and reject every Opus-class request with a 400 without it.
+
+OAuth requests are unaffected — there the beta list is part of the Claude Code fingerprint, replaced only through `compat.allowAnthropicHeaderOverrides`, and `context-1m-2025-08-07` stays unadvertised because subscription credentials hard-429 on it.
 
 ### Bedrock compatibility (`bedrock-converse-stream`)
 

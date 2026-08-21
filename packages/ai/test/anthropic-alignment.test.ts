@@ -258,6 +258,45 @@ describe("Anthropic request fingerprint alignment", () => {
 		expect(options.defaultHeaders["anthropic-beta"]).not.toContain("context-1m-2025-08-07");
 	});
 
+	it("folds model-supplied anthropic-beta into the computed set on API-key requests", () => {
+		// Endpoints fronting Anthropic can gate features behind a beta this
+		// package never advertises on its own — some relays hard-400 every Opus
+		// model without `context-1m-2025-08-07` — so a models.yml provider needs
+		// a way to ask for it.
+		const merged = buildAnthropicHeaders({
+			apiKey: "sk-relay-test",
+			isOAuth: false,
+			baseUrl: "https://relay.example.com",
+			extraBetas: ["effort-2025-11-24"],
+			stream: true,
+			modelHeaders: { "anthropic-beta": "context-1m-2025-08-07" },
+		});
+		// Union, not replace: opting into one beta must not strip the ones the
+		// request body depends on.
+		expect(merged["anthropic-beta"]).toBe("effort-2025-11-24,context-1m-2025-08-07");
+
+		const deduped = buildAnthropicHeaders({
+			apiKey: "sk-relay-test",
+			isOAuth: false,
+			baseUrl: "https://relay.example.com",
+			extraBetas: ["effort-2025-11-24"],
+			stream: true,
+			modelHeaders: { "Anthropic-Beta": " effort-2025-11-24 , context-1m-2025-08-07 ,, " },
+		});
+		expect(deduped["anthropic-beta"]).toBe("effort-2025-11-24,context-1m-2025-08-07");
+
+		// OAuth keeps replace semantics behind `allowAnthropicHeaderOverrides`, so
+		// a stray config value cannot reintroduce context-1m there (#7238).
+		const oauth = buildAnthropicHeaders({
+			apiKey: "sk-ant-oat-test",
+			isOAuth: true,
+			baseUrl: "https://relay.example.com",
+			stream: true,
+			modelHeaders: { "anthropic-beta": "context-1m-2025-08-07" },
+		});
+		expect(oauth["anthropic-beta"] ?? "").not.toContain("context-1m-2025-08-07");
+	});
+
 	it("places a short breakpoint only on the trailing message in a one-message OAuth request", async () => {
 		const payload = (await captureAnthropicPayload(ANTHROPIC_MODEL, {
 			systemPrompt: ["Stay concise."],

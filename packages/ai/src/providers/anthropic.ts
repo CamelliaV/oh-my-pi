@@ -245,11 +245,26 @@ export function buildAnthropicHeaders(options: AnthropicHeaderOptions): Record<s
 	const incomingUserAgent = getHeaderCaseInsensitive(options.modelHeaders, "User-Agent");
 	const incomingAuthorization = getHeaderCaseInsensitive(options.modelHeaders, "Authorization");
 	const incomingApiKey = getHeaderCaseInsensitive(options.modelHeaders, "X-Api-Key");
+	// API-key requests fold caller-supplied `anthropic-beta` tokens into the
+	// computed set instead of dropping them. Endpoints fronting Anthropic
+	// (relays, corporate gateways) can gate features behind a beta this package
+	// deliberately never advertises — `context-1m-2025-08-07` is the live case:
+	// some relays hard-400 every Opus model without it, and a models.yml
+	// provider had no way to ask for it. Union rather than replace, so opting
+	// into one beta cannot silently strip the ones the request body depends on
+	// (`effort-2025-11-24`, `context-management-2025-06-27`). OAuth keeps
+	// replace semantics via `allowAnthropicHeaderOverrides`: there the beta list
+	// is part of the Claude Code fingerprint, and `context-1m-2025-08-07` on a
+	// subscription credential hard-429s (#7238).
+	const honorCallerBetas = !oauthToken;
+	const callerBetas = honorCallerBetas
+		? normalizeExtraBetas(getHeaderCaseInsensitive(options.modelHeaders, "anthropic-beta"))
+		: [];
 	// Cowork's beta profile is part of the OAuth fingerprint; API-key requests
 	// default to extras only, matching the streaming path.
 	const betaHeader = buildBetaHeader(
 		options.coworkBetas ?? (oauthToken ? buildCoworkBetas(true, true) : []),
-		extraBetas,
+		callerBetas.length > 0 ? [...extraBetas, ...callerBetas] : extraBetas,
 	);
 	const acceptHeader = oauthToken ? "application/json" : stream ? "text/event-stream" : "application/json";
 	const isCloudflare = options.isCloudflareAiGateway ?? false;
@@ -275,8 +290,10 @@ export function buildAnthropicHeaders(options: AnthropicHeaderOptions): Record<s
 				}
 				// user-agent is always re-applied explicitly. authorization / x-api-key
 				// are silently re-applied in honoring branches and dropped + logged
-				// where the branch enforces its own credential.
+				// where the branch enforces its own credential. anthropic-beta is
+				// folded into `betaHeader` above whenever `honorCallerBetas` is set.
 				if (lowerKey === "user-agent") continue;
+				if (lowerKey === "anthropic-beta" && honorCallerBetas) continue;
 				if (lowerKey === "authorization" && honorAuthorization) continue;
 				if (lowerKey === "x-api-key" && honorApiKey) continue;
 				filteredEnforcedKeys.push(key);

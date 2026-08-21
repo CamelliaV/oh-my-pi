@@ -52,6 +52,13 @@ describe("error-id classification", () => {
 		expect(AIError.retriable(id)).toBe(true);
 	});
 
+	it("classifies unknown certificate verification failures as transient", () => {
+		const assistant = message({ errorMessage: "Error: unknown certificate verification error" });
+		const id = AIError.classifyMessage(assistant);
+		expect(AIError.is(id, AIError.Flag.Transient)).toBe(true);
+		expect(AIError.retriable(id)).toBe(true);
+	});
+
 	it("keeps authenticated connection rejections non-retryable", () => {
 		const assistant = message({
 			errorMessage: "Unable to connect: 401 Unauthorized",

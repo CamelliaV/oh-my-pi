@@ -406,3 +406,14 @@ Never run `bun run release`, never push, never edit CHANGELOG sections.
    in `#bodyBox` for injection). Same annotation in `read-tool-group.ts` rows.
    Gallery fixtures expose intent. Tests: gallery-cli, read-tool-group,
    tool-execution, event-controller-args-reveal.
+10. `feat(extensions)` session-nav user-turn viewport jump — runtime extension
+   at `extensions/session-nav.ts`, deployed by symlink to
+   `~/.omp/agent/extensions/session-nav.ts` (rebase-immune, no binary rebuild).
+   Alt+U or `/turns`: fuzzy picker of user messages on the active branch;
+   Enter opens a fullscreen viewer rendering the branch through the REAL
+   pipeline (ChatTranscriptBuilder via subpath import + TranscriptContainer
+   assembly rules), viewport jumps to the selected block (n/p block-to-block,
+   SGR wheel 3 rows/notch, ctrl+o tool-output expansion, turn/line footer
+   synced from scroll offset, ⊕/☰ icons + accent numbers). ctrl+r rewind /
+   ctrl+b branch are explicit isIdle-guarded secondary actions. PTY-verified
+   marker/jump/wheel/expansion/rewind paths.

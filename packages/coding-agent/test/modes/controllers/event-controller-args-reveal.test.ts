@@ -60,6 +60,7 @@ function createFixture(streamingMessage: AssistantMessage, tool?: AgentTool) {
 		settings,
 		statusLine: { invalidate: vi.fn() },
 		updateEditorTopBorder: vi.fn(),
+		setWorkingMessage: vi.fn(),
 		streamingComponent: { updateContent: vi.fn(), markTranscriptBlockFinalized: vi.fn() },
 		streamingMessage,
 		transcriptMessageComponents: new WeakMap(),
@@ -90,13 +91,14 @@ async function dispatch(controller: EventController, message: AssistantMessage) 
 
 async function dispatchToolStart(
 	controller: EventController,
-	payload: { toolCallId: string; toolName: string; args: Record<string, unknown> },
+	payload: { toolCallId: string; toolName: string; args: Record<string, unknown>; intent?: string },
 ) {
 	await controller.handleEvent({
 		type: "tool_execution_start",
 		toolCallId: payload.toolCallId,
 		toolName: payload.toolName,
 		args: payload.args,
+		intent: payload.intent,
 	} as Extract<AgentSessionEvent, { type: "tool_execution_start" }>);
 }
 
@@ -200,9 +202,10 @@ describe("EventController paces streamed tool args", () => {
 		await Settings.init({ inMemory: true, cwd: process.cwd() });
 		vi.useFakeTimers();
 		const content = "y".repeat(50);
-		const target = `{"path":"/tmp/exec.ts","content":"${content}"}`;
+		const intent = "Inspecting the write path";
+		const target = `{"i":"${intent}","path":"/tmp/exec.ts","content":"${content}"}`;
 		const streaming = makeStreamingMessage([
-			{ type: "toolCall", id: "tc-1", name: "write", arguments: {}, [kStreamingPartialJson]: target },
+			{ type: "toolCall", id: "tc-1", name: "write", arguments: { i: intent }, [kStreamingPartialJson]: target },
 		]);
 		const { controller, pendingTools } = createFixture(streaming);
 
@@ -213,6 +216,7 @@ describe("EventController paces streamed tool args", () => {
 		const component = pendingTools.get("tc-1");
 		if (!component) throw new Error("expected a pending write component");
 		expect(Bun.stripANSI(component.render(80).join("\n"))).toContain("/tmp/exec.ts");
+		expect(Bun.stripANSI(component.render(80).join("\n"))).toContain(intent);
 
 		// The closing full-args message_update never arrives (throttled `arguments`
 		// with smoothing off, an owned-dialect projector, or a superseded turn that
@@ -222,8 +226,10 @@ describe("EventController paces streamed tool args", () => {
 			toolCallId: "tc-1",
 			toolName: "write",
 			args: { path: "/tmp/exec.ts", content },
+			intent,
 		});
 		expect(Bun.stripANSI(component.render(80).join("\n"))).toContain("/tmp/exec.ts");
+		expect(Bun.stripANSI(component.render(80).join("\n"))).toContain(intent);
 
 		// The reveal entry was cancelled: a late tick cannot re-truncate the body
 		// back to a streaming prefix.

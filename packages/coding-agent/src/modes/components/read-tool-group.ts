@@ -5,7 +5,7 @@ import { Container, Text } from "@oh-my-pi/pi-tui";
 import { InternalUrlRouter, XD_URL_PREFIX } from "../../internal-urls";
 import { getLanguageFromPath, theme } from "../../modes/theme/theme";
 import { parseLineRanges, selectorLineRanges, splitPathAndSel } from "../../tools/path-utils";
-import { PREVIEW_LIMITS, shortenPath } from "../../tools/render-utils";
+import { formatIntentText, PREVIEW_LIMITS, shortenPath, TRUNCATE_LENGTHS } from "../../tools/render-utils";
 import { fileHyperlink, renderCodeCell, tryResolveInternalUrlSync } from "../../tui";
 import { canonicalizeMessage } from "../../utils/thinking-display";
 import type { ToolExecutionHandle } from "./tool-execution";
@@ -117,6 +117,7 @@ type ReadEntry = {
 	displayPaths?: string[];
 	linkPath?: string;
 	status: "pending" | "success" | "warning" | "error";
+	intent?: string;
 	correctedFrom?: string;
 	contentText?: string;
 	conflictCount?: number;
@@ -402,6 +403,16 @@ export class ReadToolGroupComponent extends Container implements ToolExecutionHa
 		this.#updateDisplay();
 	}
 
+	updateIntent(intent: string | undefined, toolCallId?: string): void {
+		if (!toolCallId) return;
+		const entry = this.#entries.get(toolCallId);
+		if (!entry) return;
+		const normalized = typeof intent === "string" && intent.trim() ? intent.trim() : undefined;
+		if (!normalized || normalized === entry.intent) return;
+		entry.intent = normalized;
+		this.#updateDisplay();
+	}
+
 	/**
 	 * Re-key an entry whose streamed tool-call id changed mid-stream (a provider
 	 * rewriting the id across deltas; see EventController's
@@ -532,6 +543,7 @@ export class ReadToolGroupComponent extends Container implements ToolExecutionHa
 				const pathDisplay = this.#formatRowPath(row);
 				const lines = [` ${statusSymbol} ${theme.fg("toolTitle", theme.bold("Read"))} ${pathDisplay}`.trimEnd()];
 				const usageRows = this.#usageRowsBySummaryRow(displayRows).get(0) ?? [];
+				this.#appendIntentRows(lines, this.#intentsForTargets(row.targets), "   ");
 				this.#appendUsageRows(lines, usageRows, "   ");
 				this.#text.setText(lines.join("\n"));
 				this.addChild(this.#text);
@@ -549,8 +561,16 @@ export class ReadToolGroupComponent extends Container implements ToolExecutionHa
 		const summaryTargets = this.#displayTargetsForEntries(entriesWithoutPreview);
 		const rows = this.#buildSummaryRows(summaryTargets);
 		const usageRowsBySummaryRow = this.#usageRowsBySummaryRow(rows);
+		const renderedIntentEntries = new Set<string>();
 		for (const [index, row] of rows.entries()) {
-			this.#appendSummaryRow(lines, row, index, rows.length, usageRowsBySummaryRow.get(index) ?? []);
+			this.#appendSummaryRow(
+				lines,
+				row,
+				index,
+				rows.length,
+				usageRowsBySummaryRow.get(index) ?? [],
+				renderedIntentEntries,
+			);
 		}
 
 		this.#text.setText(lines.join("\n"));
@@ -642,6 +662,7 @@ export class ReadToolGroupComponent extends Container implements ToolExecutionHa
 		index: number,
 		total: number,
 		usageRows: ReadUsageRow[],
+		renderedIntentEntries: Set<string>,
 	): void {
 		const connector = index === total - 1 ? theme.tree.last : theme.tree.branch;
 		lines.push(`   ${theme.fg("dim", connector)} ${this.#formatRow(row)}`.trimEnd());
@@ -651,7 +672,15 @@ export class ReadToolGroupComponent extends Container implements ToolExecutionHa
 			index === total - 1
 				? " ".repeat(connectorWidth)
 				: `${theme.tree.vertical}${" ".repeat(Math.max(0, connectorWidth - Bun.stringWidth(theme.tree.vertical)))}`;
-		this.#appendUsageRows(lines, usageRows, `   ${continuation} `);
+		const childPrefix = `   ${continuation} `;
+		this.#appendIntentRows(lines, this.#intentsForTargets(row.targets, renderedIntentEntries), childPrefix);
+		this.#appendUsageRows(lines, usageRows, childPrefix);
+	}
+
+	#appendIntentRows(lines: string[], intents: string[], prefix: string): void {
+		for (const intent of intents) {
+			lines.push(`${prefix}${formatIntentText(theme, intent, this.#intentTextBudget())}`);
+		}
 	}
 
 	#usageRowsBySummaryRow(rows: ReadSummaryRow[]): Map<number, ReadUsageRow[]> {
@@ -703,6 +732,21 @@ export class ReadToolGroupComponent extends Container implements ToolExecutionHa
 			line: firstSelectorLineForTargets(row.targets),
 			linkPath: linkPathForTargets(row.targets),
 		});
+	}
+
+	#intentsForTargets(targets: ReadDisplayTarget[], renderedEntries?: Set<string>): string[] {
+		const intents = new Set<string>();
+		for (const target of targets) {
+			if (!target.entry.intent || renderedEntries?.has(target.entry.toolCallId)) continue;
+			intents.add(target.entry.intent);
+			renderedEntries?.add(target.entry.toolCallId);
+		}
+		return [...intents];
+	}
+
+	#intentTextBudget(): number {
+		const markerWidth = Bun.stringWidth(Bun.stripANSI(theme.styledSymbol("tool.intent", "accent")));
+		return TRUNCATE_LENGTHS.CONTENT - markerWidth - 3;
 	}
 
 	#statusForTargets(targets: ReadDisplayTarget[]): ReadEntry["status"] {
@@ -782,6 +826,9 @@ export class ReadToolGroupComponent extends Container implements ToolExecutionHa
 	 * When expanded: shows full content.
 	 */
 	#addContentPreview(entry: ReadEntry): void {
+		if (entry.intent) {
+			this.addChild(new Text(` ${formatIntentText(theme, entry.intent, this.#intentTextBudget())}`, 0, 0));
+		}
 		const split = splitPathAndSel(entry.path);
 		const lang = getLanguageFromPath(split.path);
 		const pathValue = shortenPath(entry.path);

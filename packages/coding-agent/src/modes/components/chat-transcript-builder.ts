@@ -55,7 +55,7 @@ import { type LateDiagnosticsFile, LateDiagnosticsMessageComponent } from "./lat
 import { groupedReadUsageCallIds, ReadToolGroupComponent, readArgsCollapseIntoGroup } from "./read-tool-group";
 import { SkillMessageComponent } from "./skill-message";
 import { ToolActivityContainer } from "./tool-activity";
-import { ToolExecutionComponent } from "./tool-execution";
+import { resolveToolCallIntent, ToolExecutionComponent } from "./tool-execution";
 import { TranscriptContainer } from "./transcript-container";
 import { createUsageRowBlock } from "./usage-row";
 import { CollapsedSyntheticMessageComponent, UserMessageComponent } from "./user-message";
@@ -86,6 +86,7 @@ export class ChatTranscriptBuilder {
 	readonly container = new TranscriptContainer();
 	#pendingTools = new Map<string, ToolExecutionComponent | ReadToolGroupComponent>();
 	#readArgs = new Map<string, Record<string, unknown>>();
+	#readIntents = new Map<string, string>();
 	#readGroup: ReadToolGroupComponent | null = null;
 	#pendingUsage: Usage | undefined;
 	#pendingUsageDuration: number | undefined;
@@ -146,6 +147,7 @@ export class ChatTranscriptBuilder {
 		for (const pending of this.#pendingTools.values()) pending.seal();
 		this.#pendingTools.clear();
 		this.#readArgs.clear();
+		this.#readIntents.clear();
 		this.#readGroup = null;
 		this.#pendingUsage = undefined;
 		this.#pendingUsageDuration = undefined;
@@ -397,9 +399,11 @@ export class ChatTranscriptBuilder {
 
 			const afterToolSegment = timeline.afterToolCalls.get(content.id);
 			if (content.name === "read" && readArgsCollapseIntoGroup(content.arguments)) {
+				const intent = resolveToolCallIntent(content.intent, content.arguments);
 				if (hasErrorStop && errorMessage) {
 					const group = this.#ensureReadGroup();
 					group.updateArgs(content.arguments, content.id);
+					group.updateIntent(intent, content.id);
 					group.updateResult(
 						{ content: [{ type: "text", text: errorMessage }], isError: true },
 						false,
@@ -408,10 +412,12 @@ export class ChatTranscriptBuilder {
 				} else if (afterToolSegment) {
 					const group = this.#ensureReadGroup();
 					group.updateArgs(content.arguments, content.id);
+					group.updateIntent(intent, content.id);
 					this.#pendingTools.set(content.id, group);
 				} else {
 					const normalizedArgs = normalizeToolArgs(content.arguments);
 					this.#readArgs.set(content.id, normalizedArgs);
+					if (intent) this.#readIntents.set(content.id, intent);
 				}
 				appendAssistantSegment(afterToolSegment);
 				continue;
@@ -430,6 +436,7 @@ export class ChatTranscriptBuilder {
 					editFuzzyThreshold: settings.get("edit.fuzzyThreshold"),
 					editAllowFuzzy: settings.get("edit.fuzzyMatch"),
 					liveRegion: this.container,
+					intent: resolveToolCallIntent(content.intent, content.arguments),
 				},
 				this.deps.getTool?.(content.name),
 				this.deps.ui,
@@ -470,11 +477,13 @@ export class ChatTranscriptBuilder {
 				const group = this.#ensureReadGroup();
 				const args = this.#readArgs.get(message.toolCallId);
 				if (args) group.updateArgs(args, message.toolCallId);
+				group.updateIntent(this.#readIntents.get(message.toolCallId), message.toolCallId);
 				component = group;
 			}
 			component.updateResult(message, false, message.toolCallId);
 			this.#pendingTools.delete(message.toolCallId);
 			this.#readArgs.delete(message.toolCallId);
+			this.#readIntents.delete(message.toolCallId);
 			return;
 		}
 		if (!pending) return;

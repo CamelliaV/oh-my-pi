@@ -63,7 +63,9 @@ function textResult(text: string, details?: unknown, isError?: boolean): Gallery
 
 function addGroupedReadArgs(component: ReadToolGroupComponent): void {
 	component.updateArgs({ path: groupedReadDelimitedPath }, "read-delimited");
+	component.updateIntent("Inspecting streaming preview coverage", "read-delimited");
 	component.updateArgs({ path: groupedReadRepeatedRanges }, "read-ranges");
+	component.updateIntent("Checking task renderer boundaries", "read-ranges");
 }
 
 function renderReadGroupFixtureState(state: GalleryFixtureState, width: number, expanded: boolean): readonly string[] {
@@ -80,6 +82,7 @@ function renderReadGroupFixtureState(state: GalleryFixtureState, width: number, 
 			},
 			"read-delimited",
 		);
+		component.updateIntent("Inspecting streaming preview coverage", "read-delimited");
 		return component.render(width);
 	}
 
@@ -123,6 +126,7 @@ function renderReadGroupFixtureState(state: GalleryFixtureState, width: number, 
 export const fsFixtures: Record<string, GalleryFixture> = {
 	read: {
 		label: "Read",
+		intent: "Inspecting the read renderer implementation",
 		// Streaming: path still being typed, selector not yet appended.
 		streamingArgs: { path: "packages/coding-agent/src/tools/glob" },
 		args: { path: "packages/coding-agent/src/tools/glob.ts:437-448" },

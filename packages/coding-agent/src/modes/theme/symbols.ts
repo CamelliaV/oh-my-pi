@@ -213,7 +213,8 @@ export type SymbolKey =
 	| "tool.goal"
 	| "tool.irc"
 	| "tool.delete"
-	| "tool.move";
+	| "tool.move"
+	| "tool.intent";
 
 export type SymbolMap = Record<SymbolKey, string>;
 
@@ -424,6 +425,7 @@ const UNICODE_SYMBOLS: SymbolMap = {
 	"tool.irc": "✉",
 	"tool.delete": "🗑",
 	"tool.move": "➜",
+	"tool.intent": "✦",
 };
 
 const NERD_SYMBOLS: SymbolMap = {
@@ -735,6 +737,7 @@ const NERD_SYMBOLS: SymbolMap = {
 	"tool.irc": "\uF086",
 	"tool.delete": "\uf12d",
 	"tool.move": "\uf061",
+	"tool.intent": "✦",
 };
 
 const ASCII_SYMBOLS: SymbolMap = {
@@ -941,6 +944,7 @@ const ASCII_SYMBOLS: SymbolMap = {
 	"tool.irc": "irc",
 	"tool.delete": "rm",
 	"tool.move": "mv",
+	"tool.intent": "*",
 };
 
 export const SYMBOL_PRESETS: Record<SymbolPreset, SymbolMap> = {

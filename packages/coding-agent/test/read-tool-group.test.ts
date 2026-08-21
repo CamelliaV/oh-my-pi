@@ -95,6 +95,23 @@ describe("ReadToolGroupComponent", () => {
 		expect(plain).not.toContain(`${themeModule.theme.tree.last} ${themeModule.theme.status.enabled}`);
 	});
 
+	it("preserves each call intent beside grouped read rows", () => {
+		const component = new ReadToolGroupComponent();
+		const onePath = path.resolve("/tmp/one.ts");
+		const twoPath = path.resolve("/tmp/two.ts");
+		component.updateArgs({ path: onePath }, "read-one");
+		component.updateIntent("Inspecting the parser", "read-one");
+		component.updateArgs({ path: twoPath }, "read-two");
+		component.updateIntent("Checking the caller", "read-two");
+
+		const lines = Bun.stripANSI(component.render(120).join("\n")).split("\n");
+		const onePathIndex = lines.findIndex(line => line.includes(onePath));
+		const twoPathIndex = lines.findIndex(line => line.includes(twoPath));
+
+		expect(lines[onePathIndex + 1]).toContain("Inspecting the parser");
+		expect(lines[twoPathIndex + 1]).toContain("Checking the caller");
+	});
+
 	it("nests one usage row beneath the last path from each read-only turn", () => {
 		const component = new ReadToolGroupComponent();
 		const onePath = path.resolve("/tmp/one.ts");

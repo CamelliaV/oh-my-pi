@@ -74,6 +74,39 @@ describe("gallery harness", () => {
 		expect(error).not.toContain("SUCCESS_OUT");
 	});
 
+	it("renders one preserved intent across every tool lifecycle state", async () => {
+		const fixture = resolveFixture("read");
+		for (const state of GALLERY_STATES) {
+			const output = Bun.stripANSI((await renderGalleryState("read", fixture, state, 100)).join("\n"));
+			expect(output).toContain("Inspecting the read renderer implementation");
+		}
+	});
+
+	it("highlights intent with a distinctive marker inside framed tool cards", async () => {
+		const width = 80;
+		const rawLines = await renderGalleryState("read", resolveFixture("read"), "success", width);
+		const lines = rawLines.map(line => Bun.stripANSI(line));
+		const topBorderIndex = lines.findIndex(line => line.trimStart().startsWith(theme.boxRound.topLeft));
+		const intentRow = lines[topBorderIndex + 1]?.trim();
+
+		expect(topBorderIndex).toBeGreaterThanOrEqual(0);
+		expect(intentRow?.startsWith(theme.boxRound.vertical)).toBe(true);
+		expect(intentRow?.endsWith(theme.boxRound.vertical)).toBe(true);
+		// Marker glyph from the symbol preset, not the old tree connector.
+		expect(
+			intentRow?.startsWith(
+				`${theme.boxRound.vertical} ${Bun.stripANSI(theme.styledSymbol("tool.intent", "accent"))}`,
+			),
+		).toBe(true);
+		expect(intentRow).not.toContain(theme.tree.last);
+		expect(intentRow).toContain("Inspecting the read renderer implementation");
+		// The intent text carries the accent+bold highlight on the raw row.
+		expect(rawLines[topBorderIndex + 1]).toContain(
+			theme.fg("accent", theme.bold("Inspecting the read renderer implementation")),
+		);
+		expect(Math.max(...lines.map(line => Bun.stringWidth(line)))).toBeLessThanOrEqual(width);
+	});
+
 	it("routes customRendered tools (task) through the custom-tool branch", async () => {
 		// `task` attaches its renderer on the real AgentTool, so the gallery must
 		// reproduce that path. With a result present and mergeCallAndResult, the

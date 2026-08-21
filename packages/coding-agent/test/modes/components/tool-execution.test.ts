@@ -135,6 +135,31 @@ describe("ToolExecutionComponent custom renderer failures", () => {
 		expect(rendered).toContain(resultText);
 		expect(rendered).not.toContain("no matches");
 	});
+
+	it("keeps existing intent visible after execution args replace the streamed call args", () => {
+		const ui: ToolExecutionUi = {
+			requestRender() {},
+			requestComponentRender(_component: Component) {},
+			resetDisplay() {},
+		};
+		const component = new ToolExecutionComponent(
+			"read",
+			{ i: "Inspecting the renderer", path: "src/render.ts" },
+			{ showImages: false, intent: "Inspecting the renderer" },
+			undefined,
+			ui,
+			process.cwd(),
+		);
+
+		// tool_execution_start carries validated execution args with `i` stripped.
+		component.updateArgs({ path: "src/render.ts" });
+		component.updateIntent("Inspecting the renderer");
+		component.updateResult({ content: [{ type: "text", text: "file contents" }] }, false);
+
+		const rendered = visibleText(component.render(100));
+		expect(rendered).toContain("Inspecting the renderer");
+		expect(rendered).toContain("Read src/render.ts");
+	});
 });
 
 describe("MCP result Markdown rendering", () => {

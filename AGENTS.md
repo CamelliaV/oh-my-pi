@@ -397,3 +397,12 @@ Never run `bun run release`, never push, never edit CHANGELOG sections.
    `web/search/providers/codex-affinity.ts` (light, importable by the lazy
    registry). Regression driver: `test/web-search-affinity-driver.ts` (local
    mock codex relay; affinity → codex first, GLM → codex not attempted).
+9. `feat(tui)` tool intent as highlighted card annotation — intent label
+   (toolCall.intent / wire `i`) threaded through event-controller live path,
+   ui-helpers + chat-transcript-builder rebuilds (incl. per-readCall group
+   intents), rendered as first row inside the tool card frame in
+   `tool-execution.ts` (`#renderBodyWithIntent`: accent `tool.intent` marker
+   (new symbol key, ✦/*) + bold accent text, frame-width clamped; body wrapped
+   in `#bodyBox` for injection). Same annotation in `read-tool-group.ts` rows.
+   Gallery fixtures expose intent. Tests: gallery-cli, read-tool-group,
+   tool-execution, event-controller-args-reveal.

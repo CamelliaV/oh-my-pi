@@ -100,6 +100,21 @@ export function expandKeyHint(): string {
 }
 
 // =============================================================================
+// Intent Annotations
+// =============================================================================
+
+/**
+ * Intent annotation for tool cards: accent-tinted marker plus bold accent text,
+ * so the model's purpose for a call reads as a distinct highlighted voice
+ * rather than dim body content. Text truncates to `textBudget` cells.
+ */
+export function formatIntentText(uiTheme: Theme, intent: string, textBudget: number): string {
+	const marker = uiTheme.styledSymbol("tool.intent", "accent");
+	const text = truncateToWidth(replaceTabs(intent), Math.max(1, textBudget));
+	return `${marker} ${uiTheme.fg("accent", uiTheme.bold(text))}`;
+}
+
+// =============================================================================
 // Text Truncation Utilities
 // =============================================================================
 

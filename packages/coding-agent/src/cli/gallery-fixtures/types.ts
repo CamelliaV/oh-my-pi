@@ -16,6 +16,8 @@ export type GalleryFixtureState = "streaming" | "progress" | "success" | "error"
 export interface GalleryFixture {
 	/** Display label for the tool header (defaults to the tool name). */
 	label?: string;
+	/** Existing harness-generated intent metadata shown above the tool card. */
+	intent?: string;
 	/** Edit mode for edit-like tools so the streaming preview dispatches correctly. */
 	editMode?: EditMode;
 	/**

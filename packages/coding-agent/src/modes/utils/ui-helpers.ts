@@ -33,7 +33,11 @@ import {
 import { SkillMessageComponent } from "../../modes/components/skill-message";
 import { StrippedToolCallsPlaceholder } from "../../modes/components/stripped-tool-calls-placeholder";
 import { ToolActivityContainer } from "../../modes/components/tool-activity";
-import { ToolExecutionComponent, type ToolExecutionHandle } from "../../modes/components/tool-execution";
+import {
+	resolveToolCallIntent,
+	ToolExecutionComponent,
+	type ToolExecutionHandle,
+} from "../../modes/components/tool-execution";
 import { TranscriptBlock, TranscriptContainer } from "../../modes/components/transcript-container";
 import { createUsageRowBlock } from "../../modes/components/usage-row";
 import { UserMessageComponent } from "../../modes/components/user-message";
@@ -374,6 +378,7 @@ export class UiHelpers {
 
 		let readGroup: ReadToolGroupComponent | null = null;
 		const readToolCallArgs = new Map<string, Record<string, unknown>>();
+		const readToolCallIntents = new Map<string, string>();
 		const readToolCallAssistantComponents = new Map<string, AssistantMessageComponent>();
 		// Defer per-request metrics until the request's tool results have materialized.
 		// Read-only invisible requests attach metrics to their shared compact group;
@@ -521,6 +526,7 @@ export class UiHelpers {
 					resolveWaitingPoll(content.name);
 
 					if (content.name === "read" && readArgsCollapseIntoGroup(content.arguments)) {
+						const intent = resolveToolCallIntent(content.intent, content.arguments);
 						if (hasErrorStop && errorMessage) {
 							if (!readGroup) {
 								readGroup = new ReadToolGroupComponent({
@@ -530,6 +536,7 @@ export class UiHelpers {
 								this.ctx.chatContainer.addChild(readGroup);
 							}
 							readGroup.updateArgs(content.arguments, content.id);
+							readGroup.updateIntent(intent, content.id);
 							readGroup.updateResult(
 								{ content: [{ type: "text", text: errorMessage }], isError: true },
 								false,
@@ -544,6 +551,7 @@ export class UiHelpers {
 								this.ctx.chatContainer.addChild(readGroup);
 							}
 							readGroup.updateArgs(content.arguments, content.id);
+							readGroup.updateIntent(intent, content.id);
 							this.ctx.pendingTools.set(content.id, readGroup);
 							if (assistantComponent) {
 								readToolCallAssistantComponents.set(content.id, assistantComponent);
@@ -551,6 +559,7 @@ export class UiHelpers {
 						} else {
 							const normalizedArgs = normalizeToolArgs(content.arguments);
 							readToolCallArgs.set(content.id, normalizedArgs);
+							if (intent) readToolCallIntents.set(content.id, intent);
 							if (assistantComponent) {
 								readToolCallAssistantComponents.set(content.id, assistantComponent);
 							}
@@ -587,6 +596,7 @@ export class UiHelpers {
 							editFuzzyThreshold: settings.get("edit.fuzzyThreshold"),
 							editAllowFuzzy: settings.get("edit.fuzzyMatch"),
 							liveRegion: this.ctx.chatContainer,
+							intent: resolveToolCallIntent(content.intent, content.arguments),
 						},
 						tool,
 						this.ctx.ui,
@@ -644,6 +654,7 @@ export class UiHelpers {
 						const hasText = message.content.some(c => c.type === "text");
 						if (!hasText && settings.get("terminal.showImages")) {
 							readToolCallArgs.delete(message.toolCallId);
+							readToolCallIntents.delete(message.toolCallId);
 							readToolCallAssistantComponents.delete(message.toolCallId);
 							continue;
 						}
@@ -661,12 +672,14 @@ export class UiHelpers {
 						if (args) {
 							readGroup.updateArgs(args, message.toolCallId);
 						}
+						readGroup.updateIntent(readToolCallIntents.get(message.toolCallId), message.toolCallId);
 						component = readGroup;
 						this.ctx.pendingTools.set(message.toolCallId, readGroup);
 					}
 					component.updateResult(message, false, message.toolCallId);
 					this.ctx.pendingTools.delete(message.toolCallId);
 					readToolCallArgs.delete(message.toolCallId);
+					readToolCallIntents.delete(message.toolCallId);
 					readToolCallAssistantComponents.delete(message.toolCallId);
 					continue;
 				}

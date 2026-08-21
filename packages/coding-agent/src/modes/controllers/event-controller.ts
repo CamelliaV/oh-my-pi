@@ -17,7 +17,11 @@ import {
 	readArgsHaveTarget,
 } from "../../modes/components/read-tool-group";
 import { TodoReminderComponent } from "../../modes/components/todo-reminder";
-import { ToolExecutionComponent, type ToolExecutionHandle } from "../../modes/components/tool-execution";
+import {
+	resolveToolCallIntent,
+	ToolExecutionComponent,
+	type ToolExecutionHandle,
+} from "../../modes/components/tool-execution";
 import { TtsrNotificationComponent } from "../../modes/components/ttsr-notification";
 import { createUsageRowBlock } from "../../modes/components/usage-row";
 import { UserMessageComponent } from "../../modes/components/user-message";
@@ -1121,12 +1125,15 @@ export class EventController {
 					if (readArgsCollapseIntoGroup(content.arguments)) {
 						if (!this.ctx.pendingTools.has(content.id)) this.#resolveDisplaceablePoll(content.name);
 						this.#trackReadToolCall(content.id, content.arguments);
+						const intent = resolveToolCallIntent(content.intent, content.arguments);
 						const component = this.ctx.pendingTools.get(content.id);
 						if (component) {
 							component.updateArgs(content.arguments, content.id);
+							component.updateIntent(intent, content.id);
 						} else {
 							const group = this.#getReadGroup();
 							group.updateArgs(content.arguments, content.id);
+							group.updateIntent(intent, content.id);
 							this.ctx.pendingTools.set(content.id, group);
 							this.#toolTimelineComponents.set(content.id, group);
 						}
@@ -1175,6 +1182,7 @@ export class EventController {
 							showImages: settings.get("terminal.showImages"),
 							editFuzzyThreshold: settings.get("edit.fuzzyThreshold"),
 							editAllowFuzzy: settings.get("edit.fuzzyMatch"),
+							intent: resolveToolCallIntent(content.intent, content.arguments),
 						},
 						tool,
 						this.ctx.ui,
@@ -1200,6 +1208,7 @@ export class EventController {
 					const component = this.ctx.pendingTools.get(content.id);
 					if (component) {
 						component.updateArgs(renderArgs, content.id);
+						component.updateIntent(resolveToolCallIntent(content.intent, content.arguments), content.id);
 						this.#toolArgsReveal.bind(content.id, component);
 					}
 				}
@@ -1412,9 +1421,11 @@ export class EventController {
 				const component = this.ctx.pendingTools.get(event.toolCallId);
 				if (component) {
 					component.updateArgs(event.args, event.toolCallId);
+					component.updateIntent(event.intent, event.toolCallId);
 				} else {
 					const group = this.#getReadGroup();
 					group.updateArgs(event.args, event.toolCallId);
+					group.updateIntent(event.intent, event.toolCallId);
 					this.ctx.pendingTools.set(event.toolCallId, group);
 					this.#toolTimelineComponents.set(event.toolCallId, group);
 				}
@@ -1436,6 +1447,7 @@ export class EventController {
 					editFuzzyThreshold: settings.get("edit.fuzzyThreshold"),
 					editAllowFuzzy: settings.get("edit.fuzzyMatch"),
 					liveRegion: this.ctx.chatContainer,
+					intent: event.intent,
 				},
 				tool,
 				this.ctx.ui,
@@ -1461,12 +1473,15 @@ export class EventController {
 			// execution path emits with the full args immediately before the result.
 			this.#toolArgsReveal.finish(event.toolCallId);
 			const component = this.ctx.pendingTools.get(event.toolCallId);
-			if (component && typeof component.updateArgs === "function") {
-				component.updateArgs(event.args, event.toolCallId);
-				if (typeof component.setArgsComplete === "function") {
-					component.setArgsComplete(event.toolCallId);
+			if (component) {
+				component.updateIntent(event.intent, event.toolCallId);
+				if (typeof component.updateArgs === "function") {
+					component.updateArgs(event.args, event.toolCallId);
+					if (typeof component.setArgsComplete === "function") {
+						component.setArgsComplete(event.toolCallId);
+					}
+					this.ctx.ui.requestRender();
 				}
-				this.ctx.ui.requestRender();
 			}
 		}
 		this.#startToolApprovalPreview(event.toolCallId);

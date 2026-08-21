@@ -22,7 +22,13 @@ import { BASH_DEFAULT_PREVIEW_LINES } from "../../tools/bash";
 import { formatDefaultToolExecution } from "../../tools/default-renderer";
 import { EVAL_DEFAULT_PREVIEW_LINES } from "../../tools/eval";
 import { isWaitingPollDetails } from "../../tools/hub";
-import { formatStatusIcon, replaceTabs, resolveImageOptions } from "../../tools/render-utils";
+import {
+	formatIntentText,
+	formatStatusIcon,
+	replaceTabs,
+	resolveImageOptions,
+	truncateToWidth,
+} from "../../tools/render-utils";
 import { type FirstResultViewportRepaint, type ToolRenderer, toolRenderers } from "../../tools/renderers";
 import { TODO_STRIKE_TOTAL_FRAMES, type TodoToolDetails } from "../../tools/todo";
 import type { XdevState } from "../../tools/xdev";
@@ -233,10 +239,13 @@ export interface ToolExecutionOptions {
 	/** Live-region probe used to settle detached task progress once the block
 	 * leaves the repaintable transcript region. */
 	liveRegion?: TranscriptLiveRegionProbe;
+	/** Existing harness intent metadata; display-only and never forwarded to tool execution. */
+	intent?: string;
 }
 
 export interface ToolExecutionHandle extends Component {
 	updateArgs(args: any, toolCallId?: string): void;
+	updateIntent(intent: string | undefined, toolCallId?: string): void;
 	updateResult(
 		result: {
 			content: Array<{ type: string; text?: string; data?: string; mimeType?: string }>;
@@ -276,8 +285,21 @@ let toolExecutionInstanceSeq = 0;
 /**
  * Component that renders a tool call with its result (updateable)
  */
+export function normalizeToolIntent(intent: unknown): string | undefined {
+	if (typeof intent !== "string") return undefined;
+	const trimmed = intent.trim();
+	return trimmed.length > 0 ? trimmed : undefined;
+}
+
+export function resolveToolCallIntent(intent: unknown, args: unknown): string | undefined {
+	const explicit = normalizeToolIntent(intent);
+	if (explicit) return explicit;
+	if (!args || typeof args !== "object" || Array.isArray(args)) return undefined;
+	return normalizeToolIntent((args as Record<string, unknown>).i);
+}
 export class ToolExecutionComponent extends Container implements NativeScrollbackLiveRegion {
 	#contentBox: Box; // Used for custom tools and bash visual truncation
+	#bodyBox: Box;
 	#contentText: WidthAwareText; // Generic fallback (no custom/built-in renderer)
 	// Which container the constructor mounted: bespoke/built-in renderers use
 	// #contentBox, everything else the generic #contentText fallback.
@@ -288,6 +310,8 @@ export class ToolExecutionComponent extends Container implements NativeScrollbac
 	readonly #instanceId = ++toolExecutionInstanceSeq;
 	#toolName: string;
 	#toolLabel: string;
+	#intent: string | undefined;
+	#bodyComponent: Component;
 	#args: any;
 	#expanded = false;
 	#toolActivityVisible = true;
@@ -401,6 +425,28 @@ export class ToolExecutionComponent extends Container implements NativeScrollbac
 		super();
 		this.#toolName = toolName;
 		this.#toolLabel = tool?.label ?? toolName;
+		this.#intent = normalizeToolIntent(options.intent);
+		this.#bodyBox = new Box(0, 0);
+		let lastBodyLines: readonly string[] | undefined;
+		let lastIntent: string | undefined;
+		let lastWidth = -1;
+		let lastRendered: readonly string[] = [];
+		this.#bodyComponent = {
+			render: width => {
+				const bodyLines = this.#bodyBox.render(width);
+				if (bodyLines === lastBodyLines && this.#intent === lastIntent && width === lastWidth) return lastRendered;
+				lastBodyLines = bodyLines;
+				lastIntent = this.#intent;
+				lastWidth = width;
+				lastRendered = this.#renderBodyWithIntent(bodyLines, width);
+				return lastRendered;
+			},
+			invalidate: () => this.#bodyBox.invalidate(),
+			setIgnoreTight: ignore => {
+				this.#bodyBox.setIgnoreTight(ignore);
+				for (const child of this.#bodyBox.children) child.setIgnoreTight?.(ignore);
+			},
+		};
 		this.#renderer = options.useBuiltInRenderer === false ? undefined : toolRenderers[toolName];
 		this.#showImages = options.showImages ?? true;
 		this.#editFuzzyThreshold = options.editFuzzyThreshold;
@@ -425,10 +471,11 @@ export class ToolExecutionComponent extends Container implements NativeScrollbac
 		// Use Box for custom tools or built-in tools with rich renderers.
 		const hasCustomRenderer = !!(tool?.renderCall || tool?.renderResult);
 		this.#usesContentBox = hasCustomRenderer || this.#renderer !== undefined;
+		this.addChild(this.#bodyComponent);
 		if (this.#usesContentBox) {
-			this.addChild(this.#contentBox);
+			this.#bodyBox.addChild(this.#contentBox);
 		} else {
-			this.addChild(this.#contentText);
+			this.#bodyBox.addChild(this.#contentText);
 		}
 		// Tool blocks are visually distinct cards (background-tinted or framed),
 		// so keep their horizontal padding even when the user enables tight layout.
@@ -450,6 +497,13 @@ export class ToolExecutionComponent extends Container implements NativeScrollbac
 		this.#updateSpinnerAnimation();
 		this.#schedulePreviewDiff();
 		this.#updateDisplay();
+	}
+
+	updateIntent(intent: string | undefined, _toolCallId?: string): void {
+		const normalized = normalizeToolIntent(intent);
+		if (!normalized || normalized === this.#intent) return;
+		this.#intent = normalized;
+		super.invalidate();
 	}
 
 	/**
@@ -1111,7 +1165,7 @@ export class ToolExecutionComponent extends Container implements NativeScrollbac
 
 			// Clean up previous multi-file boxes
 			for (const box of this.#multiFileBoxes) {
-				this.removeChild(box);
+				this.#bodyBox.removeChild(box);
 			}
 			this.#multiFileBoxes = [];
 
@@ -1132,7 +1186,7 @@ export class ToolExecutionComponent extends Container implements NativeScrollbac
 					if (i > 0) {
 						const spacer = new Spacer(1);
 						this.#multiFileBoxes.push(spacer);
-						this.addChild(spacer);
+						this.#bodyBox.addChild(spacer);
 					}
 					const fileBox = new Box(0, 0);
 					try {
@@ -1150,7 +1204,7 @@ export class ToolExecutionComponent extends Container implements NativeScrollbac
 						logger.warn("Tool renderer failed", { tool: this.#toolName, error: String(err) });
 					}
 					this.#multiFileBoxes.push(fileBox);
-					this.addChild(fileBox);
+					this.#bodyBox.addChild(fileBox);
 				}
 
 				// Show pending indicator for remaining files
@@ -1161,7 +1215,7 @@ export class ToolExecutionComponent extends Container implements NativeScrollbac
 				if (remaining > 0 && this.#isPartial) {
 					const pendingSpacer = new Spacer(1);
 					this.#multiFileBoxes.push(pendingSpacer);
-					this.addChild(pendingSpacer);
+					this.#bodyBox.addChild(pendingSpacer);
 					const pendingBox = new Box(0, 0);
 					const spinner =
 						this.#spinnerFrame !== undefined ? formatStatusIcon("running", theme, this.#spinnerFrame) : "";
@@ -1175,7 +1229,7 @@ export class ToolExecutionComponent extends Container implements NativeScrollbac
 					);
 					pendingBox.addChild(new Text(pendingText, 0, 0));
 					this.#multiFileBoxes.push(pendingBox);
-					this.addChild(pendingBox);
+					this.#bodyBox.addChild(pendingBox);
 				}
 			} else {
 				// Single-file or no result: standard rendering
@@ -1251,11 +1305,11 @@ export class ToolExecutionComponent extends Container implements NativeScrollbac
 
 		// Handle images (same for both custom and built-in)
 		for (const img of this.#imageComponents) {
-			this.removeChild(img);
+			this.#bodyBox.removeChild(img);
 		}
 		this.#imageComponents = [];
 		for (const spacer of this.#imageSpacers) {
-			this.removeChild(spacer);
+			this.#bodyBox.removeChild(spacer);
 		}
 		this.#imageSpacers = [];
 
@@ -1276,7 +1330,7 @@ export class ToolExecutionComponent extends Container implements NativeScrollbac
 					}
 
 					const spacer = new Spacer(1);
-					this.addChild(spacer);
+					this.#bodyBox.addChild(spacer);
 					this.#imageSpacers.push(spacer);
 					const imageComponent = new Image(
 						imageData,
@@ -1285,7 +1339,7 @@ export class ToolExecutionComponent extends Container implements NativeScrollbac
 						{ ...resolveImageOptions(), budget: this.#ui.imageBudget, imageKey: `te${this.#instanceId}:${i}` },
 					);
 					this.#imageComponents.push(imageComponent);
-					this.addChild(imageComponent);
+					this.#bodyBox.addChild(imageComponent);
 				}
 			}
 		}
@@ -1386,6 +1440,34 @@ export class ToolExecutionComponent extends Container implements NativeScrollbac
 		return context;
 	}
 
+	#renderBodyWithIntent(lines: readonly string[], width: number): readonly string[] {
+		if (!this.#intent) return lines;
+
+		const markerWidth = Bun.stringWidth(Bun.stripANSI(theme.styledSymbol("tool.intent", "accent")));
+		const frameIndex = lines.findIndex(line => Bun.stripANSI(line).trimStart().startsWith(theme.boxRound.topLeft));
+		if (frameIndex === -1) {
+			// No frame to align with: standalone highlighted row above the body.
+			const row = ` ${formatIntentText(theme, this.#intent, Math.max(1, width - markerWidth - 3))}`;
+			return lines.length > 0 ? [lines[0]!, row, ...lines.slice(1)] : [row];
+		}
+
+		const frameLine = Bun.stripANSI(lines[frameIndex]!);
+		const leading = frameLine.length - frameLine.trimStart().length;
+		const frameWidth = Bun.stringWidth(frameLine.trimEnd()) - leading;
+		if (frameWidth < 4) return lines;
+		const innerWidth = frameWidth - 2;
+		// Interior: " M text fill " must total innerWidth; drop the marker only
+		// when the frame is too narrow to hold it beside at least one text cell.
+		const showMarker = innerWidth >= markerWidth + 4;
+		const textBudget = showMarker ? innerWidth - markerWidth - 3 : innerWidth - 2;
+		const text = showMarker
+			? formatIntentText(theme, this.#intent, Math.max(1, textBudget))
+			: theme.fg("accent", theme.bold(truncateToWidth(replaceTabs(this.#intent), Math.max(1, textBudget))));
+		const textWidth = Bun.stringWidth(truncateToWidth(replaceTabs(this.#intent), Math.max(1, textBudget)));
+		const fill = " ".repeat(Math.max(0, innerWidth - (showMarker ? markerWidth + 1 : 0) - textWidth - 2));
+		const row = `${" ".repeat(leading)}${theme.fg("dim", theme.boxRound.vertical)} ${text}${fill} ${theme.fg("dim", theme.boxRound.vertical)}${" ".repeat(Math.max(0, width - leading - frameWidth))}`;
+		return [...lines.slice(0, frameIndex + 1), row, ...lines.slice(frameIndex + 1)];
+	}
 	#getTextOutput(): string {
 		if (!this.#result) return "";
 
@@ -1459,7 +1541,7 @@ export class ToolExecutionComponent extends Container implements NativeScrollbac
 			return;
 		}
 		for (const box of this.#multiFileBoxes) {
-			this.removeChild(box);
+			this.#bodyBox.removeChild(box);
 		}
 		this.#multiFileBoxes = [];
 		this.#contentBox.setBgFn(undefined);

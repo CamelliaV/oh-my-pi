@@ -22,9 +22,20 @@ describe("parseSgrMouse", () => {
 			row: 8,
 			release: false,
 			wheel: null,
+			wheelX: null,
 			motion: false,
 			leftClick: true,
 		});
+	});
+
+	it("decodes horizontal wheel (tilt) separately from vertical wheel", () => {
+		const left = parseSgrMouse("\x1b[<66;1;1M");
+		const right = parseSgrMouse("\x1b[<67;1;1M");
+		expect(left?.wheelX).toBe(-1);
+		expect(left?.wheel).toBeNull();
+		expect(right?.wheelX).toBe(1);
+		expect(right?.wheel).toBeNull();
+		expect(left?.leftClick).toBe(false);
 	});
 
 	it("decodes releases as non-clicks", () => {

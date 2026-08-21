@@ -18,8 +18,10 @@ export interface SgrMouseEvent {
 	row: number;
 	/** True for a release report (`m` suffix). */
 	release: boolean;
-	/** Wheel direction: -1 up, 1 down, null when not a wheel event. */
+	/** Wheel direction: -1 up, 1 down, null when not a vertical wheel event. */
 	wheel: -1 | 1 | null;
+	/** Horizontal wheel (tilt wheel / trackpad horizontal scroll): -1 left, 1 right, null when absent. */
+	wheelX: -1 | 1 | null;
 	/** True when the pointer moved (hover or drag) rather than clicked. */
 	motion: boolean;
 	/** True for a left-button press (not motion, not release, not wheel). */
@@ -38,10 +40,12 @@ export function parseSgrMouse(data: string): SgrMouseEvent | null {
 	const col = Number(match[2]) - 1;
 	const row = Number(match[3]) - 1;
 	const release = match[4] === "m";
-	const wheel = button & 64 ? ((button & 1 ? 1 : -1) as 1 | -1) : null;
-	const motion = (button & 32) !== 0 && wheel === null;
-	const leftClick = !release && wheel === null && !motion && (button & 3) === 0;
-	return { button, col, row, release, wheel, motion, leftClick };
+	const isWheel = (button & 64) !== 0;
+	const wheel = isWheel && (button & 2) === 0 ? ((button & 1 ? 1 : -1) as 1 | -1) : null;
+	const wheelX = isWheel && (button & 2) !== 0 ? ((button & 1 ? 1 : -1) as 1 | -1) : null;
+	const motion = (button & 32) !== 0 && !isWheel;
+	const leftClick = !release && !isWheel && !motion && (button & 3) === 0;
+	return { button, col, row, release, wheel, wheelX, motion, leftClick };
 }
 
 /** Handler invoked with a decoded SGR event; returning `false` reports unhandled. */

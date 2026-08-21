@@ -1,6 +1,12 @@
 export type { LspServerStatus } from "./client";
 export type { FileDiagnosticsResult } from "./diagnostics";
 export { FileFormatResult } from "./diagnostics";
+export type {
+	LspNavigationAction,
+	LspNavigationLocation,
+	LspNavigationQuery,
+} from "./navigation";
+export { queryLspLocations } from "./navigation";
 export type { LspStartupServerInfo, LspWarmupOptions, LspWarmupResult } from "./servers";
 export {
 	discoverStartupLspServers,

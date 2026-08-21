@@ -7,7 +7,7 @@ import type {
 	AgentToolUpdateCallback,
 	ToolApprovalDecision,
 } from "@oh-my-pi/pi-agent-core";
-import { logger, prompt, untilAborted } from "@oh-my-pi/pi-utils";
+import { logger, prompt } from "@oh-my-pi/pi-utils";
 import { type Theme, theme } from "../modes/theme/theme";
 import lspDescription from "../prompts/tools/lsp.md" with { type: "text" };
 import type { ToolSession } from "../tools";
@@ -34,13 +34,9 @@ import {
 	BATCH_DIAGNOSTICS_WAIT_TIMEOUT_MS,
 	formatLocationWithContext,
 	hasRustWorkspaceAncestor,
-	isOnlyQueriedDeclaration,
 	MAX_GLOB_DIAGNOSTIC_TARGETS,
-	normalizeLocationResult,
 	PROJECT_INDEXED_ACTIONS,
 	REFERENCE_CONTEXT_LIMIT,
-	REFERENCES_RETRY_COUNT,
-	REFERENCES_RETRY_DELAY_MS,
 	SINGLE_DIAGNOSTICS_WAIT_TIMEOUT_MS,
 	WORKSPACE_SYMBOL_LIMIT,
 	waitForDiagnostics,
@@ -53,6 +49,7 @@ import {
 	sortAndValidateTextEdits,
 } from "./edits";
 import { detectLspmux } from "./lspmux";
+import { type LspNavigationAction, queryLspLocationResults } from "./navigation";
 import {
 	configCache,
 	getConfig,
@@ -71,8 +68,6 @@ import {
 	type Diagnostic,
 	type DocumentSymbol,
 	type Hover,
-	type Location,
-	type LocationLink,
 	type LspClient,
 	type LspParams,
 	type LspToolDetails,
@@ -105,6 +100,12 @@ import {
 import { runWorkspaceDiagnostics } from "./workspace-diagnostics";
 
 const MAX_RENAME_PAIRS = 1000;
+const NAVIGATION_LABEL: Record<LspNavigationAction, string> = {
+	definition: "definition",
+	implementation: "implementation",
+	references: "reference",
+	type_definition: "type definition",
+};
 
 interface FileRenamePair {
 	oldUri: string;
@@ -1126,113 +1127,28 @@ export class LspTool implements AgentTool<typeof lspSchema, LspToolDetails, Them
 				// Standard LSP Operations
 				// =====================================================================
 
-				case "definition": {
-					const result = (await sendRequest(
-						client,
-						"textDocument/definition",
-						{
-							textDocument: { uri },
-							position,
-						},
-						signal,
-					)) as Location | Location[] | LocationLink | LocationLink[] | null;
-
-					const locations = normalizeLocationResult(result);
-
-					if (locations.length === 0) {
-						output = "No definition found";
-						useless = true;
-					} else {
-						const lines = await Promise.all(
-							locations.map(location => formatLocationWithContext(location, this.session.cwd)),
-						);
-						output = `Found ${locations.length} definition(s):\n${lines.join("\n")}`;
-					}
-					break;
-				}
-
-				case "type_definition": {
-					const result = (await sendRequest(
-						client,
-						"textDocument/typeDefinition",
-						{
-							textDocument: { uri },
-							position,
-						},
-						signal,
-					)) as Location | Location[] | LocationLink | LocationLink[] | null;
-
-					const locations = normalizeLocationResult(result);
-
-					if (locations.length === 0) {
-						output = "No type definition found";
-						useless = true;
-					} else {
-						const lines = await Promise.all(
-							locations.map(location => formatLocationWithContext(location, this.session.cwd)),
-						);
-						output = `Found ${locations.length} type definition(s):\n${lines.join("\n")}`;
-					}
-					break;
-				}
-
-				case "implementation": {
-					const result = (await sendRequest(
-						client,
-						"textDocument/implementation",
-						{
-							textDocument: { uri },
-							position,
-						},
-						signal,
-					)) as Location | Location[] | LocationLink | LocationLink[] | null;
-
-					const locations = normalizeLocationResult(result);
-
-					if (locations.length === 0) {
-						output = "No implementation found";
-						useless = true;
-					} else {
-						const lines = await Promise.all(
-							locations.map(location => formatLocationWithContext(location, this.session.cwd)),
-						);
-						output = `Found ${locations.length} implementation(s):\n${lines.join("\n")}`;
-					}
-					break;
-				}
+				case "definition":
+				case "type_definition":
+				case "implementation":
 				case "references": {
-					let result: Location[] | null = null;
-					for (let attempt = 0; attempt <= REFERENCES_RETRY_COUNT; attempt++) {
-						result = (await sendRequest(
-							client,
-							"textDocument/references",
-							{
-								textDocument: { uri },
-								position,
-								context: { includeDeclaration: true },
-							},
-							signal,
-						)) as Location[] | null;
-
-						const locations = result ?? [];
-						if (!isProjectAwareLspServer(serverConfig) || attempt === REFERENCES_RETRY_COUNT) {
-							break;
-						}
-						if (locations.length > 0 && !isOnlyQueriedDeclaration(locations, uri, position)) {
-							break;
-						}
-
-						await waitForProjectLoaded(client, signal);
-						throwIfAborted(signal);
-						await untilAborted(signal, () => Bun.sleep(REFERENCES_RETRY_DELAY_MS));
-					}
-
-					if (!result || result.length === 0) {
-						output = "No references found";
+					if (!targetFile) throw new ToolError(`file is required for ${action}`);
+					const locations = await queryLspLocationResults({
+						action,
+						client,
+						file: targetFile,
+						position,
+						serverConfig,
+						signal,
+					});
+					const label = NAVIGATION_LABEL[action];
+					if (locations.length === 0) {
+						output = `No ${label}${action === "references" ? "s" : ""} found`;
 						useless = true;
-					} else {
-						const contextualReferences = result.slice(0, REFERENCE_CONTEXT_LIMIT);
-						const plainReferences = result.slice(REFERENCE_CONTEXT_LIMIT);
+						break;
+					}
+					if (action === "references") {
+						const contextualReferences = locations.slice(0, REFERENCE_CONTEXT_LIMIT);
+						const plainReferences = locations.slice(REFERENCE_CONTEXT_LIMIT);
 						const contextualLines = await Promise.all(
 							contextualReferences.map(location => formatLocationWithContext(location, this.session.cwd)),
 						);
@@ -1244,8 +1160,13 @@ export class LspTool implements AgentTool<typeof lspSchema, LspToolDetails, Them
 									...plainLines,
 								]
 							: contextualLines;
-						output = `Found ${result.length} reference(s):\n${lines.join("\n")}`;
+						output = `Found ${locations.length} reference(s):\n${lines.join("\n")}`;
+						break;
 					}
+					const lines = await Promise.all(
+						locations.map(location => formatLocationWithContext(location, this.session.cwd)),
+					);
+					output = `Found ${locations.length} ${label}(s):\n${lines.join("\n")}`;
 					break;
 				}
 

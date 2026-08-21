@@ -1251,7 +1251,10 @@ export const diff = Object.assign(
 			return splitLines(await diff(cwd, { ...options, nameOnly: true }));
 		},
 		/** Parsed per-file add/remove counts. */
-		async numstat(cwd: string, options: Pick<DiffOptions, "cached" | "signal"> = {}): Promise<NumstatEntry[]> {
+		async numstat(
+			cwd: string,
+			options: Pick<DiffOptions, "allowFailure" | "base" | "cached" | "files" | "signal"> = {},
+		): Promise<NumstatEntry[]> {
 			return parseNumstat(await diff(cwd, { ...options, numstat: true }));
 		},
 		/** Parsed diff hunks for the given files. */
@@ -1322,7 +1325,6 @@ export const status = Object.assign(
 			if (result.exitCode !== 0) return null;
 			return parseStatusPorcelain(result.stdout);
 		},
-		/** Parse porcelain status text into counts. */
 		parse: parseStatusPorcelain,
 	},
 );

@@ -96,6 +96,22 @@ function compareSessionRecency(a: SessionInfo, b: SessionInfo): number {
 	return b.modified.getTime() - a.modified.getTime();
 }
 
+/** Recency buckets for the unfiltered list: modified descending maps to these in order. */
+const TIME_BUCKET_LABELS = ["Today", "Yesterday", "This week", "Earlier"] as const;
+
+/**
+ * Coarse age bucket of a session's last activity. Thresholds mirror the
+ * relative wording of {@link formatDate} (<24h hours-ago, 1 day, <7 days ago,
+ * otherwise a calendar date) so headers never contradict the metadata line.
+ */
+function timeBucketIndex(date: Date, now: Date): number {
+	const diffDays = Math.floor((now.getTime() - date.getTime()) / 86_400_000);
+	if (diffDays < 1) return 0;
+	if (diffDays < 2) return 1;
+	if (diffDays < 7) return 2;
+	return 3;
+}
+
 const MIN_PURE_FUZZY_TOKEN_SCORE = -20;
 
 /** One ranked search hit; `index` is the session's position in the unfiltered list (recency order). */
@@ -344,12 +360,15 @@ class SessionList implements Component {
 	 * list's search line, blank, scroll indicator, blank, and hint (5). A titled
 	 * session is the tallest item at 4 lines (title + preview + metadata +
 	 * blank); budgeting for that guarantees no overflow even when every visible
-	 * entry has a title. The reserve covers below-editor hook widgets / cursor.
+	 * entry has a title. The reserve covers below-editor hook widgets / cursor,
+	 * plus one bucket-header row while the unfiltered list groups by recency
+	 * (headers add a row per crossed boundary; one is budgeted, the rest fit
+	 * the slack between titled and untitled blocks).
 	 */
 	#visibleCount(): number {
 		const CHROME = 12;
 		const PER_SESSION = 4;
-		const RESERVE = 1;
+		const RESERVE = 1 + (this.#searchInput.getValue().length === 0 ? 1 : 0);
 		const budget = this.#getTerminalRows() - CHROME - RESERVE;
 		return Math.max(2, Math.floor(budget / PER_SESSION));
 	}
@@ -501,7 +520,7 @@ class SessionList implements Component {
 		}
 	}
 
-		/** Update a session's display title in place after an offline rename. */
+	/** Update a session's display title in place after an offline rename. */
 	updateSessionTitle(sessionPath: string, title: string): void {
 		const session = this.#allSessions.find(s => s.path === sessionPath);
 		if (!session) return;
@@ -587,46 +606,67 @@ class SessionList implements Component {
 		// Each session block is built into sessionLines, then wrapped by ScrollView
 		// so the right-edge scrollbar is proportional at the physical-line level.
 		const sessionLines: string[] = [];
-		const sessionRowIndex: number[] = [];
+		const sessionRowIndex: (number | undefined)[] = [];
 		const overflow = this.#filteredSessions.length > maxVisible;
 		const rowWidth = Math.max(0, width - (overflow ? 1 : 0));
+		// Time-bucket headers only structure the unfiltered recency list; search
+		// results are relevance-ranked and must not pretend to be chronological.
+		const grouped = this.#searchInput.getValue().length === 0;
+		const now = new Date();
+
 		for (let i = startIndex; i < endIndex; i++) {
-			const blockStart = sessionLines.length;
 			const session = this.#filteredSessions[i];
 			const isSelected = i === this.#selectedIndex;
+
+			// Muted bucket header wherever the full list crosses a recency bucket
+			// (and at the very head of the list). Emitted even at the window's top
+			// edge: a boundary there means the same header scrolled past, so this
+			// is a repeat, not a duplicate. The previous card's blank separator
+			// keeps the section break airy; a header costs one row per boundary.
+			if (
+				grouped &&
+				(i === 0 ||
+					timeBucketIndex(session.modified, now) !== timeBucketIndex(this.#filteredSessions[i - 1]!.modified, now))
+			) {
+				sessionLines.push(this.#bucketHeaderLine(timeBucketIndex(session.modified, now), rowWidth));
+				sessionRowIndex.push(undefined);
+			}
+
+			const blockStart = sessionLines.length;
 
 			// Normalize first message to single line
 			const normalizedMessage = session.firstMessage.replace(/\n/g, " ").trim();
 
-			// First line: cursor + title (or first message if no title)
-			const cursorSymbol = `${theme.nav.cursor} `;
-			const cursorWidth = visibleWidth(cursorSymbol);
-			const cursor = isSelected ? theme.fg("accent", cursorSymbol) : padding(cursorWidth);
-			const maxWidth = rowWidth - cursorWidth; // Account for cursor width
+			// Card gutter: an accent bar spans every rendered line of the selected
+			// block so the whole card reads as one unit even at the window edge;
+			// unselected blocks keep the plain two-space indent.
+			const barSymbol = `${theme.nav.bar} `;
+			const barWidth = visibleWidth(barSymbol);
+			const barPrefix = isSelected ? theme.fg("accent", barSymbol) : padding(barWidth);
+			const maxWidth = rowWidth - barWidth;
 
 			if (session.title) {
 				// Has title: show title on first line, dimmed first message on second line
 				const truncatedTitle = truncateToWidth(session.title, maxWidth);
-				const titleLine = cursor + (isSelected ? theme.bold(truncatedTitle) : truncatedTitle);
-				sessionLines.push(titleLine);
+				sessionLines.push(barPrefix + (isSelected ? theme.bold(truncatedTitle) : truncatedTitle));
 
 				// Second line: dimmed first message preview
 				const truncatedPreview = truncateToWidth(normalizedMessage, maxWidth);
-				sessionLines.push(`  ${theme.fg("dim", truncatedPreview)}`);
+				sessionLines.push(`${barPrefix}${theme.fg("dim", truncatedPreview)}`);
 			} else {
 				// No title: show first message as main line
 				const truncatedMsg = truncateToWidth(normalizedMessage, maxWidth);
-				const messageLine = cursor + (isSelected ? theme.bold(truncatedMsg) : truncatedMsg);
-				sessionLines.push(messageLine);
+				sessionLines.push(barPrefix + (isSelected ? theme.bold(truncatedMsg) : truncatedMsg));
 			}
 
 			// Metadata line: date + file size + lifecycle status (+ project dir in
-			// all-projects scope). The status segment carries its own color, so each
-			// segment is dimmed individually rather than wrapping the whole line.
+			// all-projects scope). The tree-hook glyph ties it visually to the
+			// card above instead of floating between cards; the status segment
+			// carries its own color, so each segment is dimmed individually.
 			const dim = (s: string) => theme.fg("dim", s);
 			const dot = dim(theme.sep.dot);
 			const modified = formatDate(session.modified);
-			let metadata = `  ${dim(modified)} ${dot} ${dim(formatBytes(session.size))}`;
+			let metadata = `${barPrefix}${dim(theme.tree.hook)} ${dim(modified)} ${dot} ${dim(formatBytes(session.size))}`;
 			const status = formatSessionStatus(session.status);
 			if (status) {
 				metadata += ` ${dot} ${status}`;
@@ -637,10 +677,10 @@ class SessionList implements Component {
 			if (this.#showCwd && session.cwd) {
 				metadata += ` ${dot} ${dim(shortenPath(session.cwd))}`;
 			}
-			const metadataLine = truncateToWidth(metadata, rowWidth);
+			sessionLines.push(truncateToWidth(metadata, rowWidth));
 
-			sessionLines.push(metadataLine);
-			sessionLines.push(""); // Blank line between sessions
+			// Blank separator between cards.
+			sessionLines.push("");
 			for (let k = blockStart; k < sessionLines.length; k++) sessionRowIndex[k] = i;
 		}
 
@@ -660,6 +700,13 @@ class SessionList implements Component {
 		lines.push(...svLines);
 
 		return lines;
+	}
+
+	/** Muted `Label ────` rule opening a new recency bucket inside the list. */
+	#bucketHeaderLine(bucket: number, width: number): string {
+		const label = `  ${TIME_BUCKET_LABELS[bucket]} `;
+		const fill = Math.max(0, width - visibleWidth(label));
+		return truncateToWidth(theme.fg("muted", label) + theme.fg("dim", theme.tree.horizontal.repeat(fill)), width);
 	}
 
 	handleInput(keyData: string): void {
@@ -1065,10 +1112,7 @@ export class SessionSelectorComponent extends Container {
 	/** Blank · keybinding hint · bottom border. Rendered by {@link render}. */
 	#footerLines(width: number): string[] {
 		const scopeHint = this.#scope === "all" ? "current folder" : "all projects";
-		const hint = theme.fg(
-			"muted",
-			`  [Del/⌫ delete · Ctrl+R rename · Enter select · Tab ${scopeHint} · Esc cancel]`,
-		);
+		const hint = theme.fg("muted", `  [Del/⌫ delete · Ctrl+R rename · Enter select · Tab ${scopeHint} · Esc cancel]`);
 		return ["", hint, "", ...this.#bottomBorder.render(width)];
 	}
 

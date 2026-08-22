@@ -410,6 +410,7 @@ export class Theme {
 			expand: this.#symbols["nav.expand"],
 			collapse: this.#symbols["nav.collapse"],
 			back: this.#symbols["nav.back"],
+			bar: this.#symbols["nav.bar"],
 		};
 	}
 

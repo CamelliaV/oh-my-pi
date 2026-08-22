@@ -10,9 +10,10 @@
  * `onToolsChanged`, so the session registry refreshes through the exact same
  * path as any other runtime MCP connect.
  */
-import { type AgentToolResult, type AgentToolUpdateCallback } from "@oh-my-pi/pi-agent-core";
-import type { TSchema } from "@oh-my-pi/pi-ai";
+
 import { type } from "@oh-my-pi/omptype";
+import type { AgentToolResult, AgentToolUpdateCallback } from "@oh-my-pi/pi-agent-core";
+import type { TSchema } from "@oh-my-pi/pi-ai";
 import type {
 	CustomTool,
 	CustomToolContext,
@@ -59,12 +60,7 @@ export class LazyMCPServerGateway implements CustomTool<TSchema, MCPToolDetails>
 		return renderMCPCall(normalizeRenderArgs(args), theme, this.label);
 	}
 
-	renderResult(
-		result: CustomToolResult<MCPToolDetails>,
-		options: RenderResultOptions,
-		theme: Theme,
-		args?: unknown,
-	) {
+	renderResult(result: CustomToolResult<MCPToolDetails>, options: RenderResultOptions, theme: Theme, args?: unknown) {
 		return renderMCPResult(result, options, theme, normalizeRenderArgs(args));
 	}
 

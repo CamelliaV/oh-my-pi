@@ -19,8 +19,8 @@ import { matchesAppInterrupt, matchesSelectDown, matchesSelectUp } from "../../m
 import type { SessionInfo, SessionStatus } from "../../session/session-listing";
 import { shortenPath } from "../../tools/render-utils";
 import { DynamicBorder } from "./dynamic-border";
-import { HookSelectorComponent } from "./hook-selector";
 import { HookInputComponent } from "./hook-input";
+import { HookSelectorComponent } from "./hook-selector";
 
 /**
  * Themed glyph + colored label for a session's lifecycle status, or `undefined`

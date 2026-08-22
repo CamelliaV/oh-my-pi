@@ -236,6 +236,7 @@ const UNICODE_SYMBOLS: SymbolMap = {
 	"nav.cursor": "❯",
 	"nav.selected": "➤",
 	"nav.expand": "▸",
+	"nav.collapse": "▾",
 	"nav.back": "⟵",
 	"nav.bar": "▎",
 	// Tree

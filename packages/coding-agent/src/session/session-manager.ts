@@ -1,5 +1,6 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
+import type { CompactionRequestUsage } from "@oh-my-pi/pi-agent-core/compaction";
 import type {
 	ImageContent,
 	Message,
@@ -2228,6 +2229,7 @@ export class SessionManager {
 		details?: T,
 		fromExtension?: boolean,
 		preserveData?: Record<string, unknown>,
+		requestUsage?: CompactionRequestUsage,
 	): string {
 		const entry: CompactionEntry<T> = {
 			type: "compaction",
@@ -2239,6 +2241,7 @@ export class SessionManager {
 			details,
 			fromExtension,
 			preserveData,
+			requestUsage,
 		};
 		this.#recordEntry(entry);
 		return entry.id;

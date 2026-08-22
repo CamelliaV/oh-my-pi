@@ -177,7 +177,6 @@ export async function loadAllMCPConfigs(cwd: string, options?: LoadMCPConfigsOpt
 	return { configs, exaApiKeys, sources, lazyConfigs, lazySources };
 }
 
-
 /** Pattern to match Exa MCP servers */
 const EXA_MCP_URL_PATTERN = /mcp\.exa\.ai/i;
 const EXA_API_KEY_PATTERN = /exaApiKey=([^&\s]+)/i;

@@ -85,11 +85,7 @@ import {
 	persistForeignSession,
 } from "./session/foreign-session-import";
 import type { ForeignSessionInfo, ForeignSessionSource, ForeignSessionStore } from "./session/foreign-session-store";
-import {
-	fuzzyMatchResumableSessions,
-	resolveResumableSession,
-	type SessionInfo,
-} from "./session/session-listing";
+import { fuzzyMatchResumableSessions, resolveResumableSession, type SessionInfo } from "./session/session-listing";
 import { SessionManager } from "./session/session-manager";
 import { executeBuiltinSlashCommand } from "./slash-commands/builtin-registry";
 import { shouldShowStartupSplash } from "./startup-splash";

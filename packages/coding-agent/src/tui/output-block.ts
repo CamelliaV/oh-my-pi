@@ -7,7 +7,7 @@ import type { Theme, ThemeColor } from "../modes/theme/theme";
 import { getSixelLineMask } from "../utils/sixel";
 import type { State } from "./types";
 import type { RenderCache } from "./utils";
-import { getStateBgColor, Hasher, padToWidth, truncateToWidth } from "./utils";
+import { Hasher, padToWidth, truncateToWidth } from "./utils";
 
 export interface OutputBlockOptions {
 	header?: string;
@@ -64,7 +64,7 @@ export function outputBlockContentWidth(
 }
 
 export function renderOutputBlock(options: OutputBlockOptions, theme: Theme): string[] {
-	const { header, headerMeta, state, sections = [], width, applyBg = true } = options;
+	const { header, headerMeta, state, sections = [], width } = options;
 	const h = theme.boxRound.horizontal;
 	const v = theme.boxRound.vertical;
 	const cap = h.repeat(3);
@@ -83,9 +83,7 @@ export function renderOutputBlock(options: OutputBlockOptions, theme: Theme): st
 	// No state block paints a background wash anymore: the state-colored
 	// border carries the signal, and any explicit bg defeats terminal
 	// background_opacity. Themes control perception via border/fg tokens.
-	const bgFn:
-		| undefined
-		| ((text: string) => string) = undefined;
+	const bgFn: undefined | ((text: string) => string) = undefined;
 
 	const contentPaddingLeft = normalizeContentPaddingLeft(options.contentPaddingLeft);
 	const contentPaddingRight = normalizeContentPaddingLeft(options.contentPaddingRight ?? contentPaddingLeft);

@@ -27,7 +27,7 @@ import {
 	unsubscribeFromResources,
 } from "./client";
 import { type LoadMCPConfigsResult, loadAllMCPConfigs, validateServerConfig } from "./config";
-import { LazyMCPServerGateway, type LazyGatewayActivation } from "./lazy-gateway";
+import { type LazyGatewayActivation, LazyMCPServerGateway } from "./lazy-gateway";
 import {
 	lookupMcpOAuthCredential,
 	type MCPOAuthCredentialLookup,
@@ -458,13 +458,9 @@ export class MCPManager {
 		// Surface the concrete transport failure (e.g. HTTP 401) instead of the
 		// silent park a challenge otherwise produces.
 		let failureDetail: string | undefined;
-		const result = await this.connectServers(
-			{ [name]: config },
-			source ? { [name]: source } : {},
-			event => {
-				if (event.type === "failed" && event.serverName === name) failureDetail = event.error;
-			},
-		);
+		const result = await this.connectServers({ [name]: config }, source ? { [name]: source } : {}, event => {
+			if (event.type === "failed" && event.serverName === name) failureDetail = event.error;
+		});
 		let error = result.errors.get(name) ?? failureDetail;
 		if (error === undefined && !result.connectedServers.includes(name)) {
 			// No hard error yet — the connect may still be settling (an OAuth
@@ -516,7 +512,10 @@ export class MCPManager {
 		return new LazyMCPServerGateway(
 			name,
 			() => this.#activateLazyServer(name),
-			() => this.getTools().filter(tool => tool.mcpServerName === name).map(tool => tool.name),
+			() =>
+				this.getTools()
+					.filter(tool => tool.mcpServerName === name)
+					.map(tool => tool.name),
 		);
 	}
 

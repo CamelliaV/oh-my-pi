@@ -162,10 +162,29 @@ async function loadMCPServers(ctx: LoadContext): Promise<LoadResult<MCPServer>> 
 					`MCP server "${serverName}": invalid requestIdFormat ${JSON.stringify(serverConfig.requestIdFormat)}, ignoring`,
 				);
 			}
+			// Validate lazy: coerce string "true"/"false", warn on other types
+			let lazy: boolean | undefined;
+			if (serverConfig.lazy === undefined || serverConfig.lazy === null) {
+				lazy = undefined;
+			} else if (typeof serverConfig.lazy === "boolean") {
+				lazy = serverConfig.lazy;
+			} else if (typeof serverConfig.lazy === "string") {
+				const lower = serverConfig.lazy.toLowerCase();
+				if (lower === "false" || lower === "0") lazy = false;
+				else if (lower === "true" || lower === "1") lazy = true;
+				else {
+					logger.warn(`MCP server "${serverName}": invalid lazy value "${serverConfig.lazy}", ignoring`);
+					lazy = undefined;
+				}
+			} else {
+				logger.warn(`MCP server "${serverName}": invalid lazy type ${typeof serverConfig.lazy}, ignoring`);
+				lazy = undefined;
+			}
 
 			result.push({
 				name: serverName,
 				enabled,
+				lazy,
 				timeout,
 				requestIdFormat,
 				command: serverConfig.command as string | undefined,

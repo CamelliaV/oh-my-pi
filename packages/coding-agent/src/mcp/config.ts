@@ -30,6 +30,13 @@ export interface LoadMCPConfigsResult {
 	exaApiKeys: string[];
 	/** Source metadata for each server */
 	sources: Record<string, SourceMeta>;
+	/**
+	 * Lazily-held server configs, excluded from `configs` so they never connect
+	 * at startup. The manager mounts a gateway device for each until activated.
+	 */
+	lazyConfigs: Record<string, MCPServerConfig>;
+	/** Source metadata for lazily-held servers */
+	lazySources: Record<string, SourceMeta>;
 }
 
 /**
@@ -40,6 +47,7 @@ function convertToLegacyConfig(server: MCPServer): MCPServerConfig {
 	const transport = server.transport ?? (server.command ? "stdio" : server.url ? "http" : "stdio");
 	const shared = {
 		enabled: server.enabled,
+		lazy: server.lazy,
 		timeout: server.timeout,
 		requestIdFormat: server.requestIdFormat,
 		auth: server.auth,
@@ -140,7 +148,6 @@ export async function loadAllMCPConfigs(cwd: string, options?: LoadMCPConfigsOpt
 	}
 
 	let exaApiKeys: string[] = [];
-
 	if (filterExa) {
 		const exaResult = filterExaMCPServers(configs, sources);
 		configs = exaResult.configs;
@@ -154,8 +161,22 @@ export async function loadAllMCPConfigs(cwd: string, options?: LoadMCPConfigsOpt
 		sources = browserResult.sources;
 	}
 
-	return { configs, exaApiKeys, sources };
+	// Partition lazily-held servers out of the connect set. The user-level
+	// `enabledServers` allowlist (the /mcp enable toggle) bypasses the hold;
+	// the `disabledServers` denylist already won upstream via `suppressServer`.
+	const lazyConfigs: Record<string, MCPServerConfig> = {};
+	const lazySources: Record<string, SourceMeta> = {};
+	for (const [name, config] of Object.entries(configs)) {
+		if (!config.lazy || forcedEnabled.has(name)) continue;
+		lazyConfigs[name] = config;
+		if (sources[name]) lazySources[name] = sources[name];
+		delete configs[name];
+		delete sources[name];
+	}
+
+	return { configs, exaApiKeys, sources, lazyConfigs, lazySources };
 }
+
 
 /** Pattern to match Exa MCP servers */
 const EXA_MCP_URL_PATTERN = /mcp\.exa\.ai/i;

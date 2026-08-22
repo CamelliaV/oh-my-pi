@@ -113,6 +113,10 @@
           "type": "boolean",
           "description": "Whether OMP should try to connect this server."
         },
+        "lazy": {
+          "type": "boolean",
+          "description": "Defer this server's connection until first use. The server is not connected at startup; a lightweight gateway device is mounted instead and writing to it connects the server on demand. A name listed in the user-level `enabledServers` allowlist bypasses the hold."
+        },
         "timeout": {
           "type": "number",
           "minimum": 0,

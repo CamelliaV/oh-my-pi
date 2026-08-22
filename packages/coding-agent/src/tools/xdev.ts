@@ -394,8 +394,16 @@ function shouldInlineXdevTool(
 function resolveRequiredXdevTool(state: XdevState, name: string): Tool {
 	const inst = resolveXdevTool(state, name);
 	if (!inst) {
+		// A lazy gateway disappears the moment its server activates (the real
+		// tools replace it). A stale write then lands here — point the model
+		// straight at the mounted replacements instead of a generic miss.
+		const gatewayPrefix = /^mcp__(?<server>.+)_gateway$/.exec(name)?.groups?.server;
+		const activatedHint =
+			gatewayPrefix !== undefined && [...state.mountedNames].some(mounted => mounted.includes(gatewayPrefix))
+				? ` The "${gatewayPrefix}" lazy gateway already completed activation; its real devices are listed below.`
+				: "";
 		throw new ToolError(
-			`No such tool: ${XD_URL_PREFIX}${name}. Mounted devices: ${[...state.mountedNames].join(", ")}. Active top-level tools are also dispatchable via ${XD_URL_PREFIX}<tool>.`,
+			`No such tool: ${XD_URL_PREFIX}${name}.${activatedHint} Mounted devices: ${[...state.mountedNames].join(", ")}. Active top-level tools are also dispatchable via ${XD_URL_PREFIX}<tool>.`,
 		);
 	}
 	return inst;

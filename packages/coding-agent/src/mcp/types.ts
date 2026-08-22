@@ -66,6 +66,14 @@ export type MCPRequestIdFormat = "string" | "number";
 interface MCPServerConfigBase {
 	/** Whether this server is enabled (default: true) */
 	enabled?: boolean;
+	/**
+	 * Defer this server's connection until first use. A lazily-held server is
+	 * not connected at startup; instead a lightweight gateway tool
+	 * (`mcp__<server>_gateway`) is presented so the model can activate it
+	 * mid-session. A name in the user-level `enabledServers` allowlist
+	 * bypasses the hold and connects normally.
+	 */
+	lazy?: boolean;
 	/** MCP request timeout in milliseconds (default: 30000, 0 to disable) */
 	timeout?: number;
 	/**

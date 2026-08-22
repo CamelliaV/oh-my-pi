@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Added
+
+- Added `lazy: true` support for MCP server configs: a lazily-held server is never connected at startup; the manager mounts one lightweight `mcp__<server>_gateway` device per held server (one prompt line instead of a full tool catalog), and dispatching to it connects the server on demand — real tools replace the gateway through the existing tools-changed refresh, with auth failures surfacing `/mcp` guidance. The user-level `enabledServers` allowlist bypasses the hold.
+
 ## [17.3.5] - 2026-08-16
 
 ### Added

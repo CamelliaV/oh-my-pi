@@ -27,6 +27,7 @@ import {
 	unsubscribeFromResources,
 } from "./client";
 import { type LoadMCPConfigsResult, loadAllMCPConfigs, validateServerConfig } from "./config";
+import { LazyMCPServerGateway, type LazyGatewayActivation } from "./lazy-gateway";
 import {
 	lookupMcpOAuthCredential,
 	type MCPOAuthCredentialLookup,
@@ -226,6 +227,9 @@ export class MCPManager {
 	#pendingReconnections = new Map<string, Promise<MCPServerConnection | null>>();
 	/** Preserved configs for reconnection after connection loss. */
 	#serverConfigs = new Map<string, MCPServerConfig>();
+	/** Lazily-held configs: discovered but never connected until a gateway activates them. */
+	#lazyHeld = new Map<string, MCPServerConfig>();
+	#lazySources = new Map<string, SourceMeta>();
 	/**
 	 * Timestamps of recent reconnectServer invocations per server, used by the
 	 * crash-storm circuit breaker (see {@link RECONNECT_BURST_LIMIT}).
@@ -410,10 +414,110 @@ export class MCPManager {
 			options?.onStatus?.({ type: "failed", serverName: ".mcp.json", error: message });
 			throw error;
 		}
-		const { configs, exaApiKeys, sources } = loadedConfigs;
+		const { configs, exaApiKeys, sources, lazyConfigs, lazySources } = loadedConfigs;
+
+		// A lazily-held server that already has a live connection (activated in a
+		// previous pass, now being reloaded) behaves as an ordinary configured
+		// server: re-admit it instead of holding it back again.
+		for (const [name, config] of Object.entries(lazyConfigs)) {
+			if (!this.#connections.has(name)) continue;
+			configs[name] = config;
+			sources[name] = lazySources[name];
+			this.#lazyHeld.delete(name);
+			this.#lazySources.delete(name);
+		}
+		for (const [name, config] of Object.entries(lazyConfigs)) {
+			if (this.#connections.has(name)) continue;
+			this.#lazyHeld.set(name, config);
+			if (lazySources[name]) this.#lazySources.set(name, lazySources[name]);
+		}
+
 		const result = await this.connectServers(configs, sources, options?.onStatus);
 		result.exaApiKeys = exaApiKeys;
+
+		// Mount one gateway per still-held server so the model can activate it
+		// on demand. `result.tools` aliases `this.#tools`, so appending here
+		// updates the manager's canonical tool list too.
+		for (const name of this.#lazyHeld.keys()) {
+			if (this.#connections.has(name)) continue;
+			result.tools.push(this.#createLazyGateway(name));
+		}
+		sortMCPToolsByName(result.tools);
 		return result;
+	}
+
+	/** Servers currently held back behind lazy gateways (not yet activated). */
+	getLazyServerNames(): string[] {
+		return [...this.#lazyHeld.keys()];
+	}
+
+	#activateLazyServer = async (name: string): Promise<LazyGatewayActivation> => {
+		const config = this.#lazyHeld.get(name);
+		if (!config) return {};
+		const source = this.#lazySources.get(name);
+		// Surface the concrete transport failure (e.g. HTTP 401) instead of the
+		// silent park a challenge otherwise produces.
+		let failureDetail: string | undefined;
+		const result = await this.connectServers(
+			{ [name]: config },
+			source ? { [name]: source } : {},
+			event => {
+				if (event.type === "failed" && event.serverName === name) failureDetail = event.error;
+			},
+		);
+		let error = result.errors.get(name) ?? failureDetail;
+		if (error === undefined && !result.connectedServers.includes(name)) {
+			// No hard error yet — the connect may still be settling (an OAuth
+			// challenge refreshes credentials and reconnects asynchronously).
+			// Give it a bounded window; keep the hold while undecided so the
+			// gateway stays mounted and retryable.
+			error = await this.#settleLazyActivation(name);
+		}
+		if (error !== undefined) return { error };
+		// Connected: drop the hold so future discoveries treat the server as
+		// ordinary and the gateway disappears from the tool list.
+		this.#lazyHeld.delete(name);
+		this.#lazySources.delete(name);
+		return {};
+	};
+
+	/**
+	 * Bounded wait for an in-flight lazy activation to finish connecting and
+	 * swap its gateway for real tools. Returns an error message on give-up;
+	 * `undefined` once the server's own tools are mounted.
+	 */
+	async #settleLazyActivation(name: string, timeoutMs = 15_000): Promise<string | undefined> {
+		const deadline = Date.now() + timeoutMs;
+		while (Date.now() < deadline) {
+			if (this.getConnectionStatus(name) === "connected") {
+				// Connection landed; give the tools-changed replacement a moment
+				// to evict the gateway and mount the real catalog.
+				const toolsDeadline = Date.now() + 2_000;
+				while (
+					Date.now() < toolsDeadline &&
+					!this.getTools().some(tool => tool.mcpServerName === name && !(tool instanceof LazyMCPServerGateway))
+				) {
+					await Bun.sleep(100);
+				}
+				return undefined;
+			}
+			if (this.getConnectionStatus(name) === "disconnected") {
+				return `Connection to "${name}" failed without completing (no further detail reported).`;
+			}
+			await Bun.sleep(200);
+		}
+		return (
+			`Connection to "${name}" did not complete within ${Math.round(timeoutMs / 1000)}s ` +
+			`(authorization may be required). Run /mcp to authorize "${name}", then retry.`
+		);
+	}
+
+	#createLazyGateway(name: string): LazyMCPServerGateway {
+		return new LazyMCPServerGateway(
+			name,
+			() => this.#activateLazyServer(name),
+			() => this.getTools().filter(tool => tool.mcpServerName === name).map(tool => tool.name),
+		);
 	}
 
 	/**

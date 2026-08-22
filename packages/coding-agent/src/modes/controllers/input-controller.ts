@@ -14,7 +14,7 @@ import { TinyTitleDownloadProgressComponent } from "../../modes/components/tiny-
 import { ToolExecutionComponent } from "../../modes/components/tool-execution";
 import { TreeSelectorComponent } from "../../modes/components/tree-selector";
 import { expandEmoticons } from "../../modes/emoji-autocomplete";
-import { materializeImageReferenceLinks, shiftImageMarkers } from "../../modes/image-references";
+import { IMAGE_MARKER_REGEX, materializeImageReferenceLinks, shiftImageMarkers } from "../../modes/image-references";
 import { createPromptActionAutocompleteProvider } from "../../modes/prompt-action-autocomplete";
 import { parseQueueShorthand, splitQueuedMessages } from "../../modes/queue-input";
 import { invokeSkillCommandFromText, isKnownSkillCommand } from "../../modes/skill-command";
@@ -171,7 +171,19 @@ export class InputController {
 			readText: readTextFromClipboard,
 			readMacFileUrls: readMacFileUrlsFromClipboard,
 		},
-	) {}
+	) {
+		// Draft-image bookkeeping: deleting an `[Image #N]` marker token must drop
+		// the corresponding pending image (and its composer preview). Installed
+		// here so it exists before any key handling wires its own `onChange`.
+		// Guarded: some embeds/tests construct the controller without an editor.
+		const previousOnChange = ctx.editor?.onChange?.bind(ctx.editor);
+		if (ctx.editor) {
+			ctx.editor.onChange = (text: string) => {
+				this.#reconcilePendingImagesToMarkers(text);
+				previousOnChange?.(text);
+			};
+		}
+	}
 
 	#enhancedPaste?: EnhancedPasteController;
 	#focusedLeftTapListenerInstalled = false;
@@ -550,6 +562,7 @@ export class InputController {
 
 		this.#setupEnhancedPaste();
 
+		const previousOnChange = this.ctx.editor.onChange?.bind(this.ctx.editor);
 		this.ctx.editor.onChange = (text: string) => {
 			const wasBashMode = this.ctx.isBashMode;
 			const wasPythonMode = this.ctx.isPythonMode;
@@ -559,6 +572,7 @@ export class InputController {
 			if (wasBashMode !== this.ctx.isBashMode || wasPythonMode !== this.ctx.isPythonMode) {
 				this.ctx.updateEditorBorderColor();
 			}
+			previousOnChange?.(text);
 		};
 	}
 
@@ -1535,6 +1549,55 @@ export class InputController {
 		}
 		await this.#insertPendingImage(imageData);
 		return true;
+	}
+
+	/**
+	 * Keep the composer's pending-image buffer in sync with the `[Image #N]`
+	 * markers actually present in the draft text. Deleting a marker token
+	 * (backspace over the atomic token, cut, clear) removes the corresponding
+	 * image from the buffer — so its preview disappears and the image is no
+	 * longer attached to the outgoing message — instead of leaving an orphaned
+	 * preview behind. Surviving markers are compacted back to `1..K` (rewriting
+	 * the draft text only when a middle marker was removed) so the positional
+	 * `[Image #N]` ↔ `pendingImages[N-1]` contract holds for submit, queue
+	 * merge, and {@link shiftImageMarkers}. Dangling numbers without a backing
+	 * image (e.g. undo restoring a deleted marker) are ignored.
+	 */
+	#reconcilePendingImagesToMarkers(text: string): void {
+		const editor = this.ctx.editor;
+		const total = editor.pendingImages.length;
+		if (total === 0) return;
+		const kept: number[] = [];
+		for (const match of text.matchAll(IMAGE_MARKER_REGEX)) {
+			const n = Number(match[1]);
+			if (n >= 1 && n <= total && !kept.includes(n)) kept.push(n);
+		}
+		// Fast path: markers already dense `1..total` — nothing to drop or renumber.
+		// Also true for the common single-image delete (`kept` empty when `total`
+		// became 0 earlier in this flow).
+		if (kept.length === total && kept.every((n, i) => n === i + 1)) return;
+
+		const images: ImageContent[] = [];
+		const links: (string | undefined)[] = [];
+		const renumber = new Map<number, number>();
+		for (const [index, n] of kept.entries()) {
+			images.push(editor.pendingImages[n - 1]!);
+			links.push(editor.pendingImageLinks[n - 1]);
+			renumber.set(n, index + 1);
+		}
+		editor.pendingImages = images;
+		editor.pendingImageLinks = links;
+		editor.imageLinks = links.length > 0 ? links : undefined;
+
+		let changed = false;
+		const newText = text.replace(IMAGE_MARKER_REGEX, (whole, num: string, tail: string) => {
+			const mapped = renumber.get(Number(num));
+			if (mapped === undefined || mapped === Number(num)) return whole;
+			changed = true;
+			return `[Image #${mapped}${tail}]`;
+		});
+		if (changed) editor.setText(newText);
+		this.ctx.ui.requestRender();
 	}
 
 	/**

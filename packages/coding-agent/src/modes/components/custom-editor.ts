@@ -5,6 +5,7 @@ import {
 	canonicalKeyId,
 	Editor,
 	type EditorTheme,
+	type ImageBudget,
 	type KeyId,
 	parseKey,
 	parseKittySequence,
@@ -13,10 +14,17 @@ import {
 import { BracketedPasteHandler } from "@oh-my-pi/pi-tui/bracketed-paste";
 import type { AppKeybinding } from "../../config/keybindings";
 import { isSettingsInitialized, settings } from "../../config/settings";
+import { resolveImageOptions } from "../../tools/render-utils";
 import { imageReferenceHyperlink, PLACEHOLDER_REGEX, renderPlaceholders } from "../image-references";
 import { hasMagicKeyword, highlightMagicKeywords } from "../magic-keywords";
 import { isQueuedMessageList, parseQueueShorthand, QUEUE_LIST_MARKER_RE } from "../queue-input";
 import { fgOrPlain, theme } from "../theme/theme";
+import { ImageStrip } from "./image-strip";
+
+/** Max rows one draft-image preview may occupy — the composer must stay near the viewport bottom. */
+const DRAFT_PREVIEW_MAX_ROWS = 8;
+/** Max draft images previewed above the composer before the rest collapse into a "… +N more" line. */
+const DRAFT_PREVIEW_MAX_IMAGES = 4;
 
 type ConfigurableEditorAction = Extract<
 	AppKeybinding,
@@ -436,6 +444,36 @@ export class CustomEditor extends Editor {
 		this.imageLinks = undefined;
 		this.pendingImages = images ? [...images] : [];
 		this.pendingImageLinks = images ? images.map(() => undefined) : [];
+	}
+
+	// ---------------------------------------------------------------------------
+	// Draft-image preview strip
+	// ---------------------------------------------------------------------------
+
+	/** Draft-image previews rendered inside the composer frame, above the text. */
+	#draftImageStrip?: ImageStrip;
+
+	/**
+	 * Wire the shared image budget and repaint hook the draft-image preview renders
+	 * through. Without it (tests, plain embeds) the composer renders exactly as
+	 * before — the `[Image #N]` text markers carry the information.
+	 */
+	setImagePreviewContext(budget: ImageBudget, requestRender: () => void): void {
+		const caps = resolveImageOptions();
+		this.#draftImageStrip = new ImageStrip({
+			budget,
+			keyPrefix: "draft",
+			maxRows: Math.min(DRAFT_PREVIEW_MAX_ROWS, caps.maxHeightCells ?? DRAFT_PREVIEW_MAX_ROWS),
+			maxImages: DRAFT_PREVIEW_MAX_IMAGES,
+			maxWidthCells: caps.maxWidthCells,
+			requestRender,
+		});
+		// The strip renders inside the editor frame via the leading-rows hook, so
+		// it travels with the composer through every editorContainer swap.
+		this.setLeadingRowsProvider((_width, contentWidth) => {
+			this.#draftImageStrip?.setImages(this.pendingImages);
+			return this.#draftImageStrip?.render(contentWidth) ?? [];
+		});
 	}
 
 	/** Treat image/paste markers as indivisible: a stray backspace deletes the whole token

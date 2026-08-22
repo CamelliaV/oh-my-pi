@@ -13,7 +13,7 @@ export const PLACEHOLDER_REGEX = /\[(Image|Paste) #([1-9]\d*)(?:,[^\]\n]*)?\]/g;
  *  newline) so future label tweaks keep matching. Paste markers are excluded
  *  on purpose: their numbering is owned by the editor's paste store, not by
  *  the pending-image buffer. */
-const IMAGE_MARKER_REGEX = /\[Image #([1-9]\d*)((?:,[^\]\n]*)?)\]/g;
+export const IMAGE_MARKER_REGEX = /\[Image #([1-9]\d*)((?:,[^\]\n]*)?)\]/g;
 
 /** Renumber every `[Image #N]` marker in `text` by `offset` (added to the
  *  existing index), preserving the optional `, WxH` tail. Paste markers are

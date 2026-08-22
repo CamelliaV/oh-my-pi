@@ -523,6 +523,10 @@ export class Editor implements Component, Focusable {
 	#topBorderProviderSignature: string | undefined;
 	#topBorderProviderRevision: number | undefined;
 	#borderVisible = true;
+	/** Rows injected between the top border and the text viewport (e.g. the
+	 *  composer's draft-image preview strip). Rendered on every frame; hosts
+	 *  keep their own caching. Rows are chrome-wrapped like content lines. */
+	#leadingRowsProvider?: (width: number, contentWidth: number) => readonly string[];
 
 	constructor(theme: EditorTheme) {
 		this.#theme = theme;
@@ -567,6 +571,17 @@ export class Editor implements Component, Focusable {
 		this.#topBorderProviderSignature = undefined;
 		this.#topBorderProviderRevision = undefined;
 		this.#widthEpochRevision++;
+	}
+
+	/**
+	 * Install a provider of rows rendered inside the frame, between the top
+	 * border and the text viewport — used for attachment previews (draft
+	 * images) that belong to the composed input. Rows are padded and given the
+	 * box's side chrome exactly like content lines. Only rendered while the
+	 * border is visible; pass `undefined` to detach.
+	 */
+	setLeadingRowsProvider(provider: ((width: number, contentWidth: number) => readonly string[]) | undefined): void {
+		this.#leadingRowsProvider = provider;
 	}
 
 	/**
@@ -963,6 +978,22 @@ export class Editor implements Component, Focusable {
 				}
 			} else {
 				result.push(topLeft + horizontal.repeat(topFillWidth) + topRight);
+			}
+		}
+
+		// Leading rows (attachment previews): injected inside the frame, above
+		// the scrollable text viewport, and chrome-wrapped like content lines.
+		if (borderVisible && this.#leadingRowsProvider) {
+			const leadingRows = this.#leadingRowsProvider(width, contentAreaWidth);
+			if (leadingRows.length > 0) {
+				const leftBorder = this.borderColor(`${box.vertical}${padding(paddingX)}`);
+				for (const row of leadingRows) {
+					const rowWidth = visibleWidth(row);
+					const text = rowWidth > contentAreaWidth ? truncateToWidth(row, contentAreaWidth) : row;
+					const textWidth = rowWidth > contentAreaWidth ? contentAreaWidth : rowWidth;
+					const linePad = padding(Math.max(0, contentAreaWidth - textWidth));
+					result.push(`${leftBorder}${text}${linePad}${this.borderColor(box.vertical)}`);
+				}
 			}
 		}
 

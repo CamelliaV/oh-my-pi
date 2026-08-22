@@ -12,7 +12,7 @@
  * component reuse could.
  */
 import type { AgentMessage, AgentTool } from "@oh-my-pi/pi-agent-core";
-import type { Usage } from "@oh-my-pi/pi-ai";
+import type { ImageContent, Usage } from "@oh-my-pi/pi-ai";
 import type { TUI } from "@oh-my-pi/pi-tui";
 import type { AdvisorMessageDetails } from "../../advisor";
 import { COLLAB_PROMPT_MESSAGE_TYPE, type CollabPromptDetails } from "../../collab/protocol";
@@ -292,8 +292,21 @@ export class ChatTranscriptBuilder {
 						this.#trackExpandable(collapsed);
 						this.container.addChild(collapsed);
 					} else {
+						const images = Array.isArray(message.content)
+							? message.content.filter(
+									(block): block is ImageContent => block.type === "image" && !!block.data && !!block.mimeType,
+								)
+							: undefined;
 						this.container.addChild(
-							new UserMessageComponent(textContent, false, undefined, this.#sessionUsage.current()),
+							new UserMessageComponent(
+								textContent,
+								false,
+								undefined,
+								this.#sessionUsage.current(),
+								images,
+								this.deps.ui.imageBudget,
+								() => this.deps.ui.requestRender(),
+							),
 						);
 					}
 				}

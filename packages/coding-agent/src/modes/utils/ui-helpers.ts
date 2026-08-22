@@ -291,7 +291,20 @@ export class UiHelpers {
 								message,
 								this.ctx.viewSession.sessionManager.putBlobSync.bind(this.ctx.viewSession.sessionManager),
 							);
-						userComponent = new UserMessageComponent(textContent, isSynthetic, imageLinks, options?.sessionUsage);
+						const images = Array.isArray(message.content)
+							? message.content.filter(
+									(block): block is ImageContent => block.type === "image" && !!block.data && !!block.mimeType,
+								)
+							: undefined;
+						userComponent = new UserMessageComponent(
+							textContent,
+							isSynthetic,
+							imageLinks,
+							options?.sessionUsage,
+							images,
+							this.ctx.ui.imageBudget,
+							() => this.ctx.ui.requestRender(),
+						);
 						this.ctx.transcriptMessageComponents.set(message, userComponent);
 					}
 					this.ctx.chatContainer.addChild(userComponent);

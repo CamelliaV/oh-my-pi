@@ -1,8 +1,11 @@
-import { Box, type Component, Container, Markdown, Text } from "@oh-my-pi/pi-tui";
+import type { ImageContent } from "@oh-my-pi/pi-ai";
+import { Box, type Component, Container, type ImageBudget, Markdown, Text } from "@oh-my-pi/pi-tui";
 import { formatBytes } from "@oh-my-pi/pi-utils";
 import { getMarkdownTheme, theme } from "../../modes/theme/theme";
+import { resolveImageOptions } from "../../tools/render-utils";
 import { imageReferenceHyperlink, renderPlaceholders } from "../image-references";
 import { highlightMagicKeywords } from "../magic-keywords";
+import { ImageStrip } from "./image-strip";
 import { formatSessionUsageRow, type SessionUsageSnapshot } from "./work-usage";
 
 // OSC 133 shell integration: marks prompt zones for terminal multiplexers.
@@ -39,12 +42,24 @@ export class UserMessageComponent extends Container {
 	#zoneLines: string[] | undefined;
 	readonly #frame: Box;
 	#sessionLine: Text | undefined;
+	/**
+	 * Monotonic content version reported to the transcript container via
+	 * {@link getTranscriptBlockVersion}. Bumped when an async Kitty PNG
+	 * conversion lands: a committed, finalized user bubble would otherwise be
+	 * replayed from its previous bytes (placeholder row) without re-rendering,
+	 * stranding the converted image off-screen forever — the same contract
+	 * {@link AssistantMessageComponent} uses for late tool images.
+	 */
+	#blockVersion = 0;
 
 	constructor(
 		text: string,
 		synthetic = false,
 		imageLinks?: readonly (string | undefined)[],
 		sessionUsage?: SessionUsageSnapshot,
+		images?: readonly ImageContent[],
+		imageBudget?: ImageBudget,
+		requestRepaint?: () => void,
 	) {
 		super();
 		const bgColor = (value: string) => theme.bg("userMessageBg", value);
@@ -80,8 +95,35 @@ export class UserMessageComponent extends Container {
 		});
 		this.#frame.setIgnoreTight(true);
 		this.#frame.addChild(md);
+		if (images && images.length > 0 && imageBudget) {
+			// Images render inside the bubble frame below the text, mirroring the
+			// tool-card inline images: same budget, same transcript-scale caps.
+			// The repaint hook matters twice on kitty: a non-PNG payload converts
+			// asynchronously, and the conversion completing must both request a
+			// repaint AND bump the block version — a committed, finalized bubble
+			// is otherwise replayed from its cached bytes (placeholder row) and
+			// never re-renders.
+			const caps = resolveImageOptions();
+			const strip = new ImageStrip({
+				budget: imageBudget,
+				keyPrefix: "user",
+				maxWidthCells: caps.maxWidthCells,
+				maxRows: caps.maxHeightCells ?? 20,
+				maxImages: 8,
+				requestRender: () => {
+					this.#blockVersion++;
+					requestRepaint?.();
+				},
+			});
+			strip.setImages(images);
+			this.#frame.addChild(strip);
+		}
 		this.addChild(this.#frame);
 		if (sessionUsage) this.setSessionUsage(sessionUsage);
+	}
+
+	getTranscriptBlockVersion(): number {
+		return this.#blockVersion;
 	}
 
 	/** Show cumulative completed-session usage as a dedicated row inside this input card. */

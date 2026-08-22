@@ -811,6 +811,7 @@ export class InteractiveMode implements InteractiveModeContext {
 		this.deferredCommandContainer = new AnchoredLiveContainer();
 		this.editor = new CustomEditor(getEditorTheme());
 		this.ui.enableScopedInputRender(this.editor);
+		this.editor.setImagePreviewContext(this.ui.imageBudget, () => this.ui.requestRender());
 		this.editor.setUseTerminalCursor(this.ui.getShowHardwareCursor());
 		this.editor.setImeSafeCursorLayout(settings.get("tui.imeSafeCursor"));
 		this.editor.setAutocompleteMaxVisible(settings.get("autocompleteMaxVisible"));
@@ -4273,6 +4274,12 @@ export class InteractiveMode implements InteractiveModeContext {
 			? factory(this.ui, getEditorTheme(), this.keybindings)
 			: new CustomEditor(getEditorTheme());
 		if (!factory) this.ui.enableScopedInputRender(nextEditor);
+		nextEditor.setImagePreviewContext(this.ui.imageBudget, () => this.ui.requestRender());
+		// Carry the draft images across the editor swap so their positional
+		// `[Image #N]` markers keep resolving (mirrors the text carry-over below).
+		nextEditor.pendingImages = [...previousEditor.pendingImages];
+		nextEditor.pendingImageLinks = [...previousEditor.pendingImageLinks];
+		nextEditor.imageLinks = nextEditor.pendingImageLinks.length > 0 ? nextEditor.pendingImageLinks : undefined;
 
 		nextEditor.setUseTerminalCursor(this.ui.getShowHardwareCursor());
 		nextEditor.setImeSafeCursorLayout(this.settings.get("tui.imeSafeCursor"));

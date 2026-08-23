@@ -102,6 +102,7 @@ describe("routeSelectListMouse", () => {
 		row: 0,
 		release: false,
 		wheel: null,
+		wheelX: null,
 		motion: false,
 		leftClick: false,
 	};

@@ -2232,8 +2232,13 @@ export class Editor implements Component, Focusable {
 		this.#scrollOffset = 0;
 		this.#undoStack.length = 0;
 
-		if (this.onChange) this.onChange("");
+		// Fire onSubmit BEFORE the post-submit onChange(""): host hooks that
+		// reconcile derived state from the draft text (e.g. pending-image
+		// buffers keyed to `[Image #N]` markers) must observe the final
+		// submitted state, not the transient pre-submit clear — reacting to
+		// that clear would drop images the submit handler is about to read.
 		if (this.onSubmit) this.onSubmit(result);
+		if (this.onChange) this.onChange("");
 	}
 
 	/** Resolve the compiled, global copy of `atomicTokenPattern`, rebuilt only when the source changes. */

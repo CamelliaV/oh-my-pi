@@ -152,11 +152,15 @@ class TranscriptViewer implements Component {
 	#builder: ChatTranscriptBuilder;
 	#scrollView: ScrollView;
 	#handle: { hide(): void } | undefined;
+	#disposed = false;
 	#turnRows: number[] = [];
 	#targetTurn = 0;
 	#builtWidth = -1;
+	/** Sum of child transcript-block versions at last assembly; late async
+	 *  work (Kitty PNG conversion landing) bumps child versions and forces
+	 *  re-assembly so image rows replace their placeholder/fallback rows. */
+	#assembledVersion = -1;
 	#totalRows = 0;
-	#disposed = false;
 	#overlayOptions: OverlayOptions = {
 		mouseTracking: false,
 		fullscreen: true,
@@ -198,8 +202,22 @@ class TranscriptViewer implements Component {
 		this.#builder.dispose();
 	}
 
+	/** Sum of child transcript-block versions; changes when late async image
+	 *  work (Kitty PNG conversion) lands in any block. */
+	#contentVersion(): number {
+		let version = 0;
+		for (const child of this.#builder.container.children) {
+			const component = child as { getTranscriptBlockVersion?: () => number };
+			if (typeof component.getTranscriptBlockVersion === "function") {
+				version += component.getTranscriptBlockVersion();
+			}
+		}
+		return version;
+	}
+
 	/** Render every block child, assemble with separator rows, record turn-block row offsets. */
-	#assemble(contentWidth: number): void {
+	#assemble(contentWidth: number, preserveScroll: boolean): void {
+		const offset = preserveScroll ? this.#scrollView.getScrollOffset() : undefined;
 		const children = this.#builder.container.children;
 		const lines: string[] = [];
 		const turnRows: number[] = [];
@@ -216,8 +234,12 @@ class TranscriptViewer implements Component {
 		}
 		this.#turnRows = turnRows;
 		this.#builtWidth = contentWidth;
+		this.#assembledVersion = this.#contentVersion();
 		this.#totalRows = lines.length;
 		this.#scrollView.setLines(lines);
+		if (offset !== undefined) {
+			this.#scrollView.setScrollOffset(Math.min(offset, Math.max(0, this.#totalRows - 1)));
+		}
 	}
 
 	#jumpToTarget(): void {
@@ -291,9 +313,16 @@ class TranscriptViewer implements Component {
 		// components carry their own 1-col left gutter (same widths as the live
 		// transcript and AgentTranscriptViewer).
 		const contentWidth = Math.max(1, width - 1);
-		if (contentWidth !== this.#builtWidth) {
-			this.#assemble(contentWidth);
-			this.#jumpToTarget();
+		// Late async image work (Kitty PNG conversion) bumps a block's version
+		// without changing width: re-assemble so placeholder/fallback rows are
+		// replaced by the rendered image rows, keeping the scroll position.
+		const stale = this.#contentVersion() !== this.#assembledVersion;
+		const widthChanged = contentWidth !== this.#builtWidth;
+		if (widthChanged || stale) {
+			this.#assemble(contentWidth, this.#builtWidth >= 0);
+			// A late conversion re-assembly must not yank the viewport: only
+			// width changes (open, resize) re-anchor onto the target turn.
+			if (widthChanged) this.#jumpToTarget();
 		}
 		const viewport = this.#viewportRows();
 		this.#scrollView.setHeight(viewport);

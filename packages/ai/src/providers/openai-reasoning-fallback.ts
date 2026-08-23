@@ -176,9 +176,10 @@ function isInvalidReasoningEffortError(
 		return true;
 	}
 	if (
-		new RegExp(`(?:不支持|仅支持|只支持)[^\\n]{0,20}?${escapeRegExp(currentEffort)}|${escapeRegExp(currentEffort)}[^\\n]{0,20}?(?:不支持|请使用)`, "i").test(
-			message,
-		)
+		new RegExp(
+			`(?:不支持|仅支持|只支持)[^\\n]{0,20}?${escapeRegExp(currentEffort)}|${escapeRegExp(currentEffort)}[^\\n]{0,20}?(?:不支持|请使用)`,
+			"i",
+		).test(message)
 	) {
 		return true;
 	}

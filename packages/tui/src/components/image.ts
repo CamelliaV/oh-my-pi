@@ -1,3 +1,4 @@
+import { logger } from "@oh-my-pi/pi-utils";
 import { getKittyGraphics } from "../kitty-graphics";
 import {
 	getCellDimensions,
@@ -101,8 +102,19 @@ export class ImageBudget {
 	#applyingReset = false;
 	#lastTotal = 0;
 	#purgeIds: number[] = [];
-	/** Image ids whose data is believed to be loaded in the terminal's store. */
-	#transmitted = new Set<number>();
+	/** Image ids whose data is loaded in the terminal's *main-screen* store. */
+	#transmittedMain = new Set<number>();
+	/** Image ids whose data is loaded in the terminal's *alt-screen* store. */
+	#transmittedAlt = new Set<number>();
+	/**
+	 * Terminal screen buffer that enqueued transmits target. Kitty (0.48+) keeps
+	 * its graphics storage per screen buffer: data sent with `a=t` while the
+	 * main screen is active is invisible (`ENOENT` to placements) on the
+	 * alternate screen and vice versa, and neither store is destroyed by the
+	 * switch — so transmit bookkeeping is per screen and ids re-send once after
+	 * each crossing.
+	 */
+	#screen: "main" | "alt" = "main";
 	/** Transmit sequences (full base64) to write once, before this frame's placements. */
 	#pendingTransmits: string[] = [];
 	// True while the in-flight pass is a partial/throwaway pass (the
@@ -224,8 +236,12 @@ export class ImageBudget {
 			for (let i = this.#onTerminal; i < this.#planned && i < total; i++) {
 				const id = this.#passIds[i];
 				this.#purgeIds.push(id);
-				// d=I frees the data too, so the image must re-transmit if it returns.
-				this.#transmitted.delete(id);
+				// d=I frees the data too, so the image must re-transmit if it
+				// returns. Both screen ledgers go: the delete targets the
+				// active screen's store, but a surviving copy in the other
+				// screen's store is unknowable from here.
+				this.#transmittedMain.delete(id);
+				this.#transmittedAlt.delete(id);
 				this.#deletePlacementState(id);
 				this.#forgetKeyForId(id);
 			}
@@ -249,12 +265,12 @@ export class ImageBudget {
 		this.#purgeIds = [];
 		return ids;
 	}
-
-	/** All image ids believed to be loaded in the terminal store; clears tracking. */
+	/** All image ids believed loaded in either terminal screen store; clears tracking. */
 	takeAllTransmittedIds(): readonly number[] {
-		if (this.#transmitted.size === 0) return EMPTY_IDS;
-		const ids = [...this.#transmitted];
-		this.#transmitted.clear();
+		if (this.#transmittedMain.size === 0 && this.#transmittedAlt.size === 0) return EMPTY_IDS;
+		const ids = [...this.#transmittedMain, ...this.#transmittedAlt];
+		this.#transmittedMain.clear();
+		this.#transmittedAlt.clear();
 		this.#purgeIds = [];
 		this.#pendingTransmits = [];
 		this.#keyToId.clear();
@@ -264,9 +280,19 @@ export class ImageBudget {
 		return ids;
 	}
 
-	/** Whether `imageId`'s data still needs to be transmitted to the terminal. */
+	/** Whether `imageId`'s data still needs transmitting on the active screen. */
 	shouldTransmit(imageId: number): boolean {
-		return !this.#transmitted.has(imageId);
+		return !(this.#screen === "alt" ? this.#transmittedAlt : this.#transmittedMain).has(imageId);
+	}
+
+	/**
+	 * Record which terminal screen buffer subsequent transmits target (the TUI
+	 * calls this on alternate-screen enter/exit). Ids already sent on the other
+	 * screen re-transmit once on the next render there — per-screen stores are
+	 * independent, and data already present on the target screen is never resent.
+	 */
+	setScreen(screen: "main" | "alt"): void {
+		this.#screen = screen;
 	}
 
 	/**
@@ -390,12 +416,16 @@ export class ImageBudget {
 	}
 
 	/**
-	 * Queue a one-time transmit for `imageId`. No-op if already transmitted, so a
-	 * repeated call (e.g. a width-change re-render) never re-sends the data.
+	 * Queue a transmit for `imageId` on the active screen. No-op when that
+	 * screen's store already holds the data, so a repeated call (e.g. a
+	 * width-change re-render) never re-sends it — but an id first sent on the
+	 * other screen re-sends here, because Kitty keeps one graphics store per
+	 * screen buffer and they do not cross.
 	 */
 	enqueueTransmit(imageId: number, sequence: string): void {
-		if (this.#transmitted.has(imageId)) return;
-		this.#transmitted.add(imageId);
+		const ledger = this.#screen === "alt" ? this.#transmittedAlt : this.#transmittedMain;
+		if (ledger.has(imageId)) return;
+		ledger.add(imageId);
 		this.#pendingTransmits.push(sequence);
 	}
 
@@ -436,8 +466,10 @@ export class ImageBudget {
 	 * re-emit together; keeps no base64 in budget state (the transmit-once design).
 	 */
 	forgetTransmitted(): void {
-		if (this.#transmitted.size === 0 && this.#pendingTransmits.length === 0) return;
-		this.#transmitted.clear();
+		if (this.#transmittedMain.size === 0 && this.#transmittedAlt.size === 0 && this.#pendingTransmits.length === 0)
+			return;
+		this.#transmittedMain.clear();
+		this.#transmittedAlt.clear();
 		this.#pendingTransmits = [];
 	}
 
@@ -525,6 +557,17 @@ export class Image implements Component {
 		// already text.
 		const suppressed = hasProtocol && this.#budget !== undefined ? this.#budget.observe(this.#imageId ?? 0) : false;
 
+		if (process.env.OMP_IMG_DEBUG) {
+			logger.debug("kimg: render", {
+				id: this.#imageId,
+				key: this.#options.imageKey,
+				suppressed,
+				proto: imageProtocol,
+				placeholders: kittyUnicodePlaceholders,
+				cellW: cellDimensions.widthPx,
+				cellH: cellDimensions.heightPx,
+			});
+		}
 		if (
 			this.#cachedLines &&
 			this.#cachedWidth === width &&
@@ -546,6 +589,9 @@ export class Image implements Component {
 			// Transmit the data once (keyed by id); thereafter renderImage returns
 			// just the placement, so repaints never re-send the base64.
 			const needsTransmit = this.#imageId != null && (this.#budget?.shouldTransmit(this.#imageId) ?? false);
+			if (process.env.OMP_IMG_DEBUG) {
+				logger.debug("kimg: emitPath", { width, maxWidth, cap, maxHeight: this.#options.maxHeightCells });
+			}
 			const result = renderImage(this.#base64Data, this.#dimensions, {
 				maxWidthCells: maxWidth,
 				maxHeightCells: this.#options.maxHeightCells,
@@ -555,8 +601,19 @@ export class Image implements Component {
 
 			if (result?.transmit && this.#imageId != null && this.#budget !== undefined) {
 				this.#budget.enqueueTransmit(this.#imageId, result.transmit);
+				logger.debug("kimg: enqueueTransmit", {
+					id: this.#imageId,
+					bytes: result.transmit.length,
+				});
 			}
 
+			if (process.env.OMP_IMG_DEBUG) {
+				logger.debug("kimg: emitted", {
+					placeholderLines: result?.lines?.length ?? null,
+					direct: result?.sequence?.slice(0, 50) ?? null,
+					rows: result?.rows,
+				});
+			}
 			if (result?.lines) {
 				// Unicode placeholders: the image is already a block of real text-cell
 				// lines (line 0 carries the virtual-placement APC). No cursor moves.

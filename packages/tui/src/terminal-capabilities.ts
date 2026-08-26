@@ -672,9 +672,9 @@ function chunkKittyApc(leadParams: string, base64Data: string): string {
 			chunks.push(wrapTmuxPassthroughIfNeeded(`\x1b_G${leadParams},m=1;${chunk}\x1b\\`));
 			isFirst = false;
 		} else if (isLast) {
-			chunks.push(wrapTmuxPassthroughIfNeeded(`\x1b_Gq=2,m=0;${chunk}\x1b\\`));
+			chunks.push(wrapTmuxPassthroughIfNeeded(`\x1b_G${kittyQuietFlag()},m=0;${chunk}\x1b\\`));
 		} else {
-			chunks.push(wrapTmuxPassthroughIfNeeded(`\x1b_Gq=2,m=1;${chunk}\x1b\\`));
+			chunks.push(wrapTmuxPassthroughIfNeeded(`\x1b_G${kittyQuietFlag()},m=1;${chunk}\x1b\\`));
 		}
 
 		offset += CHUNK_SIZE;
@@ -692,7 +692,7 @@ export function encodeKitty(
 		imageId?: number;
 	} = {},
 ): string {
-	const params: string[] = ["a=T", "f=100", "q=2", "C=1"];
+	const params: string[] = ["a=T", "f=100", kittyQuietFlag(), "C=1"];
 	if (options.columns) params.push(`c=${options.columns}`);
 	if (options.rows) params.push(`r=${options.rows}`);
 	if (options.imageId) params.push(`i=${options.imageId}`);
@@ -706,8 +706,15 @@ export function encodeKitty(
  * subsequent frames display it with the tiny {@link encodeKittyPlacement}
  * sequence instead of re-sending the base64.
  */
+function kittyQuietFlag(): string {
+	// OMP_IMG_DEBUG upgrades quiet graphics commands (q=2) to error-reporting
+	// (q=1) so the terminal's verdict on transmits/placements reaches the app
+	// input stream, where the TUI input logger can capture it.
+	return process.env.OMP_IMG_DEBUG ? "q=1" : "q=2";
+}
+
 export function encodeKittyTransmit(base64Data: string, imageId: number): string {
-	return chunkKittyApc(`a=t,f=100,q=2,i=${imageId}`, base64Data);
+	return chunkKittyApc(`a=t,f=100,${kittyQuietFlag()},i=${imageId}`, base64Data);
 }
 
 /**
@@ -724,7 +731,7 @@ export function encodeKittyPlacement(options: {
 	columns?: number;
 	rows?: number;
 }): string {
-	const params: string[] = ["a=p", "q=2", "C=1", `i=${options.imageId}`];
+	const params: string[] = ["a=p", kittyQuietFlag(), "C=1", `i=${options.imageId}`];
 	if (options.placementId) params.push(`p=${options.placementId}`);
 	if (options.columns) params.push(`c=${options.columns}`);
 	if (options.rows) params.push(`r=${options.rows}`);
@@ -792,7 +799,7 @@ export function encodeKittyPlacementLine(options: {
 	const clippable = options.imageHeightPx > 0;
 	const hiddenRows = clippable ? Math.max(0, options.rows - 1 - options.screenRow) : 0;
 	const visibleRows = options.rows - hiddenRows;
-	const params: string[] = ["a=p", "q=2", "C=1", `i=${options.imageId}`, `p=${options.placementId}`];
+	const params: string[] = ["a=p", kittyQuietFlag(), "C=1", `i=${options.imageId}`, `p=${options.placementId}`];
 	params.push(`c=${options.columns}`, `r=${visibleRows}`);
 	if (hiddenRows > 0) {
 		const srcY = Math.floor((options.imageHeightPx * hiddenRows) / options.rows);

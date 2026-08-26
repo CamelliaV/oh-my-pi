@@ -17,7 +17,7 @@
  */
 import * as fs from "node:fs";
 import { performance } from "node:perf_hooks";
-import { $flag, getDebugLogPath } from "@oh-my-pi/pi-utils";
+import { $flag, getDebugLogPath, logger } from "@oh-my-pi/pi-utils";
 import { DEFAULT_MAX_INLINE_IMAGES, ImageBudget } from "./components/image";
 import { planDeccaraFills } from "./deccara";
 import { isKeyRelease, matchesKey } from "./keys";
@@ -2952,6 +2952,9 @@ export class TUI extends Container {
 		if (matchesKey(data, "ctrl+c") || matchesKey(data, "escape")) {
 			this.#inputRenderGraceUntilMs = this.#renderScheduler.now() + TUI.#INPUT_RENDER_GRACE_MS;
 		}
+		if (process.env.OMP_IMG_DEBUG && data.includes("\x1b_G")) {
+			logger.debug("kimg: terminal response", { data: data.slice(0, 140) });
+		}
 		if (this.#inputListeners.size > 0) {
 			let current = data;
 			for (const listener of this.#inputListeners) {
@@ -3409,6 +3412,11 @@ export class TUI extends Container {
 			const mouseEnter = wantMouseTracking ? MOUSE_TRACKING_ON : "";
 			this.terminal.write(`\x1b[?1049h${this.#keyboardEnhancementEnter()}${mouseEnter}`);
 			setAltScreenActive(true);
+			// Kitty keeps one graphics store per screen buffer: images
+			// transmitted on the main screen are invisible to alt-screen
+			// placements. Flip the transmit ledger so alt-frame images send
+			// their data here rather than binding placeholders to nothing.
+			this.#imageBudget.setScreen("alt");
 			this.terminal.hideCursor();
 			this.#forgetHardwareCursorState();
 			this.#recordHardwareCursorHidden();
@@ -3431,6 +3439,11 @@ export class TUI extends Container {
 				deferredAltExit = exitSequence;
 			} else this.terminal.write(exitSequence);
 			setAltScreenActive(false);
+			// Back on the main screen's graphics store; ids first sent while
+			// on the alt screen re-transmit on their next main-screen render.
+			// The deferred-exit variant is safe too: the fused full paint
+			// writes the 1049l leading sequence before any transmit buffer.
+			this.#imageBudget.setScreen("main");
 			this.#forgetHardwareCursorState();
 			this.#altActive = false;
 			this.#altMouseTrackingActive = false;

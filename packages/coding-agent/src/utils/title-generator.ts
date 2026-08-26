@@ -478,8 +478,17 @@ export type TerminalTitleState = "idle" | "working" | "attention";
 
 /** Windows uses a static working separator instead of scheduling title animation. */
 const WINDOWS_TITLE_WORKING_SEPARATOR = ":";
-const TITLE_SPINNER_FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
-const TITLE_SPINNER_INTERVAL_MS = 80;
+const TITLE_SPINNER_FRAMES = [
+	"\u{f0a9e}",
+	"\u{f0a9f}",
+	"\u{f0aa0}",
+	"\u{f0aa1}",
+	"\u{f0aa2}",
+	"\u{f0aa3}",
+	"\u{f0aa4}",
+	"\u{f0aa5}",
+];
+const TITLE_SPINNER_INTERVAL_MS = 130;
 /** The user's turn: the title reads like a shell prompt awaiting input. */
 const TITLE_IDLE_SEPARATOR = ">";
 /** Agent blocked on the user (ask / approval prompt). */

@@ -369,17 +369,28 @@ Never run `bun run release`, never push, never edit CHANGELOG sections.
 
 ### Upgrading the fork (source-level, NEVER `omp update`)
 
-1. `aria2c -x8 https://github.com/can1357/oh-my-pi/archive/refs/tags/v<NEW>.tar.gz`
-2. Extract to a temp dir; replace the worktree (keep `.git`! `rm -rf` globs
-   must not touch `.git` — use `git checkout --orphan` or copy over).
-3. Re-apply the patch series (see list below) — rebase by hand via the same
-   scripted replacements, or cherry-pick if history survived.
-4. Materialize new natives: run the official v<NEW> binary once, copy the two
-   .node files into `packages/natives/native/`.
-5. `bun install --frozen-lockfile` + build + install (above).
-6. Verify: `omp-patched gallery`, `omp -r <fuzzy term>`, zh driver passes.
+Preferred since v18: **synthetic-commit merge**. Create a commit whose parent
+is the old baseline commit and whose tree is the new tag's tarball
+(`upstream/v<NEW>` branch), then `git merge` it into a working branch — the
+merge-base is correct, so only fork-touched regions conflict with full
+three-way context. Future upgrades repeat this (each new synthetic commit
+parents onto the previous one), making every upgrade incremental. v17.3.5→v18.0.7
+was done this way (34 files, 76 hunks; merge commit `008c64c`).
 
-### Patch list (v17.3.5 baseline)
+Legacy alternative: replace the worktree with the tarball and re-apply the
+patch series by hand/cherry-pick.
+
+1. `aria2c -x8 https://github.com/can1357/oh-my-pi/archive/refs/tags/v<NEW>.tar.gz`
+2. Synthetic commit + merge (above), resolve conflicts per adjudication.
+3. Materialize new natives: run the official v<NEW> binary ONCE with an
+   isolated `HOME=/tmp/...` (`--smoke-test` triggers extraction), copy the two
+   .node files into `packages/natives/native/` of EVERY worktree that builds.
+4. `bun install --frozen-lockfile` + `bun run check:ts` + build + install.
+5. Verify: `omp-patched gallery`, `omp -r <fuzzy term>`, zh driver, `--no-session`
+   PTY probes for extensions (`/tools`) — debug sessions MUST use `--no-session`.
+
+
+### Patch list (v18.0.7 baseline; merged from v17.3.5 fork on 2026-08-27)
 
 1. `feat(tui)` user message bubble rounded frame — `user-message.ts` Box +
    `theme.boxRound`, `borderAccent`, `setIgnoreTight(true)`; OSC 133 markers

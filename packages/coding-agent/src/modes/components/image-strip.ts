@@ -60,7 +60,6 @@ export class ImageStrip implements Component {
 		this.#convertKittyImages(images);
 
 		// Display list: kitty only displays PNG, so a non-PNG image appears once
-		// its async conversion lands (a dim placeholder holds the slot meanwhile).
 		const display = images.map(image =>
 			TERMINAL.imageProtocol === ImageProtocol.Kitty && image.mimeType !== "image/png"
 				? this.#convertedKitty.get(image)

@@ -523,6 +523,7 @@ export class CustomEditor extends Editor {
 		// it travels with the composer through every editorContainer swap.
 		this.setLeadingRowsProvider((_width, contentWidth) => {
 			this.#draftImageStrip?.setImages(this.pendingImages);
+			this.#draftImageStrip?.setImages(this.pendingImages);
 			return this.#draftImageStrip?.render(contentWidth) ?? [];
 		});
 	}

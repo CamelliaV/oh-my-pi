@@ -16,6 +16,7 @@ import { TreeSelectorComponent } from "../../modes/components/tree-selector";
 import { chipLabel, compactImageMarkers, shiftImageMarkers } from "../../modes/composer-attachments";
 import { expandEmoticons } from "../../modes/emoji-autocomplete";
 import {
+	cachedImageDimensions,
 	IMAGE_MARKER_REGEX,
 	materializeImageReferenceLinks,
 	setCachedImageDimensions,
@@ -1665,14 +1666,17 @@ export class InputController {
 		const editor = this.ctx.editor;
 		const total = editor.pendingImages.length;
 		if (total === 0) return;
+		// The draft buffer holds compact chip tokens (`🖼 #N`); the bracketed
+		// `[Image #N]` marker is the atom-table expansion delivered to onSubmit.
+		// Either spelling keeps the image attached — mirror composerChips'
+		// visibility rule so a keystroke after the paste cannot wipe the buffer.
 		const kept: number[] = [];
-		for (const match of text.matchAll(IMAGE_MARKER_REGEX)) {
-			const n = Number(match[1]);
-			if (n >= 1 && n <= total && !kept.includes(n)) kept.push(n);
+		for (let n = 1; n <= total; n++) {
+			if (text.includes(chipLabel("image", n)) || text.includes(`[Image #${n}]`) || text.includes(`[Image #${n},`)) {
+				kept.push(n);
+			}
 		}
-		// Fast path: markers already dense `1..total` — nothing to drop or renumber.
-		// Also true for the common single-image delete (`kept` empty when `total`
-		// became 0 earlier in this flow).
+		// Fast path: every image still referenced with dense numbering.
 		if (kept.length === total && kept.every((n, i) => n === i + 1)) return;
 
 		const images: ImageContent[] = [];
@@ -1688,12 +1692,22 @@ export class InputController {
 		editor.imageLinks = links.length > 0 ? links : undefined;
 
 		let changed = false;
-		const newText = text.replace(IMAGE_MARKER_REGEX, (whole, num: string, tail: string) => {
+		let newText = text.replace(IMAGE_MARKER_REGEX, (whole, num: string, tail: string) => {
 			const mapped = renumber.get(Number(num));
 			if (mapped === undefined || mapped === Number(num)) return whole;
 			changed = true;
 			return `[Image #${mapped}${tail}]`;
 		});
+		for (const [from, to] of renumber) {
+			if (from === to) continue;
+			const fromChip = chipLabel("image", from);
+			if (!newText.includes(fromChip)) continue;
+			const toChip = chipLabel("image", to);
+			const dims = cachedImageDimensions(editor.pendingImages[to - 1]!);
+			editor.registerAtom(toChip, dims ? `[Image #${to}, ${dims.width}x${dims.height}]` : `[Image #${to}]`);
+			newText = newText.split(fromChip).join(toChip);
+			changed = true;
+		}
 		if (changed) editor.setText(newText);
 		this.ctx.ui.requestRender();
 	}

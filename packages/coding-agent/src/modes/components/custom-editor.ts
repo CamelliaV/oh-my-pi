@@ -33,6 +33,11 @@ const DRAFT_PREVIEW_MAX_ROWS = 8;
 /** Max draft images previewed above the composer before the rest collapse into a "… +N more" line. */
 const DRAFT_PREVIEW_MAX_IMAGES = 4;
 
+/** Per-editor-instance sequence for draft-strip graphics keys. The strip
+ * numbers its images from 1, so a bare shared prefix would make a re-created
+ * editor's first draft image resolve to the previous editor's graphics id —
+ * the budget would skip the transmit and place the old image's pixels. */
+let draftStripInstances = 0;
 type ConfigurableEditorAction = Extract<
 	AppKeybinding,
 	| "app.interrupt"
@@ -513,7 +518,7 @@ export class CustomEditor extends Editor {
 		const caps = resolveImageOptions();
 		this.#draftImageStrip = new ImageStrip({
 			budget,
-			keyPrefix: "draft",
+			keyPrefix: `draft:${++draftStripInstances}`,
 			maxRows: Math.min(DRAFT_PREVIEW_MAX_ROWS, caps.maxHeightCells ?? DRAFT_PREVIEW_MAX_ROWS),
 			maxImages: DRAFT_PREVIEW_MAX_IMAGES,
 			maxWidthCells: caps.maxWidthCells,

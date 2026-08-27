@@ -61,6 +61,14 @@ export class UserMessageComponent extends Container {
 		images?: readonly ImageContent[],
 		imageBudget?: ImageBudget,
 		requestRepaint?: () => void,
+		/** Graphics-key prefix for the inline image strip. MUST be unique per
+		 * message (e.g. `user:<timestamp>`): the strip numbers its images from 1,
+		 * so a shared prefix makes every message's first image resolve to the same
+		 * budget graphics id — a later message's placement then shows an earlier
+		 * message's pixels instead of re-transmitting its own. Stable across
+		 * transcript rebuilds so a re-created component replaces the placement
+		 * rather than re-transmitting. */
+		imageKeyPrefix = "user",
 	) {
 		super();
 		// Display-only collapse: the stored/wire text carries bracketed `[Image #N, WxH]` markers,
@@ -115,7 +123,7 @@ export class UserMessageComponent extends Container {
 			const caps = resolveImageOptions();
 			const strip = new ImageStrip({
 				budget: imageBudget,
-				keyPrefix: "user",
+				keyPrefix: imageKeyPrefix,
 				maxWidthCells: caps.maxWidthCells,
 				maxRows: caps.maxHeightCells ?? 20,
 				maxImages: 8,

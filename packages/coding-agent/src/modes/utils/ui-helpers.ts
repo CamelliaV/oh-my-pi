@@ -310,6 +310,7 @@ export class UiHelpers {
 							images,
 							this.ctx.ui.imageBudget,
 							() => this.ctx.ui.requestRender(),
+							`user:${message.timestamp}`,
 						);
 						this.ctx.transcriptMessageComponents.set(message, userComponent);
 					}

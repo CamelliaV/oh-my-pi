@@ -306,6 +306,7 @@ export class ChatTranscriptBuilder {
 								images,
 								this.deps.ui.imageBudget,
 								() => this.deps.ui.requestRender(),
+								`user:${message.timestamp}`,
 							),
 						);
 					}

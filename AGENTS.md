@@ -435,3 +435,97 @@ Never run `bun run release`, never push, never edit CHANGELOG sections.
    re-attaches persisted image blobs (screenshots) the model lost to
    compaction. `loadMode: "essential"`, `approval: "read"`. Driver-tested on
    synthetic + real session JSONL; PTY-registered via live `/tools`.
+12. `feat(extensions)` desktop-pet companion (bypasses disabled KDE notifications) —
+   runtime extension `extensions/pet-bridge.ts` (deployed by symlink to
+   `~/.omp/agent/extensions/`) + independent GTK4 layer-shell daemon
+   `desktop-pet/omp_pet.py` launched via `desktop-pet/omppet` wrapper (LD_PRELOADs
+   libgtk4-layer-shell; without it layer init fails and the window degrades to a
+   plain toplevel). KDE autostart: `~/.config/autostart/omp-pet.desktop`; hub name
+   `omp-pet`. Bridge pushes lifecycle state over `$XDG_RUNTIME_DIR/omp-pet.sock`
+   (JSON lines: hello/state/settle/poke/bye); `agent_end.willContinue` ignored;
+   esc-abort settles calm, error settles alert; open `ask` call or final
+   assistant message ending in ？/? settles as waiting("ask") NOT done — a
+   turn parked on user input is not a completion (verified live);
+   queued steering holds the working pose instead of flashing done;
+   terminal auto-retry failures (empty-stop retry cap etc.) settle as ERROR —
+   turn-recovery drops the failed assistant turn from the branch, so the
+   bridge remembers auto_retry_end{success:false,finalError} and agent_end
+   consumes it before the stopReason classification can celebrate.
+   waiting/done/error poses persist until clicked (`acknowledge_all`); working
+   states are ambient motion; idle >3min sleeps with zzz; multi-session aggregate,
+   newest-active wins, ×N badge. Model interaction: `pet_poke` tool (approval
+   "read", default discoverable) + `/pet` command + alt+p shortcut return one-line
+   reactions; plain click = local petting; right-click = context menu with
+   退出 (quit action in a widget-level "win" SimpleActionGroup — plain
+   Gtk.Window has no action map in GTK4). Position/mood persist in
+   `~/.local/state/omp-pet.json`. PangoCairo.show_layout takes exactly (cr, layout)
+   — position via ctx.move_to first. Read-only session supervision: daemon scans /proc every 3s for omp/omp-patched
+   processes (excludes __omp_worker_* helpers and zombies), so the ×N badge counts
+   REAL sessions including ones started before the bridge existed (they render as
+   `○ pid … · <proj> · 未桥接` until restarted with the extension loaded); hover
+   opens the supervision panel listing every session (bridged: glyph+state+tool+
+   elapsed; unbridged: pid+proj). Clock semantics: TURN clock (monotonic since
+   prompt) not state age — bridge marks the first working frame of each turn
+   `fresh:true`; tool flips within a turn never reset the timer; `ask` tool maps
+   to waiting, not a churning tool. Window drag tracks the pointer by PER-UPDATE
+   DELTAS (GtkGestureDrag offsets are cumulative from the press point — deltas
+   cancel constant compositor discrepancies) with layer-shell anchors FROZEN for
+   the whole gesture: flipping anchors mid-drag re-places the surface under the
+   grabbed pointer and corrupts all later surface-local offsets, which is why a
+   one-shot drag across the screen midpoint used to die. Nearest-edge re-anchor
+   + clamp happen once on release; wlr-layer-shell margins apply only on ANCHORED
+   edges, so set_anchor must flip LEFT/TOP together with RIGHT/BOTTOM and margins
+   go on the matching pair. The omppet wrapper must readlink -f BASH_SOURCE:
+   symlink invocation (~/.local/bin/omppet) otherwise resolves omp_pet.py in
+   ~/.local/bin and dies.
+   PTY-verified live turn: bash + pet_poke round
+   trip, `/pet status` 在线, parallel-session badge matched /proc ground truth;
+   replay-verified all poses. Skins: `desktop-pet/skins.py` plugin module —
+   `--skin cat|image:<png>|frames:<dir>|live2d:<model-dir>` (persisted in
+   `~/.local/state/omp-pet.json`; bad asset/deps fall back to cat with a stderr
+   notice). image = one cutout PNG animated by the shared pose dict; frames =
+   `<state>-<n>.png` sequences with alias chain (done→idle etc.), ~7fps; live2d =
+   live2d-py + GtkGLArea overlay (chrome drawn on a DrawingArea above GL),
+   optional per-model `motions.json` mapping pet states→motion/expression.
+   Launcher prefers `~/.local/share/omp-pet/venv/bin/python` when it can import
+   gi+live2d. Cairo gotcha: clip() consumes the path — pixbuf draw must end in
+   paint_with_alpha(), fill() after clip() is a no-op; PyCairo has NO
+   ctx.global_alpha; ImageSurface.create_for_data needs a WRITABLE buffer
+   (bytearray, not bytes). live2d mode RUNTIME-VERIFIED with Hiyori sample
+   (~/.local/share/omp-pet/models/Hiyori + motions.json state→motion map):
+   build recipe = PyPI sdist (GitHub main branch lacks Live2D/CMakeLists) +
+   pre-place CubismSdkForNative zip into cubism_sdk_temp.zip + inject
+   `#include <cstdint>` into .hpp/.cpp only (NOT Glad .c/khrplatform.h —
+   <cstdint> is C++ and breaks the C build) + venv pip wheel; system python
+   3.14 has no cp314 wheel so venv is mandatory. Rendering goes through an
+   EGL pbuffer + OpenGL 2.1-compat context blitted to Cairo as premultiplied
+   BGRA — GtkGLArea CANNOT host Cubism (GDK only offers core/ES; Cubism
+   shaders are GLSL 120 → silent empty draw). ctypes c_int arrays reject
+   float sizes (BODY_BOX must be int()). KWin logical coords ≠ spectacle
+   physical pixels under 1.5× scale — locate windows by color-clustering the
+   screenshot, not by geometry math.
+
+13. `fix(tui)` kitty per-screen graphics store retransmit — kitty 0.48.2 keeps
+   one graphics store per screen buffer: `a=t` data sent on the main screen is
+   ENOENT to alt-screen placements (and vice versa; neither store is destroyed
+   by the switch). Resume floods transmit images on main, so the session-nav
+   viewer (fullscreen overlay on the alt buffer) bound placeholders to nothing —
+   empty frames, no terminal error, because `encodeKittyVirtualPlacement`
+   hardcodes q=2 which on kitty 0.48.2 suppresses even error replies (q=1
+   reports errors, no-q reports errors; verified empirically). Fix (0a6703c):
+   ImageBudget tracks transmitted ids per screen (`#transmittedMain/Alt` +
+   `#screen` flipped by TUI on 1049h/1049l in `#doRender`); ids first sent on
+   the other screen re-transmit once per crossing; purges/forgets clear both
+   ledgers; no re-send when the target store already has the data (main-screen
+   repaint after an overlay round-trip costs nothing). Viewer's first open
+   re-sends ~1.5 MB (376×4096 chunk chain) — a visible sub-second delay is
+   expected and correct. Diagnostics kept: OMP_IMG_DEBUG=1 upgrades q=2→q=1 on
+   all graphics commands (kittyQuietFlag) + kimg: logger.debug lines in
+   image.ts render/emit paths. Debug recipe that cracked it: minimized-kitty
+   instance running a python tty probe (DSR sanity + q=1 graphics commands,
+   replies file-logged — q=2 silence masks ENOENT), capture-slice bisection
+   (full stream blank vs chain+tail renders), popup windows sized in cells
+   (`--override initial_window_width=110c`) with rc-socket focus + spectacle -a,
+   user as visual oracle. PTY pyte traps: pyte lacks APC/colon-SGR support
+   (prints payload tails as text — artifact, not evidence); pyte cell data can
+   be multi-char (combining diacritics) — width checks must handle len>1.

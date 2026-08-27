@@ -1,0 +1,29 @@
+#!/usr/bin/env bash
+# omp desktop pet launcher.
+#
+# - Preloads libgtk4-layer-shell so GTK links it BEFORE libwayland-client —
+#   without this, layer surface init fails with "linked after libwayland" and
+#   the window degrades to a plain toplevel.
+#   See https://github.com/wmww/gtk4-layer-shell/blob/main/linking.md
+# - Prefers ~/.local/share/omp-pet/venv/bin/python when it can provide BOTH
+#   gi and live2d (the optional Live2D skin); otherwise uses system python.
+set -euo pipefail
+
+SO=/usr/lib/libgtk4-layer-shell.so
+DIR="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
+VENV_PY="$HOME/.local/share/omp-pet/venv/bin/python"
+
+if [ -f "$SO" ]; then
+	case ":${LD_PRELOAD:-}:" in
+	*":$SO:"*) ;;
+	*) export LD_PRELOAD="${SO}${LD_PRELOAD:+:$LD_PRELOAD}" ;;
+	esac
+fi
+
+PY=python
+if [ -x "$VENV_PY" ] &&
+	"$VENV_PY" -c "import gi, live2d.v3" >/dev/null 2>&1; then
+	PY="$VENV_PY"
+fi
+
+exec "$PY" "$DIR/omp_pet.py" "$@"

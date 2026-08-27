@@ -34,6 +34,7 @@ import {
 	buildAsyncResultBlock,
 	buildFileMentionBlock,
 	buildIrcMessageCard,
+	buildLaunchCompletionBlock,
 	normalizeToolArgs,
 	resolveAssistantErrorPresentation,
 	splitAssistantMessageToolTimeline,
@@ -54,7 +55,6 @@ import { EvalExecutionComponent } from "./eval-execution";
 import { type LateDiagnosticsFile, LateDiagnosticsMessageComponent } from "./late-diagnostics-message";
 import { groupedReadUsageCallIds, ReadToolGroupComponent, readArgsCollapseIntoGroup } from "./read-tool-group";
 import { SkillMessageComponent } from "./skill-message";
-import { ToolActivityContainer } from "./tool-activity";
 import { resolveToolCallIntent, ToolExecutionComponent } from "./tool-execution";
 import { TranscriptContainer } from "./transcript-container";
 import { createUsageRowBlock } from "./usage-row";
@@ -178,7 +178,7 @@ export class ChatTranscriptBuilder {
 		const previous = this.#waitingPoll;
 		if (!previous) return;
 		this.#waitingPoll = null;
-		if (nextToolName === "hub" && previous.isDisplaceableBlock() && this.container.isBlockUncommitted(previous)) {
+		if (nextToolName === "hub" && previous.isDisplaceableBlock() && this.container.canRemoveBlock(previous)) {
 			this.container.removeChild(previous);
 		}
 		previous.seal();
@@ -193,7 +193,7 @@ export class ChatTranscriptBuilder {
 		}
 		if (previous.canBeDisplacedBy(nextToolName)) {
 			this.#todoSnapshot = null;
-			if (this.container.isBlockUncommitted(previous)) {
+			if (this.container.canRemoveBlock(previous)) {
 				this.container.removeChild(previous);
 			}
 			previous.seal();
@@ -448,7 +448,6 @@ export class ChatTranscriptBuilder {
 					showImages: settings.get("terminal.showImages"),
 					editFuzzyThreshold: settings.get("edit.fuzzyThreshold"),
 					editAllowFuzzy: settings.get("edit.fuzzyMatch"),
-					liveRegion: this.container,
 					intent: resolveToolCallIntent(content.intent, content.arguments),
 				},
 				this.deps.getTool?.(content.name),
@@ -554,13 +553,7 @@ export class ChatTranscriptBuilder {
 			return;
 		}
 		if (message.customType === LAUNCH_COMPLETION_MESSAGE_TYPE) {
-			const messageComponent = new CustomMessageComponent(
-				message as CustomMessage<unknown>,
-				this.deps.getMessageRenderer?.(message.customType),
-			);
-			this.#trackExpandable(messageComponent);
-			const component = new ToolActivityContainer(messageComponent);
-			this.container.addChild(component);
+			this.container.addChild(buildLaunchCompletionBlock(message));
 			return;
 		}
 		if (message.customType === BACKGROUND_TAN_DISPATCH_MESSAGE_TYPE) {

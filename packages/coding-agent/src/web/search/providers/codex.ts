@@ -16,6 +16,7 @@ import {
 import { resolveCodexResponsesUrl, streamOpenAICodexResponses } from "@oh-my-pi/pi-ai/providers/openai-codex-responses";
 import { getBundledModels } from "@oh-my-pi/pi-catalog/models";
 import {
+	applyCodexResidencyHeader,
 	CODEX_BASE_URL,
 	CODEX_CLIENT_VERSION,
 	getCodexAccountId,
@@ -447,6 +448,12 @@ function buildCodexHeaders(
 		headers.set(OPENAI_HEADERS.ORIGINATOR, OPENAI_HEADER_VALUES.ORIGINATOR_CODEX);
 		headers.set(OPENAI_HEADERS.VERSION, CODEX_CLIENT_VERSION);
 	}
+	applyCodexResidencyHeader(headers, accessToken);
+	headers.set(OPENAI_HEADERS.BETA, OPENAI_HEADER_VALUES.BETA_RESPONSES);
+	headers.set(OPENAI_HEADERS.ORIGINATOR, OPENAI_HEADER_VALUES.ORIGINATOR_CODEX);
+	headers.set(OPENAI_HEADERS.VERSION, CODEX_CLIENT_VERSION);
+	// Relay User-Agent whitelists: keep a provider-configured UA intact; only
+	// stamp the default when none is present.
 	if (!headers.has("User-Agent")) headers.set("User-Agent", USER_AGENT);
 	headers.set("Accept", "text/event-stream");
 	headers.set("Content-Type", "application/json");

@@ -233,9 +233,11 @@ describe("UserMessageComponent inline images", () => {
 		expect(first.some(line => line.includes("[Image: image/webp]"))).toBe(true);
 		expect(first.some(line => line.includes("\x1b_G"))).toBe(false);
 
-		// Commit every row to native scrollback: the bubble is now finalized
-		// history the container would replay without re-rendering.
-		container.setNativeScrollbackCommittedRows(first.length);
+		// Commit the finalized bubble into native history (flush policy offers
+		// the complete settled prefix), then let the conversion land.
+		const flush = container.peekFlushBatch(80);
+		expect(flush).toBeDefined();
+		container.acknowledgeFinalizedBatch(flush!.id);
 
 		for (let i = 0; i < 100 && requestRepaint.mock.calls.length === 0; i++) {
 			const { promise, resolve } = Promise.withResolvers<void>();
@@ -244,8 +246,11 @@ describe("UserMessageComponent inline images", () => {
 		}
 		expect(requestRepaint).toHaveBeenCalled();
 
-		const second = container.render(80);
-		expect(second.some(line => line.includes("\x1b_G"))).toBe(true);
-		expect(second.some(line => line.includes("wallpaper probe"))).toBe(true);
+		// A resize epoch replays the committed ledger: the late conversion must
+		// surface in the replayed history instead of the placeholder forever.
+		container.beginReplay();
+		const replay = container.peekReplayBatch(80);
+		expect(replay?.rows.some(line => line.includes("\x1b_G"))).toBe(true);
+		expect(replay?.rows.some(line => line.includes("wallpaper probe"))).toBe(true);
 	});
 });

@@ -23,6 +23,7 @@ const stats: AggregatedStats = {
 	estimatedCostRequests: 3,
 	unknownCostRequests: 1,
 	totalCost: 0,
+	unpricedRequests: 0,
 	totalPremiumRequests: 0,
 	avgDuration: 1000,
 	avgTtft: 100,

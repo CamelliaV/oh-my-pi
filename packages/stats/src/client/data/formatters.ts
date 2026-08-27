@@ -1,4 +1,5 @@
 import { formatDistanceToNow } from "@oh-my-pi/pi-utils/dates";
+import type { MessageStats } from "../types";
 
 export function formatInteger(value: number): string {
 	return value.toLocaleString();
@@ -23,6 +24,18 @@ export function formatPercent(value: number | null, digits = 1): string {
 
 export function formatCacheCoverage(reported: number, eligible: number): string {
 	return `${reported}/${eligible}`;
+}
+
+/** Format an API-equivalent estimate, using N/A when all usage is unpriced. */
+export function formatEstimatedCost(value: number, unpricedRequests: number, digits?: number): string {
+	return value === 0 && unpricedRequests > 0 ? "N/A" : formatCost(value, digits);
+}
+
+/** Format one request's cost, distinguishing unpriced SuperGrok usage from free usage. */
+export function formatMessageCost(message: Pick<MessageStats, "provider" | "usage">, digits?: number): string {
+	const unpricedRequests =
+		message.provider === "xai-oauth" && message.usage.totalTokens > 0 && message.usage.cost.total === 0 ? 1 : 0;
+	return formatEstimatedCost(message.usage.cost.total, unpricedRequests, digits);
 }
 
 export function formatDurationMs(value: number | null, digits?: number): string {

@@ -1,5 +1,5 @@
 import * as path from "node:path";
-import * as git from "../utils/git";
+import * as vcs from "@oh-my-pi/pi-natives/vcs";
 
 export interface WorkspaceChange {
 	path: string;
@@ -56,38 +56,40 @@ function parseDetailedStatus(text: string): StatusEntry[] {
 	return entries;
 }
 
-function parseOneline(line: string): HistoryEntry | null {
-	const match = line.match(/^([0-9a-f]+)\s+(.+)$/i);
-	return match ? { sha: match[1], subject: match[2] } : null;
-}
-
 /** Read-only Git state used by the workspace inspector. */
 export async function loadWorkspaceSnapshot(cwd: string, signal?: AbortSignal): Promise<GitSnapshotResult> {
 	try {
+		const repository = vcs.git(cwd);
+		if (!repository) return { snapshot: null, error: "not a git repository" };
 		const [statusText, head, numstat] = await Promise.all([
-			git.status(cwd, { porcelainV1: true, untrackedFiles: "all", z: true, signal }),
-			git.head.resolve(cwd, signal),
-			git.diff.numstat(cwd, { allowFailure: true, base: "HEAD", signal }),
+			repository.statusPorcelain({ untracked: "all", nulTerminated: true }, signal),
+			repository.head(signal),
+			// An unborn HEAD (fresh repository) has no diff base; the old
+			// allowFailure option became a caught VcsError here.
+			repository.numstat({ base: "HEAD" }, signal).catch(error => {
+				if (vcs.isVcsError(error)) return [];
+				throw error;
+			}),
 		]);
 		const entries = parseDetailedStatus(statusText);
 		const counts = new Map(numstat.map(entry => [entry.path, entry]));
 		const changes = entries
 			.map(entry => {
-				const count = counts.get(entry.path) ?? { additions: 0, deletions: 0 };
+				const count = counts.get(entry.path);
 				return {
 					path: entry.path,
 					oldPath: entry.oldPath,
 					index: entry.index,
 					worktree: entry.worktree,
-					additions: count.additions,
-					deletions: count.deletions,
+					additions: count?.added ?? 0,
+					deletions: count?.removed ?? 0,
 				};
 			})
 			.sort((left, right) => left.path.localeCompare(right.path));
 		return {
 			snapshot: {
-				branch: head?.kind === "ref" ? (head.branchName ?? head.ref) : "(detached)",
-				head: head?.commit ? head.commit.slice(0, 8) : null,
+				branch: head.kind === "ref" ? (head.branch ?? head.refName ?? "HEAD") : "(detached)",
+				head: head.commit ? head.commit.slice(0, 8) : null,
 				changes,
 			},
 		};
@@ -100,21 +102,34 @@ export async function loadWorkspaceSnapshot(cwd: string, signal?: AbortSignal): 
 }
 
 export async function loadHistory(cwd: string, limit = 50, signal?: AbortSignal): Promise<HistoryEntry[]> {
-	const lines = await git.log.onelines(cwd, limit, signal);
-	return lines.map(parseOneline).filter((entry): entry is HistoryEntry => entry !== null);
+	const repository = vcs.git(cwd);
+	if (!repository) return [];
+	const lines = await repository.logOnelines(limit, signal);
+	return lines
+		.map(line => line.match(/^([0-9a-f]+)\s+(.+)$/i))
+		.filter((match): match is RegExpMatchArray => match !== null)
+		.map(match => ({ sha: match[1], subject: match[2] }));
 }
 
 export async function loadDiff(cwd: string, change: WorkspaceChange, signal?: AbortSignal): Promise<string> {
+	const repository = vcs.git(cwd);
+	if (!repository) return "";
 	if (change.index === "?" && change.worktree === "?") {
-		return git.diff(cwd, {
-			allowFailure: true,
-			noIndex: { left: "/dev/null", right: path.resolve(cwd, change.path) },
-			signal,
-		});
+		return repository.diffNoIndex("/dev/null", path.resolve(cwd, change.path), false, signal);
 	}
-	return git.diff(cwd, { allowFailure: true, base: "HEAD", files: [change.path], signal });
+	try {
+		return await repository.diffText({ base: "HEAD", files: [change.path] }, signal);
+	} catch (error) {
+		// An unborn HEAD has nothing to diff against; the old allowFailure
+		// option became a caught VcsError here.
+		if (vcs.isVcsError(error)) return "";
+		throw error;
+	}
 }
 
 export async function loadCommitDiff(cwd: string, sha: string, signal?: AbortSignal): Promise<string> {
-	return git.show(cwd, sha, { signal });
+	const repository = vcs.git(cwd);
+	if (!repository) return "";
+	const result = await repository.showCommit(sha, undefined, signal);
+	return result.data.toString();
 }

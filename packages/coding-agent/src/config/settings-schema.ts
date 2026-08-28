@@ -1297,6 +1297,16 @@ export const SETTINGS_SCHEMA = {
 		},
 	},
 
+	"display.showTurnTime": {
+		type: "boolean",
+		default: false,
+		ui: {
+			tab: "appearance",
+			group: "Display",
+			label: "Show Turn Time",
+			description: "Show the total prompt-to-yield time (including tool calls) on assistant message usage rows",
+		},
+	},
 	"display.cacheMissMarker": {
 		type: "boolean",
 		default: false,
@@ -2464,7 +2474,7 @@ export const SETTINGS_SCHEMA = {
 	// compaction kicks in before any request crosses into premium billing.
 	extendedContext: {
 		type: "boolean",
-		default: true,
+		default: false,
 		ui: {
 			tab: "context",
 			group: "General",

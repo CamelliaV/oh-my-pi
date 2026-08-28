@@ -115,6 +115,7 @@ import type { SessionContext } from "../session/session-context";
 import { getRecentSessions } from "../session/session-listing";
 import type { SessionManager } from "../session/session-manager";
 import type { ShakeMode } from "../session/shake-types";
+import { sessionBashCommands } from "../session/shell-history";
 import { BUILTIN_SLASH_COMMAND_RESERVED_NAMES, buildTuiBuiltinSlashCommands } from "../slash-commands/builtin-registry";
 import { formatDuration } from "../slash-commands/helpers/format";
 import { STTController, type SttState } from "../stt";
@@ -157,6 +158,7 @@ import {
 	type VibeParentSession,
 	VibeSessionRegistry,
 } from "../vibe/runtime";
+import { BashAutocompleteProvider } from "./bash-autocomplete";
 import type { AssistantMessageComponent } from "./components/assistant-message";
 import { AttachmentChipsBand } from "./components/attachment-chips";
 import type { BashExecutionComponent } from "./components/bash-execution";
@@ -1516,7 +1518,12 @@ export class InteractiveMode implements InteractiveModeContext {
 	#applyAutocompleteProvider(): void {
 		const base = this.#baseAutocompleteProvider;
 		if (!base) return;
-		let provider = base;
+		// Bash-mode layer first: Tab command-name completion and history ghost
+		// text for `!` / `!!` input, delegating everything else to the base.
+		let provider: AutocompleteProvider = new BashAutocompleteProvider(base, {
+			sessionBashCommands: () => sessionBashCommands(this.sessionManager),
+			cwd: () => this.sessionManager.getCwd(),
+		});
 		for (const factory of this.#autocompleteProviderFactories) {
 			try {
 				const wrapped = factory(provider);

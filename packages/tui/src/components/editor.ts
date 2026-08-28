@@ -3195,7 +3195,15 @@ export class Editor implements Component, Focusable {
 					this.#state.cursorLine++;
 					this.#setCursorCol(0);
 				} else {
-					// At end of last line - can't move, but set preferredVisualCol for up/down navigation
+					// At end of last line: accept an insertable provider hint
+					// (zsh-autosuggestions-style ghost text) before treating this
+					// as a no-op.
+					const hint = this.#autocompleteState === null ? this.#getInsertableHint() : null;
+					if (hint) {
+						this.#insertTextAtCursor(hint);
+						return;
+					}
+					// Can't move, but set preferredVisualCol for up/down navigation
 					const currentVL = visualLines[currentVisualLine];
 					if (currentVL) {
 						const segmentText = currentLine.slice(currentVL.startCol, currentVL.startCol + currentVL.length);
@@ -3719,6 +3727,17 @@ export class Editor implements Component, Focusable {
 		}
 
 		return this.#getWordCompletion();
+	}
+
+	/** Provider ghost text that is safe to insert on → at the end of the buffer. */
+	#getInsertableHint(): string | null {
+		return (
+			this.#autocompleteProvider?.getInsertableHint?.(
+				this.#state.lines,
+				this.#state.cursorLine,
+				this.#state.cursorCol,
+			) ?? null
+		);
 	}
 	#getWordCompletion(): string | null {
 		return (

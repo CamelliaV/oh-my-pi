@@ -636,3 +636,18 @@ patch series by hand/cherry-pick.
    interface (HistoryStorage satisfies it structurally) + title/initialQuery
    options; dispatch branch in selector-controller.showHistorySearch. Tests:
    test/shell-history.test.ts (16); PTY-verified with fake + real HISTFILE.
+16. `feat(tui)` bash-mode Tab completion + history ghost text —
+   `modes/bash-autocomplete.ts` wraps the base autocomplete provider
+   (stacked below extension factories in #applyAutocompleteProvider): Tab on
+   the first token completes PATH executables + shell aliases (one-shot
+   `zsh -ic 'alias -L'`, 300ms Tab budget, 5s kill cap; `-g`/`-s` aliases
+   skipped; real output has the `alias ` prefix), later/path-like tokens get
+   cwd-anchored path completion (own implementation — the prompt-action
+   wrapper never exposed getForceFileSuggestions, so bare-path Tab completion
+   doesn't exist upstream; dirs get trailing `/` + no space, files a space).
+   Ghost text suggests the newest matching history command (same merged
+   source as patch 15, preloaded at construction so the first render has it),
+   accepted with →; pi-tui gained a `getInsertableHint` provider contract so
+   only insertable ghosts are accepted (slash-arg hints stay display-only).
+   Tests: test/bash-autocomplete.test.ts (17); PTY-verified 6/6 (ghost render,
+   → accept, popup, apply+execute, file completion, alias completion).

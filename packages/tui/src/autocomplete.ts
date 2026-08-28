@@ -228,6 +228,13 @@ export interface AutocompleteProvider {
 
 	/** Get inline hint text to show as dim ghost text after the cursor */
 	getInlineHint?(lines: string[], cursorLine: number, cursorCol: number): string | null;
+	/**
+	 * Ghost text that is not merely displayed but inserted when the cursor sits
+	 * at the end of the buffer and the user presses → (zsh-autosuggestions
+	 * style). Providers whose {@link getInlineHint} output is descriptive
+	 * (argument hints, key hints) MUST NOT implement this method.
+	 */
+	getInsertableHint?(lines: string[], cursorLine: number, cursorCol: number): string | null;
 	/** Synchronously try to complete a slash command at the start of a line (no async I/O). */
 	/** Returns matched items and the full prefix, or null if not applicable. */
 	trySyncSlashCompletion?(textBeforeCursor: string): { items: AutocompleteItem[]; prefix: string } | null;

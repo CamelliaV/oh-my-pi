@@ -17,7 +17,7 @@ import {
 	matchesSelectPageUp,
 	matchesSelectUp,
 } from "../../modes/utils/keybinding-matchers";
-import type { HistoryEntry, HistoryStorage } from "../../session/history-storage";
+import type { HistoryEntry, HistorySearchSource } from "../../session/history-storage";
 import { rawKeyHint } from "./keybinding-hints";
 import { OverlayPanel } from "./overlay-box";
 import { centeredWindow, contentRowWidth, renderScrollableList } from "./selector-helpers";
@@ -25,7 +25,7 @@ import { centeredWindow, contentRowWidth, renderScrollableList } from "./selecto
 /** Visible result rows; also the jump distance for PageUp/PageDown. */
 const MAX_VISIBLE = 10;
 
-/** Split a query the same way `HistoryStorage` tokenizes it, so highlights align with matches. */
+/** Split a query the same way history sources tokenize it, so highlights align with matches. */
 function queryTokens(query: string): string[] {
 	return query
 		.toLowerCase()
@@ -119,10 +119,11 @@ class HistoryResultsList implements Component {
 			const isSelected = i === this.#selectedIndex;
 
 			const timeStr = relativeTime(entry.created_at);
-			const timeWidth = visibleWidth(timeStr);
-			const showTime = rowWidth >= gutterWidth + 12 + timeWidth;
+			// Session-sourced commands carry an accent `omp` provenance tag before the time.
+			const suffixWidth = visibleWidth(timeStr) + (entry.origin === "omp" ? 4 : 0);
+			const showSuffix = rowWidth >= gutterWidth + 12 + suffixWidth;
 
-			const promptBudget = Math.max(4, rowWidth - gutterWidth - (showTime ? timeWidth + 1 : 0));
+			const promptBudget = Math.max(4, rowWidth - gutterWidth - (showSuffix ? suffixWidth + 1 : 0));
 			const normalized = entry.prompt.replace(/\s+/g, " ").trim();
 			const plain = truncateToWidth(normalized, promptBudget);
 			const highlighted = highlightTokens(plain, this.#tokens);
@@ -130,9 +131,11 @@ class HistoryResultsList implements Component {
 			const cursor = isSelected ? theme.fg("accent", cursorSymbol) : padding(gutterWidth);
 			let line = cursor + (isSelected ? theme.bold(highlighted) : highlighted);
 
-			if (showTime) {
+			if (showSuffix) {
 				// Pad the prompt region so the timestamp sits flush right with a one-cell gap.
-				line = `${truncateToWidth(line, rowWidth - timeWidth - 1, Ellipsis.Unicode, true)} ${theme.fg("dim", timeStr)}`;
+				const time = theme.fg("dim", timeStr);
+				const suffix = entry.origin === "omp" ? `${theme.fg("accent", "omp")} ${time}` : time;
+				line = `${truncateToWidth(line, rowWidth - suffixWidth - 1, Ellipsis.Unicode, true)} ${suffix}`;
 			}
 
 			rows.push(
@@ -148,7 +151,7 @@ class HistoryResultsList implements Component {
 }
 
 export class HistorySearchComponent extends OverlayPanel {
-	#historyStorage: HistoryStorage;
+	#source: HistorySearchSource;
 	#searchInput: Input;
 	#results: HistoryEntry[] = [];
 	#selectedIndex = 0;
@@ -157,9 +160,14 @@ export class HistorySearchComponent extends OverlayPanel {
 	#onCancel: () => void;
 	#resultLimit = 100;
 
-	constructor(historyStorage: HistoryStorage, onSelect: (prompt: string) => void, onCancel: () => void) {
-		super("History");
-		this.#historyStorage = historyStorage;
+	constructor(
+		source: HistorySearchSource,
+		onSelect: (prompt: string) => void,
+		onCancel: () => void,
+		options?: { title?: string; initialQuery?: string },
+	) {
+		super(options?.title ?? "History");
+		this.#source = source;
 		this.#onSelect = onSelect;
 		this.#onCancel = onCancel;
 
@@ -184,9 +192,11 @@ export class HistorySearchComponent extends OverlayPanel {
 		this.addChild(new Spacer(1));
 		this.addChild(this.#resultsList);
 		this.addChild(new Spacer(1));
+
 		this.addChild(new Text(hint, 0, 0));
 		this.addChild(new Spacer(1));
 
+		if (options?.initialQuery) this.#searchInput.setValue(options.initialQuery);
 		this.#updateResults();
 	}
 
@@ -252,9 +262,7 @@ export class HistorySearchComponent extends OverlayPanel {
 
 	#updateResults(): void {
 		const query = this.#searchInput.getValue().trim();
-		this.#results = query
-			? this.#historyStorage.search(query, this.#resultLimit)
-			: this.#historyStorage.getRecent(this.#resultLimit);
+		this.#results = query ? this.#source.search(query, this.#resultLimit) : this.#source.getRecent(this.#resultLimit);
 		this.#selectedIndex = 0;
 		this.#resultsList.setResults(this.#results, this.#selectedIndex, query ? queryTokens(query) : []);
 	}

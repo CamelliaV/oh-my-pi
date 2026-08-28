@@ -15,6 +15,16 @@ export interface HistoryEntry {
 	cwd?: string;
 	/** Session ID of the most recent submission, if known. */
 	sessionId?: string;
+	/** Display-only provenance for the command-history picker; never persisted. */
+	origin?: "omp" | "shell";
+}
+
+/** Searchable source contract consumed by the history picker overlay. */
+export interface HistorySearchSource {
+	/** Unique entries matching every query token, newest first. */
+	search(query: string, limit: number): HistoryEntry[];
+	/** Unique entries ordered by their most recent submission. */
+	getRecent(limit: number): HistoryEntry[];
 }
 
 type HistoryRow = {

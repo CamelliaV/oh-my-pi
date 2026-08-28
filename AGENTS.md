@@ -624,3 +624,15 @@ patch series by hand/cherry-pick.
    empty diff/numstat); branch label `head.branch ?? head.refName ?? "HEAD"`.
    Module-level smoke verified status/head/numstat/history/commitDiff plus
    modified (diffText) and untracked (diffNoIndex) paths.
+15. `feat(tui)` bash-mode Ctrl+R command history search — with a `!` / `!!`
+   prefix in the composer, Ctrl+R opens a "Command History" picker over the
+   user's shell history (HISTFILE / zsh extended format with backslash
+   multiline continuation, bash fallback; 4MB tail cap + mtime cache in
+   `session/shell-history.ts`) merged with the session's `!` / `!!`
+   commands from the branch (omp-run commands never enter the shell history —
+   non-interactive shell). Session-sourced rows carry an accent `omp` tag;
+   the typed fragment seeds the query; selection preserves the `!` / `!!`
+   prefix. HistorySearchComponent generalized to a `HistorySearchSource`
+   interface (HistoryStorage satisfies it structurally) + title/initialQuery
+   options; dispatch branch in selector-controller.showHistorySearch. Tests:
+   test/shell-history.test.ts (16); PTY-verified with fake + real HISTFILE.

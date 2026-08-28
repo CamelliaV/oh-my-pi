@@ -57,6 +57,7 @@ import type { SessionInfo } from "../../session/session-listing";
 import { SessionManager } from "../../session/session-manager";
 import { loadPinnedSessionIds } from "../../session/session-pins";
 import { FileSessionStorage } from "../../session/session-storage";
+import { createCommandHistorySource } from "../../session/shell-history";
 import { type LogoutAccount, toLogoutAccounts } from "../../slash-commands/helpers/logout";
 import {
 	describeRedeemOutcome,
@@ -349,6 +350,11 @@ export class SelectorController {
 	}
 
 	showHistorySearch(): void {
+		const editorText = this.ctx.editor.getText().trimStart();
+		if (editorText.startsWith("!")) {
+			void this.#showCommandHistorySearch();
+			return;
+		}
 		const historyStorage = this.ctx.historyStorage;
 		if (!historyStorage) return;
 
@@ -364,6 +370,34 @@ export class SelectorController {
 					done();
 					this.ctx.ui.requestRender();
 				},
+			);
+			return { component, focus: component };
+		});
+	}
+
+	/**
+	 * Bash-mode Ctrl+R: fuzzy search over the user's shell history merged with
+	 * this session's `!` / `!!` commands. Selection preserves the typed `!` /
+	 * `!!` prefix; the fragment typed after it seeds the search query.
+	 */
+	async #showCommandHistorySearch(): Promise<void> {
+		const text = this.ctx.editor.getText().trimStart();
+		const prefix = text.startsWith("!!") ? "!!" : "!";
+		const initialQuery = text.slice(prefix.length).trim();
+		const source = await createCommandHistorySource(this.ctx.sessionManager);
+		this.showSelector(done => {
+			const component = new HistorySearchComponent(
+				source,
+				command => {
+					done();
+					this.ctx.editor.setText(`${prefix}${command ? ` ${command}` : ""}`);
+					this.ctx.ui.requestRender();
+				},
+				() => {
+					done();
+					this.ctx.ui.requestRender();
+				},
+				{ title: "Command History", initialQuery },
 			);
 			return { component, focus: component };
 		});

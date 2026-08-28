@@ -246,6 +246,39 @@ export function writeThroughActiveTerminal(data: string): boolean {
 	return true;
 }
 
+// Focus reporting (DEC mode 1004). Terminals that support it send CSI I when
+// the window/tab hosting this terminal gains focus and CSI O when it loses it
+// — kitty delivers both on plain tab switches, which makes the reports the
+// only signal that "the user is now looking at this terminal". The active
+// ProcessTerminal consumes them in its stdin handler and dispatches here.
+const terminalFocusListeners = new Set<(focused: boolean) => void>();
+let lastTerminalFocus: boolean | undefined;
+
+/**
+ * Subscribe to focus changes of the active terminal's window/tab (DEC 1004
+ * reports). Fires only on real terminal reports — a session that never leaves
+ * its tab sees no events, and terminals/multiplexers without focus reporting
+ * stay silent. Replays the last reported state to late subscribers. Returns an
+ * unsubscribe function. Shared module state: runtime extensions importing
+ * `@oh-my-pi/pi-tui` observe the same registry the running TUI dispatches to.
+ */
+export function onActiveTerminalFocusChange(callback: (focused: boolean) => void): () => void {
+	terminalFocusListeners.add(callback);
+	if (lastTerminalFocus !== undefined) {
+		try {
+			callback(lastTerminalFocus);
+		} catch {
+			/* ignore callback errors */
+		}
+	}
+	let subscribed = true;
+	return () => {
+		if (!subscribed) return;
+		subscribed = false;
+		terminalFocusListeners.delete(callback);
+	};
+}
+
 const stdoutErrorHandlers = new Set<(err: Error) => void>();
 let stdoutErrorListenerInstalled = false;
 
@@ -370,6 +403,7 @@ export function emergencyTerminalRestore(): void {
 					"\x1b[?2004l" + // Disable bracketed paste
 					"\x1b[?2031l" + // Disable Mode 2031 appearance notifications
 					"\x1b[?2048l" + // Disable in-band resize notifications
+					"\x1b[?1004l" + // Disable focus reporting
 					"\x1b[?5522l" + // Disable enhanced paste notifications
 					"\x1b[<u" + // Pop kitty keyboard protocol
 					"\x1b[>4;0m" + // Disable modifyOtherKeys fallback
@@ -774,6 +808,22 @@ export class ProcessTerminal implements Terminal {
 		this.#privateModeCallbacks.push(callback);
 	}
 
+	/** Dispatch one DEC 1004 focus report to the module-level listeners. */
+	#handleFocusReport(focused: boolean): void {
+		// Terminals report transitions only, but a re-asserted report (window
+		// re-activation without an intervening blur on some compositors) is a
+		// no-op for every consumer: skip the duplicate dispatch.
+		if (lastTerminalFocus === focused) return;
+		lastTerminalFocus = focused;
+		for (const callback of [...terminalFocusListeners]) {
+			try {
+				callback(focused);
+			} catch {
+				/* ignore callback errors */
+			}
+		}
+	}
+
 	start(
 		onInput: (data: string) => void,
 		onResize: () => void,
@@ -885,6 +935,12 @@ export class ProcessTerminal implements Terminal {
 		// in the predictable default state; stop() restores the same on exit.
 		// See #6374.
 		this.#safeWrite("\x1b[?1l\x1b>");
+
+		// Enable focus reporting (DEC mode 1004). Terminals that support it then
+		// send CSI I / CSI O on window and tab focus changes (kitty reports on
+		// plain tab switches); others ignore the sequence. Consumed in the stdin
+		// handler and dispatched via onActiveTerminalFocusChange; stop() disables.
+		this.#safeWrite("\x1b[?1004h");
 
 		// On Windows, enable ENABLE_VIRTUAL_TERMINAL_INPUT so the console sends
 		// VT escape sequences (e.g. \x1b[Z for Shift+Tab) instead of raw console
@@ -1052,6 +1108,14 @@ export class ProcessTerminal implements Terminal {
 				if (this.#inputHandler) {
 					this.#inputHandler(sequence);
 				}
+				return;
+			}
+
+			// Focus in/out reports (DEC mode 1004, enabled in #attachInput).
+			// Terminal→host reports, never keystrokes: consume them here so
+			// they cannot reach the editor as an ESC plus literal "[I"/"[O".
+			if (sequence === "\x1b[I" || sequence === "\x1b[O") {
+				this.#handleFocusReport(sequence === "\x1b[I");
 				return;
 			}
 
@@ -1683,6 +1747,11 @@ export class ProcessTerminal implements Terminal {
 
 		// Disable Mode 2031 appearance change notifications
 		this.#safeWrite("\x1b[?2031l");
+
+		// Disable focus reporting (enabled in #attachInput) — a shell inheriting
+		// it would keep receiving CSI I/O reports meant for nobody.
+		this.#safeWrite("\x1b[?1004l");
+		lastTerminalFocus = undefined;
 
 		// Restore xterm scroll-to-bottom modes that were set before startup.
 		for (const mode of this.#xtermScrollToBottomRestoreModes) {

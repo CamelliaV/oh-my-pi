@@ -9,10 +9,10 @@
  * keeps disabled globally).
  *
  * Wire protocol (JSON lines over $XDG_RUNTIME_DIR/omp-pet.sock):
- *   → {"t":"hello","session":str,"proj":str,"pid":int}   on every (re)connect
+ *   → {"t":"hello","session":str,"proj":str,"pid":int,"bg"?}  bg = background session
  *   → {"t":"state","s":"thinking|tool|waiting|retry|compact","tool"?,"detail"?}
+ *   → {"t":"focus"}                                      terminal (tab) regained focus
  *   → {"t":"settle","ok":bool,"aborted":bool,"label":str} terminal agent end
- *   → {"t":"poke","id":int,"kind":"pet|feed|play"}        ← pet_poke tool
  *   ← {"t":"poked","id":int,"reaction":str}
  *   → {"t":"bye"}                                         on session shutdown
  *
@@ -22,12 +22,13 @@
  */
 import * as net from "node:net";
 import * as path from "node:path";
+import { onActiveTerminalFocusChange } from "@oh-my-pi/pi-tui";
 import { type ExtensionAPI, type ExtensionContext, z } from "@oh-my-pi/pi-coding-agent";
 
 type WorkingState = "thinking" | "tool" | "waiting" | "retry" | "compact";
 
 interface PetFrame {
-	t: "hello" | "state" | "settle" | "poke" | "bye";
+	t: "hello" | "state" | "settle" | "focus" | "poke" | "bye";
 	[key: string]: unknown;
 }
 
@@ -67,16 +68,32 @@ class PetBridge {
 	#lastStateFrame = "";
 	#openAsks = new Set<string>();
 	#terminalError: string | null = null;
+	#bg = false; // background session (task subagent / print run): no tab to switch to
+	#focusUnsubscribe: (() => void) | undefined;
 
 	hello(ctx: ExtensionContext): void {
 		const name = ctx.sessionManager.getSessionName?.() ?? "";
 		this.#sessionLabel = name || path.basename(ctx.cwd);
-		this.#send({
+		// Task subagents re-bind this factory in the PARENT process (hasUI
+		// false — their tool approvals auto-deny). They are background work:
+		// the pet shows them ambient-only, never as attention poses.
+		this.#bg = ctx.hasUI === false;
+		const hello: PetFrame = {
 			t: "hello",
 			session: this.#sessionLabel,
 			proj: path.basename(ctx.cwd),
 			pid: process.pid,
-		});
+		};
+		if (this.#bg) hello.bg = true;
+		this.#send(hello);
+		// Only a foreground session owns a terminal tab: switching back to it
+		// means the user has seen this session's attention pose. Background
+		// sessions have no tab, so they never subscribe.
+		if (!this.#bg && this.#focusUnsubscribe === undefined) {
+			this.#focusUnsubscribe = onActiveTerminalFocusChange(focused => {
+				if (focused) this.notifySeen();
+			});
+		}
 	}
 
 	setState(state: WorkingState, tool?: string, detail?: string, fresh?: boolean): void {
@@ -100,6 +117,15 @@ class PetBridge {
 		this.#openAsks.clear();
 		this.#lastStateFrame = "";
 		this.#send({ t: "settle", ok, aborted, label: this.#sessionLabel });
+	}
+
+	/**
+	 * Terminal focus report (DEC 1004, via onActiveTerminalFocusChange): the
+	 * user switched back to this session's window/tab — they have seen
+	 * whatever attention pose the pet is holding for this session.
+	 */
+	notifySeen(): void {
+		this.#send({ t: "focus" });
 	}
 
 	/** `ask` tool call started — parked on user input until its end event. */
@@ -163,6 +189,8 @@ class PetBridge {
 	}
 
 	bye(): void {
+		this.#focusUnsubscribe?.();
+		this.#focusUnsubscribe = undefined;
 		this.#send({ t: "bye" });
 		const socket = this.#socket;
 		this.#socket = undefined;
@@ -214,7 +242,9 @@ class PetBridge {
 			socket.setTimeout(0);
 			// Fresh connection ⇒ re-identify before any queued frames.
 			const queued = this.#queue.splice(0);
-			socket.write(`${JSON.stringify({ t: "hello", session: this.#sessionLabel, pid: process.pid })}\n`);
+			const identify: PetFrame = { t: "hello", session: this.#sessionLabel, pid: process.pid };
+			if (this.#bg) identify.bg = true;
+			socket.write(`${JSON.stringify(identify)}\n`);
 			for (const line of queued) socket.write(line);
 		});
 		socket.on("data", (chunk: string | Uint8Array) => this.#onData(chunk));

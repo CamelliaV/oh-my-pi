@@ -553,6 +553,44 @@ patch series by hand/cherry-pick.
    physical pixels under 1.5× scale — locate windows by color-clustering the
    screenshot, not by geometry math.
 
+   Tab-focus auto-ack (2026-08-29): switching the terminal to a session's
+   tab/window clears THAT session's waiting/done/error pose (the per-session
+   analogue of acknowledge_all's click). Signal chain: terminal.ts enables
+   DEC 1004 focus reporting in #attachInput (disables in stop() +
+   emergency restore) and consumes CSI I/O in the stdin handler (they must
+   never reach the editor as keystrokes), dispatching via module-level
+   `onActiveTerminalFocusChange()` — runtime extensions importing
+   `@oh-my-pi/pi-tui` observe the SAME module instance the running TUI
+   dispatches to (bundled-module loader uses literal `import()` of the
+   canonical specifier; verified wire-level). pet-bridge sends `{"t":"focus"}`
+   on focus-in only (blur carries no action; reports arrive only on real
+   transitions — a session that never leaves its tab sees no events and needs
+   none); omp_pet.py apply_frame clears that conn's attention. kitty 0.48
+   delivers ESC[I/ESC[O on plain tab switches (verified with an isolated
+   kitty + own rc socket); terminals/multiplexers without 1004 stay silent.
+   New omp sessions only (extension loads at start) + daemon restart for
+   python changes.
+
+   Background-session hierarchy (2026-08-29, second half): task subagents
+   re-bind pet-bridge's factory in the PARENT process (executor forwards
+   preloadedPreparedExtensions; hasUI=false — their approvals auto-deny),
+   so every background task used to bridge as a FLAT sibling session whose
+   done/error pose could never be cleared (no tab to switch to). Bridge now
+   marks hello with `bg: !ctx.hasUI` (both initial and reconnect identify)
+   and bg bridges never subscribe to focus. omp_pet.py: bg views have
+   attention=None (never poses/bubbles; panel-visible ambient state only —
+   done/error show as "后台 · 完成/出错" rows), primary() prefers foreground
+   sessions for the working pose (bg working shows only when no fg session
+   runs), total_live() counts foreground pids only (bg views share the
+   parent's pid — the ×N badge no longer inflates during task fan-outs),
+   and supervision_rows nests bg views under the same-pid foreground view
+   (↳ + dim, sorted by recency; orphan bg — print runs, dropped parent conn
+   — get a top-level 后台 row). Note: ALL task subagents run in-process
+   ("isolation" is git-worktree isolation, not process isolation). Verified:
+   daemon model driver (attention gating, nesting, badge, primary
+   preference), bun fake-pi driver (hello bg flag both ways + bg settle),
+   PTY focus tests re-run green.
+
 13. `fix(tui)` kitty per-screen graphics store retransmit — kitty 0.48.2 keeps
    one graphics store per screen buffer: `a=t` data sent on the main screen is
    ENOENT to alt-screen placements (and vice versa; neither store is destroyed

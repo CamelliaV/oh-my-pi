@@ -10,14 +10,23 @@ whose pose follows the aggregate state.
 Design contract (KDE notifications are disabled globally on this machine —
 the pet IS the notification channel):
   - working states (thinking/tool/retry/compact) are calm ambient motion;
-  - attention states are PERSISTENT until clicked or superseded:
+  - attention states are PERSISTENT until clicked, superseded, or SEEN:
       settle ok   → celebrate ("✓ 完成")   — replaces completion notify
       settle err  → alert    ("✗ 出错")     — replaces error notify
       waiting     → ask      ("? 等待审批") — replaces ask notify
+      a "focus" frame (terminal tab/window regained focus — DEC 1004 report
+      forwarded by pet-bridge) clears just that session's attention: the
+      user switched to the session and has seen the pose.
   - idle long enough → sleep pose with floating zzz.
+  - background sessions (hello with bg — task subagents re-binding
+    pet-bridge inside the parent process, print runs) are ambient-only:
+    never attention poses, never the ×N badge, nested under their parent
+    (same pid) in the supervision panel. Their outcome is the parent's
+    business, not a user notification.
 
 Interaction:
-  click = acknowledge attention / pet the cat   drag = move (re-anchors)
+  click = acknowledge ALL attention / pet the cat   drag = move (re-anchors)
+  switch to a session's terminal tab = acknowledge THAT session (auto)
   right-click = context menu → 退出 (quit the daemon)
   pokes arrive from pet_poke tool, /pet command, alt+p → bubble + wiggle.
 
@@ -161,6 +170,7 @@ class SessionView:
         self.tool: str | None = None
         self.detail: str | None = None
         self.pid: int | None = None
+        self.bg = False  # background session (task subagent / print run)
         self.since = time.monotonic()        # age of current state frame
         self.turn_since: float | None = None  # start of the RUNNING TURN
 
@@ -172,7 +182,14 @@ class SessionView:
 
     @property
     def attention(self) -> str | None:
-        """States that persist until acknowledged — the notification replacement."""
+        """States that persist until acknowledged — the notification replacement.
+
+        Background sessions never hold attention: they are internal progress
+        the user cannot attend to directly (no tab to switch to), and their
+        outcome surfaces through the parent session's own state.
+        """
+        if self.bg:
+            return None
         return self.state if self.state in ("waiting", "done", "error") else None
 
 
@@ -232,6 +249,7 @@ class PetModel:
                 view.pid = int(frame.get("pid") or 0) or None
             except (TypeError, ValueError):
                 view.pid = None
+            view.bg = bool(frame.get("bg", False))
             self.sessions[conn_id] = view
         elif kind == "state":
             view = self.sessions.get(conn_id)
@@ -256,6 +274,14 @@ class PetModel:
                 # An esc-abort is intentional — calm idle, not an alert pose.
                 view.state = "aborted" if aborted else ("done" if ok else "error")
                 view.since = time.monotonic()
+        elif kind == "focus":
+            # Terminal focus report (DEC 1004): the user switched back to
+            # this session's tab/window and has seen the attention pose —
+            # the per-session analogue of acknowledge_all's click.
+            view = self.sessions.get(conn_id)
+            if view and (view.attention or view.state == "aborted"):
+                view.state = "idle"
+                view.since = time.monotonic()
         elif kind == "bye":
             self.sessions.pop(conn_id, None)
         return False
@@ -270,38 +296,76 @@ class PetModel:
         return True
 
     def total_live(self) -> int:
+        """Foreground session count for the ×N badge. Background views run
+        inside their parent's process (task subagents) and must not inflate
+        it; orphan background pids (print runs) still count as live work."""
         pids = set(self.system_pids)
-        pids |= {v.pid for v in self.sessions.values() if v.pid}
-        return max(len(pids), len(self.sessions))
+        pids |= {v.pid for v in self.sessions.values() if v.pid and not v.bg}
+        foreground = [v for v in self.sessions.values() if not v.bg]
+        return max(len(pids), len(foreground))
 
-    def supervision_rows(self) -> list[tuple[str, str, str]]:
-        """(glyph, label, detail) per session, bridged first then /proc-only."""
+    def supervision_rows(self) -> list[tuple[str, str, str, bool]]:
+        """(glyph, label, detail, nested) rows for the hover panel.
+
+        Foreground sessions sort by attention priority; background sessions
+        (task subagents bridging from the same pid) nest under their parent.
+        An orphan background session (print run, or its parent conn dropped)
+        gets a top-level row marked 后台.
+        """
         now = time.monotonic()
-        rows: list[tuple[int, str, str, str]] = []
-        bridged: set[int] = set()
-        for view in self.sessions.values():
-            if view.pid:
-                bridged.add(view.pid)
+        foreground = [v for v in self.sessions.values() if not v.bg]
+        background = [v for v in self.sessions.values() if v.bg]
+        fg_by_pid = {v.pid: v for v in foreground if v.pid}
+        children: dict[int, list[SessionView]] = {}
+        orphans: list[SessionView] = []
+        for view in background:
+            parent = fg_by_pid.get(view.pid) if view.pid else None
+            if parent is not None:
+                children.setdefault(parent.pid, []).append(view)
+            else:
+                orphans.append(view)
+
+        def row_for(view: SessionView, nested: bool) -> tuple[int, str, str, str, bool]:
             glyph = STATE_GLYPHS.get(view.state, "·")
             clock = view.clock(now)
             if view.state == "waiting" and view.tool == "ask":
                 detail = f"等待回答 · {clock}"
             elif view.state in WORKING_STATES or view.state == "waiting":
                 detail = f"{view.tool or STATE_LABELS.get(view.state, view.state)} · {clock}"
-            elif view.state in ("done", "error"):
-                detail = view.label
+            elif view.state == "done":
+                detail = "后台 · 完成" if nested else view.label
+            elif view.state == "error":
+                detail = "后台 · 出错" if nested else view.label
+            elif view.state == "aborted":
+                detail = "后台 · 中止" if nested else "空闲"
             else:
                 detail = "空闲"
+            if nested and (view.state in WORKING_STATES or view.state == "waiting"):
+                detail = f"后台 · {detail}"
             prio = {"waiting": 0, "error": 1, "done": 2}.get(
                 view.attention,
                 3 if view.state in WORKING_STATES else 4,
             )
-            rows.append((prio, glyph, view.label, detail))
+            return (prio, glyph, view.label, detail, nested)
+
+        def prio_of(view: SessionView) -> int:
+            return {"waiting": 0, "error": 1, "done": 2}.get(
+                view.attention,
+                3 if view.state in WORKING_STATES else 4,
+            )
+
+        rows: list[tuple[int, str, str, str, bool]] = []
+        for view in sorted(foreground, key=prio_of):
+            rows.append(row_for(view, False))
+            for child in sorted(children.get(view.pid or -1, []), key=lambda v: -v.since):
+                rows.append(row_for(child, True))
+        for view in sorted(orphans, key=lambda v: -v.since):
+            rows.append(row_for(view, True))
+        bridged = {v.pid for v in self.sessions.values() if v.pid}
         for pid, proc in sorted(self.system_pids.items()):
             if pid not in bridged:
-                rows.append((5, "○", f"pid {pid}", f"{proc['proj']} · 未桥接"))
-        rows.sort(key=lambda r: r[0])
-        return [(g, l, d) for _p, g, l, d in rows]
+                rows.append((5, "○", f"pid {pid}", f"{proc['proj']} · 未桥接", False))
+        return [(g, l, d, n) for _p, g, l, d, n in rows]
 
     def add_poke_bubble(self, text: str, ttl: float = 3.5) -> None:
         self.poke_bubbles.append((text, time.monotonic() + ttl))
@@ -333,10 +397,17 @@ class PetModel:
         )
         if attentive:
             return attentive[0].attention, attentive[0]
-        working = sorted((v for v in views if v.state in WORKING_STATES), key=lambda v: -v.since)
+        working = sorted(
+            (v for v in views if v.state in WORKING_STATES and not v.bg),
+            key=lambda v: -v.since,
+        )
+        if not working:
+            # No foreground session is running — background work (a queued
+            # task subagent, a print run) is still worth showing ambiently.
+            working = sorted((v for v in views if v.state in WORKING_STATES), key=lambda v: -v.since)
         if working:
             return None, working[0]
-        views.sort(key=lambda v: -v.since)
+        views.sort(key=lambda v: (v.bg, -v.since))
         return None, views[0]
 
     def live_count(self) -> int:
@@ -442,12 +513,16 @@ class PetArea(Gtk.DrawingArea):
         self._text(ctx, f"会话监管 · {total}", w / 2, 12, 11.5, COL_BUBBLE_FG,
                    align_center=True, bold=True)
         y = 34.0
-        for glyph, label, detail in rows:
+        for glyph, label, detail, nested in rows:
             color = COL_OK if glyph == "✓" else COL_ERR if glyph == "✗" else (
                 COL_ASK if glyph == "?" else COL_DIM
             )
-            self._text(ctx, glyph, 14, y, 10.5, color)
-            self._text(ctx, label, 32, y, 10.5, COL_BUBBLE_FG, max_w=w * 0.40)
+            if nested:
+                self._text(ctx, "↳", 22, y, 10.5, COL_DIM)
+                self._text(ctx, label, 40, y, 10.5, COL_DIM, max_w=w * 0.36)
+            else:
+                self._text(ctx, glyph, 14, y, 10.5, color)
+                self._text(ctx, label, 32, y, 10.5, COL_BUBBLE_FG, max_w=w * 0.40)
             self._text(ctx, detail, w - 14, y, 9.5, COL_DIM,
                        align_right=True, max_w=w * 0.44)
             y += 16.0

@@ -15,6 +15,7 @@ import {
 	generateClaudeCloakingUserId,
 	isClaudeCloakingUserId,
 	mapStainlessArch,
+	resolveAnthropicMetadataUserId,
 	streamAnthropic,
 	stripClaudeToolPrefix,
 } from "@oh-my-pi/pi-ai/providers/anthropic";
@@ -1055,6 +1056,21 @@ describe("Anthropic request fingerprint alignment", () => {
 		expect(isClaudeCloakingUserId(userId)).toBe(true);
 	});
 
+	it("fills a missing device_id into OAuth-shaped JSON user_id envelopes", () => {
+		// sub2api-style CC-client relays reject {"session_id"}-only envelopes.
+		const sessionId = "01987650-1234-7abc-8def-90123456789f";
+		const resolved = resolveAnthropicMetadataUserId(JSON.stringify({ session_id: sessionId }), true);
+		const parsed = JSON.parse(resolved!) as { device_id: string; session_id: string; account_uuid?: string };
+		expect(parsed.device_id).toMatch(/^[0-9a-f]{64}$/);
+		expect(parsed.session_id).toBe(sessionId);
+		expect(parsed.account_uuid).toBeUndefined();
+	});
+
+	it("leaves JSON user_id envelopes that already carry device_id untouched", () => {
+		const envelope = JSON.stringify({ session_id: "abc", device_id: "ff".repeat(32) });
+		expect(resolveAnthropicMetadataUserId(envelope, true)).toBe(envelope);
+	});
+
 	it("scopes derived Claude device IDs to the account when known", () => {
 		const installId = "test-install-id";
 		const accountId = "12345678-1234-1234-1234-1234567890ab";
@@ -1239,18 +1255,21 @@ describe("Anthropic request fingerprint alignment", () => {
 		expect(payload.metadata?.user_id).toBe(userId);
 	});
 
-	it("preserves a minimal { session_id } JSON metadata.user_id for OAuth requests", async () => {
-		const userId = JSON.stringify({ session_id: "0190fb1e-0000-7000-8000-000000000001" });
+	it("enriches a minimal { session_id } JSON metadata.user_id with device_id for OAuth requests", async () => {
+		// CC-fingerprinting relays (sub2api claude_code_only) reject session_id-only
+		// envelopes; real Claude Code always pairs session_id with a device_id.
 		const payload = (await captureAnthropicPayload(
 			ANTHROPIC_MODEL,
 			{
 				systemPrompt: ["Stay concise."],
 				messages: [{ role: "user", content: "Hi", timestamp: Date.now() }],
 			},
-			{ metadata: { user_id: userId } },
+			{ metadata: { user_id: JSON.stringify({ session_id: "0190fb1e-0000-7000-8000-000000000001" }) } },
 		)) as { metadata?: { user_id?: string } };
 
-		expect(payload.metadata?.user_id).toBe(userId);
+		const parsed = JSON.parse(payload.metadata?.user_id ?? "{}") as { session_id: string; device_id: string };
+		expect(parsed.session_id).toBe("0190fb1e-0000-7000-8000-000000000001");
+		expect(parsed.device_id).toMatch(/^[0-9a-f]{64}$/);
 	});
 
 	it("replaces JSON metadata.user_id missing session_id for OAuth requests", async () => {

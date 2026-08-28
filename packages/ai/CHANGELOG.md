@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- Fixed CC-client-fingerprinting Anthropic relays (sub2api `claude_code_only` groups) rejecting OAuth-cloaked requests: a caller-supplied JSON `metadata.user_id` envelope without `device_id` is now enriched with a stable install-derived device id instead of being forwarded as-is.
+
 ## [18.0.9] - 2026-08-28
 
 ### Fixed

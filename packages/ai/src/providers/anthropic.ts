@@ -733,6 +733,32 @@ function generateClaudeJsonUserId(sessionId?: string, accountId?: string): strin
 }
 
 /**
+ * Real Claude Code always pairs `session_id` with a non-empty `device_id` in
+ * the JSON `metadata.user_id` envelope, and CC-client-fingerprinting relays
+ * (sub2api-style `claude_code_only` groups) reject envelopes where `device_id`
+ * is empty. When an OAuth-shaped caller supplies session-stable JSON without
+ * one, fill it in from the install id (scoped by the envelope's own
+ * `account_uuid` when known) instead of regenerating the whole id, which would
+ * churn backend session attribution.
+ */
+function enrichClaudeJsonUserIdDeviceId(userId: string, accountId?: string): string {
+	if (userId.length === 0 || userId[0] !== "{") return userId;
+	let parsed: unknown;
+	try {
+		parsed = JSON.parse(userId);
+	} catch {
+		return userId;
+	}
+	if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return userId;
+	const obj = parsed as Record<string, unknown>;
+	if (typeof obj.device_id === "string" && obj.device_id.length > 0) return userId;
+	obj.device_id = deriveClaudeDeviceIdFromInstallId(
+		typeof obj.account_uuid === "string" && obj.account_uuid.length > 0 ? obj.account_uuid : accountId,
+	);
+	return JSON.stringify(obj);
+}
+
+/**
  * Resolve the `metadata.user_id` field for an Anthropic Messages request.
  *
  * For API-key tokens, an explicit caller-supplied `userId` is forwarded
@@ -751,7 +777,7 @@ export function resolveAnthropicMetadataUserId(
 ): string | undefined {
 	if (typeof userId === "string") {
 		if (!isOAuthToken || isClaudeCloakingUserId(userId) || isClaudeJsonUserId(userId)) {
-			return userId;
+			return isOAuthToken ? enrichClaudeJsonUserIdDeviceId(userId, accountId) : userId;
 		}
 	}
 

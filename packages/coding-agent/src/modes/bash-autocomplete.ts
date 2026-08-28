@@ -251,25 +251,19 @@ export class BashAutocompleteProvider implements AutocompleteProvider {
 			if (signal?.aborted) return null;
 			const pathEnv = this.#deps.pathEnv ?? process.env.PATH ?? "";
 			const commands = await loadPathCommands(pathEnv);
-			const aliases = this.#deps.aliases ?? (await currentAliases());
+			const raced = this.#deps.aliases ?? (await currentAliases());
 			if (signal?.aborted) return null;
-
-			const lowerToken = commandToken.toLowerCase();
-			const items: BashCommandItem[] = [];
-			const seen = new Set<string>();
-			if (aliases) {
-				for (const name of [...aliases.keys()].sort((a, b) => a.localeCompare(b))) {
-					if (!name.toLowerCase().startsWith(lowerToken)) continue;
-					seen.add(name);
-					items.push({ value: name, label: name, description: aliases.get(name), bashCommandCompletion: true });
-				}
+			let items = this.#commandItems(commandToken, commands, raced);
+			if (items === null && !this.#deps.aliases) {
+				// Nothing matched with the (possibly still-loading) aliases: wait
+				// for the full alias load instead of showing an empty popup —
+				// an alias-only prefix must not silently miss its first Tab.
+				const aliases = await loadShellAliases();
+				if (signal?.aborted) return null;
+				items = this.#commandItems(commandToken, commands, aliases);
 			}
-			for (const name of commands) {
-				if (seen.has(name) || !name.toLowerCase().startsWith(lowerToken)) continue;
-				items.push({ value: name, label: name, bashCommandCompletion: true });
-			}
-			if (items.length === 0) return null;
-			return { items: items.slice(0, MAX_COMMAND_ITEMS), prefix: commandToken };
+			if (items === null) return null;
+			return { items, prefix: commandToken };
 		}
 		if (!isBashBuffer(lines)) {
 			return this.#inner.getForceFileSuggestions?.(lines, cursorLine, cursorCol, signal) ?? null;
@@ -285,6 +279,9 @@ export class BashAutocompleteProvider implements AutocompleteProvider {
 	getInlineHint(lines: string[], cursorLine: number, cursorCol: number): string | null {
 		if (!isBashBuffer(lines)) return this.#inner.getInlineHint?.(lines, cursorLine, cursorCol) ?? null;
 		ensureShellHistory();
+		// Also start the alias load here so the first Tab in bash mode usually
+		// finds it finished instead of racing the 300ms budget.
+		if (!this.#deps.aliases) void loadShellAliases();
 		const fragment = this.#trailingCommandFragment(lines, cursorLine, cursorCol);
 		if (fragment === null) return null;
 		const matchKey = fragment.trimStart();
@@ -319,6 +316,25 @@ export class BashAutocompleteProvider implements AutocompleteProvider {
 		if (this.#deps.shellHistoryRecords) return this.#deps.shellHistoryRecords;
 		ensureShellHistory();
 		return shellHistorySnapshot;
+	}
+
+	/** Alias-first command-name candidates for `token`, or null when nothing matches. */
+	#commandItems(token: string, commands: string[], aliases: Map<string, string> | null): BashCommandItem[] | null {
+		const lowerToken = token.toLowerCase();
+		const items: BashCommandItem[] = [];
+		const seen = new Set<string>();
+		if (aliases) {
+			for (const name of [...aliases.keys()].sort((a, b) => a.localeCompare(b))) {
+				if (!name.toLowerCase().startsWith(lowerToken)) continue;
+				seen.add(name);
+				items.push({ value: name, label: name, description: aliases.get(name), bashCommandCompletion: true });
+			}
+		}
+		for (const name of commands) {
+			if (seen.has(name) || !name.toLowerCase().startsWith(lowerToken)) continue;
+			items.push({ value: name, label: name, bashCommandCompletion: true });
+		}
+		return items.length > 0 ? items.slice(0, MAX_COMMAND_ITEMS) : null;
 	}
 
 	/**

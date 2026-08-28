@@ -176,6 +176,7 @@ describe("BashAutocompleteProvider ghost hints", () => {
 		const provider = new BashAutocompleteProvider(inner, {
 			sessionBashCommands: () => session,
 			shellHistoryRecords: shell,
+			aliases: new Map(),
 		});
 		return { provider, inner };
 	}

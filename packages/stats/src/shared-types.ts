@@ -27,7 +27,7 @@ export interface AggregatedStats {
 	totalCacheWriteTokens: number;
 	/** Provider-reported prompt cache reads / (input + cache reads + cache writes); null when unavailable. */
 	cacheRate: number | null;
-	/** Requests with complete provider cache telemetry used in cacheRate. */
+	/** Requests with provider-reported cache reads used in cacheRate (write telemetry is not required). */
 	cacheTelemetryRequests: number;
 	/** Requests carrying conversation prompt tokens, including telemetry-unavailable requests. */
 	cacheEligibleRequests: number;

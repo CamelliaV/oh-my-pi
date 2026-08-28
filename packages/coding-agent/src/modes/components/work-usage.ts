@@ -212,8 +212,16 @@ export class WorkUsageAccumulator {
 		const promptTokens = usage.input + usage.cacheRead + usage.cacheWrite;
 		if (promptTokens > 0) {
 			this.#cacheEligibleRequests++;
-			const telemetry = usage.cacheTelemetry;
-			if (telemetry?.read === "reported" && telemetry.write !== "unavailable") {
+			// Cache-write telemetry must not gate the read rate: Anthropic-wire
+			// endpoints that omit cache_creation_input_tokens (implicit prefix
+			// caching — new-api relays serving GLM) still report every read
+			// token, so input+cacheRead is the whole prompt there. Absent
+			// telemetry plus a nonzero cacheRead also proves the read bucket
+			// was reported, covering messages persisted before the annotation
+			// existed; an explicit "unavailable" stays excluded.
+			const cacheReadReported =
+				usage.cacheTelemetry?.read === "reported" || (usage.cacheTelemetry === undefined && usage.cacheRead > 0);
+			if (cacheReadReported) {
 				this.#cacheReportedRequests++;
 				this.#cacheReadTokens += usage.cacheRead;
 				this.#cachePromptTokens += promptTokens;

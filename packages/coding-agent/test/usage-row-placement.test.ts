@@ -454,6 +454,46 @@ describe("work usage accounting", () => {
 		expect(formatWorkUsageRow(snapshot)).toContain("cost N/A (1)");
 	});
 
+	it("weights cache reads for Anthropic-wire relays that omit cache-creation telemetry", () => {
+		const usage = new WorkUsageAccumulator();
+		usage.add(
+			workAssistant({
+				timestamp: 1_000,
+				duration: 250,
+				input: 4_547,
+				cacheRead: 41_024,
+				cacheWrite: 0,
+				cacheTelemetry: { read: "reported", write: "unavailable" },
+				cost: 0.1,
+				costSource: "provider",
+			}),
+		);
+
+		const snapshot = usage.flush()!;
+		expect(snapshot.cacheRate).toBe(41_024 / (4_547 + 41_024));
+		expect(snapshot.cacheReportedRequests).toBe(1);
+		expect(formatWorkUsageRow(snapshot)).toContain("cache 90.0% (1/1)");
+	});
+
+	it("counts persisted pre-telemetry requests with nonzero cache reads", () => {
+		const usage = new WorkUsageAccumulator();
+		usage.add(
+			workAssistant({
+				timestamp: 1_000,
+				duration: 250,
+				input: 500,
+				cacheRead: 1_500,
+				cacheWrite: 0,
+				cost: 0.1,
+				costSource: "provider",
+			}),
+		);
+
+		const snapshot = usage.flush()!;
+		expect(snapshot.cacheRate).toBe(0.75);
+		expect(snapshot.cacheReportedRequests).toBe(1);
+	});
+
 	it("counts native V2 compaction as a model request in its user work", () => {
 		const usage = new WorkUsageAccumulator();
 		usage.begin(1_000);

@@ -104,18 +104,15 @@ interface ModelStatsRow extends AggregatedStatsRow {
 
 const CACHE_TELEMETRY_SELECT = `
 	SUM(CASE
-		WHEN cache_read_status = 'reported'
-			AND cache_write_status IN ('reported', 'not-applicable')
+		WHEN (cache_read_status = 'reported' OR (cache_read_status IS NULL AND cache_read_tokens > 0))
 			AND input_tokens + cache_read_tokens + cache_write_tokens > 0
 		THEN cache_read_tokens ELSE 0 END) as reported_cache_read_tokens,
 	SUM(CASE
-		WHEN cache_read_status = 'reported'
-			AND cache_write_status IN ('reported', 'not-applicable')
+		WHEN (cache_read_status = 'reported' OR (cache_read_status IS NULL AND cache_read_tokens > 0))
 			AND input_tokens + cache_read_tokens + cache_write_tokens > 0
 		THEN input_tokens + cache_read_tokens + cache_write_tokens ELSE 0 END) as reported_cache_prompt_tokens,
 	SUM(CASE
-		WHEN cache_read_status = 'reported'
-			AND cache_write_status IN ('reported', 'not-applicable')
+		WHEN (cache_read_status = 'reported' OR (cache_read_status IS NULL AND cache_read_tokens > 0))
 			AND input_tokens + cache_read_tokens + cache_write_tokens > 0
 		THEN 1 ELSE 0 END) as cache_telemetry_requests,
 	SUM(CASE WHEN input_tokens + cache_read_tokens + cache_write_tokens > 0 THEN 1 ELSE 0 END)

@@ -370,6 +370,18 @@ describe("stats cache metrics", () => {
 		expect(overall.cacheEligibleRequests).toBe(2);
 	});
 
+	it("counts pre-telemetry requests with nonzero cache reads", async () => {
+		await initDb();
+		const legacy = createAnthropicCacheStats("legacy", 500, 0);
+		delete legacy.usage.cacheTelemetry;
+		insertMessageStats([legacy]);
+
+		const overall = getOverallStats();
+		expect(overall.cacheRate).toBeCloseTo(500 / 1_000, 8);
+		expect(overall.cacheTelemetryRequests).toBe(1);
+		expect(overall.cacheEligibleRequests).toBe(1);
+	});
+
 	it("returns N/A when no request has complete provider cache telemetry", async () => {
 		await initDb();
 		const unavailable = createAnthropicCacheStats("unavailable-only", 0, 0);

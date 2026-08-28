@@ -346,7 +346,9 @@ export class BashAutocompleteProvider implements AutocompleteProvider {
 		if (!isBashBuffer(lines) || cursorLine !== 0) return null;
 		const parsed = parseBashLine(lines[0] ?? "");
 		if (!parsed || cursorCol < parsed.prefixEnd) return null;
-		const commandBeforeCursor = (lines[0] ?? "").slice(parsed.prefixEnd, cursorCol);
+		// Tolerate the `! cmd` spelling (the submit path trims the same way):
+		// a leading space is still the command-name position.
+		const commandBeforeCursor = (lines[0] ?? "").slice(parsed.prefixEnd, cursorCol).trimStart();
 		if (/\s/.test(commandBeforeCursor) || isPathLikeToken(commandBeforeCursor)) return null;
 		return commandBeforeCursor;
 	}

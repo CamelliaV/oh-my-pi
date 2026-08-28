@@ -108,6 +108,15 @@ describe("BashAutocompleteProvider dispatch", () => {
 		expect(aliasResult?.items).toEqual(expectedAliasItems);
 	});
 
+	test("`! cmd` with a space after the prefix still completes the command name", async () => {
+		const { provider } = await makeProvider();
+		const result = await provider.getForceFileSuggestions(["!ml"], 0, 4);
+		expect(result?.prefix).toBe("ml");
+		expect(result?.items.map(item => item.value)).toEqual(["mls"]);
+		const excluded = await provider.getForceFileSuggestions(["!! ml"], 0, 5);
+		expect(excluded?.items.map(item => item.value)).toEqual(["mls"]);
+	});
+
 	test("an empty command token lists commands without exploding", async () => {
 		const { provider } = await makeProvider();
 		const result = await provider.getForceFileSuggestions(["!"], 0, 1);

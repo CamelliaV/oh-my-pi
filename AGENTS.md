@@ -57,7 +57,11 @@ Unless user tells you exactly what to write:
 Before writing a helper, check whether one already exists — `packages/coding-agent/src/utils/`, `@oh-my-pi/pi-utils`, `@oh-my-pi/pi-tui`, and the domain modules next to your callsite. This applies to **everything**: VCS wrappers, formatting/truncation/path-display helpers, image handling, clipboard, streams, temp files, caching. The central versions carry hardening a fresh copy always loses (timeouts, output caps, non-interactive env, lock avoidance, caching, TUI sanitization).
 
 - Search first: `grep` for the operation before implementing it. Two implementations of the same thing is a bug even when both work.
-- Examples of the pattern: `src/utils/git.ts` and `src/utils/jj.ts` are the only sanctioned way to run git/jj (`import * as git from "../utils/git"` — never hand-spawn via `$`/`Bun.spawn`); rendering goes through the helpers in TUI Sanitization below (`replaceTabs`, `truncateToWidth`, `shortenPath`, `PREVIEW_LIMITS`) rather than ad-hoc string math.
+- Examples of the pattern: git/jj operations go through the native
+  `@oh-my-pi/pi-natives/vcs` binding (`import * as vcs from "@oh-my-pi/pi-natives/vcs"`,
+  then `vcs.git(cwd)` / `vcs.repo(cwd)` handles — upstream v18.0.9 deleted
+  `src/utils/git.ts`/`jj.ts`); rendering goes through the helpers in TUI Sanitization below
+  (`replaceTabs`, `truncateToWidth`, `shortenPath`, `PREVIEW_LIMITS`) rather than ad-hoc string math.
 - Missing capability? Extend the central helper (new option, new sub-function on the namespace) and call it — don't fork its logic locally.
 
 ## Bun Over Node
@@ -390,7 +394,7 @@ patch series by hand/cherry-pick.
    PTY probes for extensions (`/tools`) — debug sessions MUST use `--no-session`.
 
 
-### Patch list (v18.0.7 baseline; merged from v17.3.5 fork on 2026-08-27)
+### Patch list (v18.0.9 baseline; merged 2026-08-28 from v18.0.7 fork, merge commit ae8456d)
 
 1. `feat(tui)` user message bubble rounded frame — `user-message.ts` Box +
    `theme.boxRound`, `borderAccent`, `setIgnoreTight(true)`; OSC 133 markers
@@ -399,13 +403,22 @@ patch series by hand/cherry-pick.
    `openai-reasoning-fallback.ts` 不支持/请使用 patterns; guard keeps a
    still-allowed effort from downgrading (drop field = null).
 3. `fix(ai)` misrouted-relay [1210] auto-retry, 3 layers —
-   `fetch-retry.ts` shouldRetryResponse gates non-transient statuses;
-   `openai-http.ts` opts 400+[1210]/始终思考 bodies into the retry loop;
+   `fetch-retry.ts` dedicated `retryNonRetryableResponse` option opts
+   non-retryable bodies into the retry loop (2xx never consults it — clone()
+   would drain streaming bodies; ordinary 400s surface immediately so the
+   reasoning-effort fallback layer owns them); `openai-http.ts` passes that
+   opt-in for 400+[1210]/始终思考 bodies while `shouldRetryResponse` stays
+   upstream's exact admission-rejection opt-out (v18.0.7 had overloaded the one
+   gate — every OpenAI-wire 200 was transport-retried with backoff and its
+   stream drained before return; caught by upstream v18.0.9's
+   openai-reasoning-effort-fallback tests, fixed in 61c7f8b);
    `flags.ts` classifyText + `retryable.ts` mark the fingerprint Transient
-   (turn-level auto-retry with retry budget/UI); `openai-completions.ts`
-   strips `<think>` history once on always-thinking 400 (helpers:
+   (turn-level auto-retry with retry budget/UI); `openai-completions.ts` strips
+   `<think>` history once on always-thinking 400 (helpers:
    isAlwaysThinkingRejection / stripThinkTagsFromCompletionsParams /
-   completionsParamsContainThinkTags).
+   completionsParamsContainThinkTags). Regression driver:
+   `test/reasoning-fallback-zh.ts` (resolver cases + transport cases: [1210]
+   retries, plain 400 and 200 do not).
 4. `feat(tui)` Ctrl+R rename in session picker — session-selector ctrl+r
    branch + HookInputComponent dialog-swap; persistence via
    `FileSessionStorage.updateSessionTitle` (source "user"); initialQuery
@@ -416,11 +429,16 @@ patch series by hand/cherry-pick.
 6. `feat(cli)` fuzzy `--resume <term>` — `fuzzyMatchResumableSessions`
    (title+firstMessage, substring>subsequence, local>global, dedup); single
    hit resumes directly, several open prefilled picker; wired in main.ts.
-7. `feat(tui)` turn-level token usage aggregate — `turn-usage.ts`
-   TurnUsageAccumulator + dim aggregate row (`⏱ turn N req ⤵ in ⤴ out 💾
-   cache ⚡ span`); flushed on next user message / transcript end; wired into
-   chat-transcript-builder, ui-helpers rebuild, event-controller live path.
-   Esc-aborted requests count (provider billed them).
+7. `feat(tui)` turn-level token usage aggregate — work-usage machinery in
+   `work-usage.ts` (WorkUsageAccumulator/SessionUsageAccumulator) + dim
+   aggregate row (`⏱ turn N req ⤵ in ⤴ out 💾 cache ⚡ span`); flushed on next
+   user message / transcript end; wired into chat-transcript-builder,
+   ui-helpers rebuild, event-controller live path. Esc-aborted requests count
+   (provider billed them). v18.0.9 merge (ae8456d): upstream's per-row turn
+   elapsed time (`display.showTurnTime`, `turnElapsedMs`, `#turnStartedAt`)
+   coexists — union at all five call sites — and its `attribution !== "agent"`
+   guard is adopted into `workUsage.begin` so an advisor tool-loop redirect no
+   longer splits one work into two.
 8. `feat(web)` codex-affinity search chain gating — codex search follows the
    running model's family: a GPT-family active model (api
    codex-responses/responses/completions + GPT id) prepends the codex provider
@@ -559,3 +577,12 @@ patch series by hand/cherry-pick.
    user as visual oracle. PTY pyte traps: pyte lacks APC/colon-SGR support
    (prints payload tails as text — artifact, not evidence); pyte cell data can
    be multi-char (combining diacritics) — width checks must handle len>1.
+
+14. `feat(tui)` read-only Workspace Inspector — `workspace-inspector/`
+   (component.ts, index.ts, git-snapshot.ts). Ported to the native vcs binding
+   in the v18.0.9 merge (ae8456d): `vcs.git(cwd)` handle;
+   statusPorcelain/head/numstat/diffText/diffNoIndex/logOnelines/showCommit;
+   the old `allowFailure` diff option became caught `VcsError` (unborn HEAD →
+   empty diff/numstat); branch label `head.branch ?? head.refName ?? "HEAD"`.
+   Module-level smoke verified status/head/numstat/history/commitDiff plus
+   modified (diffText) and untracked (diffNoIndex) paths.

@@ -160,6 +160,15 @@ export interface FetchWithRetryOptions extends RequestInit {
 	 */
 	shouldRetryResponse?: (response: Response, bodyText: string, attempt: number) => boolean | Promise<boolean>;
 	/**
+	 * Opt-IN retry gate for statuses `isRetryableStatus` rejects (e.g. 400).
+	 * Distinct from `shouldRetryResponse` (an opt-OUT for retryable statuses), so
+	 * gates written for one semantics can never leak into the other: success
+	 * responses never consult it, and only a body the caller explicitly names
+	 * enters the retry loop — misrouted relay nodes answer with misleading 400s
+	 * whose message text is the signal.
+	 */
+	retryNonRetryableResponse?: (response: Response, bodyText: string, attempt: number) => boolean | Promise<boolean>;
+	/**
 	 * Bun extension forwarded verbatim to the underlying `fetch` call. `false`
 	 * disables Bun's native ~300s pre-response timeout (callers that own a
 	 * configurable first-event/idle watchdog or an external `AbortSignal`
@@ -191,6 +200,7 @@ export async function fetchWithRetry(
 		defaultDelayMs,
 		prepareInit,
 		shouldRetryResponse,
+		retryNonRetryableResponse,
 		fetch: fetchImpl = fetch,
 		timeout = false,
 		...baseInit
@@ -226,11 +236,12 @@ export async function fetchWithRetry(
 
 		if (!isRetryableStatus(response.status)) {
 			// Non-transient statuses (e.g. 400) are terminal unless the caller's
-			// gate explicitly opts the body into the retry loop — misrouted relay
-			// nodes answer with misleading 400s whose message text is the signal.
-			if (!shouldRetryResponse) return response;
+			// dedicated opt-in gate names the body. Success responses return
+			// before the clone: reading a streaming body to text would stall
+			// first-token latency until the whole stream drained.
+			if (response.ok || !retryNonRetryableResponse) return response;
 			const optInBody = await response.clone().text();
-			if (!(await shouldRetryResponse(response, optInBody, attempt))) return response;
+			if (!(await retryNonRetryableResponse(response, optInBody, attempt))) return response;
 		}
 		if (attempt + 1 >= maxAttempts) return response;
 

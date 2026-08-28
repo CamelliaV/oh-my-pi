@@ -97,13 +97,15 @@ export async function postOpenAIStream<TEvent>(init: OpenAIStreamRequestInit): P
 		maxAttempts: DEFAULT_MAX_ATTEMPTS,
 		// A proxy concurrency-admission 429 (`rate_limit_type: max_parallel_requests`)
 		// surfaces immediately instead of being slept-and-retried here; session
-		// recovery owns its backoff/fallback (issue #8854). Misrouted relay nodes
-		// answer with a misleading 400 naming thinking-control semantics the request
-		// never set (code 1210 该模型始终思考…); identical replays flip 200/400 at
-		// random, so those 400s explicitly stay in the retry/backoff loop.
-		shouldRetryResponse: (response, bodyText) =>
-			!isConcurrencyAdmissionRejection(response, bodyText) ||
-			(response.status === 400 && /\[1210\]|该模型始终思考|不支持关闭思考/.test(bodyText)),
+		// recovery owns its backoff/fallback (issue #8854).
+		shouldRetryResponse: (response, bodyText) => !isConcurrencyAdmissionRejection(response, bodyText),
+		// Misrouted relay nodes answer with a misleading 400 naming thinking-control
+		// semantics the request never set (code 1210 该模型始终思考…); identical
+		// replays flip 200/400 at random, so those 400s — and only those — enter the
+		// transport retry loop. Ordinary 400s surface immediately for the
+		// reasoning-effort fallback layer to own.
+		retryNonRetryableResponse: (response, bodyText) =>
+			response.status === 400 && /\[1210\]|该模型始终思考|不支持关闭思考/.test(bodyText),
 		// Bun's native fetch enforces a hard ~300s pre-response timeout (issue #2422).
 		// Cold large-context streams legitimately exceed it; the caller's
 		// `firstEventTimeoutMs`/`AbortSignal` already govern stuck requests.

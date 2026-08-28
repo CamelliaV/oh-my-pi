@@ -18,6 +18,7 @@ const authStorage = {
 } as AuthStorage;
 const originalBraveApiKey = process.env.BRAVE_API_KEY;
 const originalJinaApiKey = process.env.JINA_API_KEY;
+const originalAnthropicSearchKey = process.env.ANTHROPIC_SEARCH_API_KEY;
 
 function enableKeyBackedProviders(): void {
 	process.env.BRAVE_API_KEY = "test-brave-key";
@@ -35,6 +36,12 @@ function restoreEnv(): void {
 		delete process.env.JINA_API_KEY;
 	} else {
 		process.env.JINA_API_KEY = originalJinaApiKey;
+	}
+
+	if (originalAnthropicSearchKey === undefined) {
+		delete process.env.ANTHROPIC_SEARCH_API_KEY;
+	} else {
+		process.env.ANTHROPIC_SEARCH_API_KEY = originalAnthropicSearchKey;
 	}
 }
 
@@ -185,6 +192,13 @@ const bedrockClaudeModel = {
 	api: "bedrock-converse-stream",
 	baseUrl: "https://bedrock.example",
 } as unknown as Model;
+const officialAnthropicModel = {
+	provider: "anthropic",
+	id: "claude-opus-5",
+	api: "anthropic-messages",
+	baseUrl: "https://api.anthropic.com",
+	isOAuth: true,
+} as unknown as Model;
 
 describe("resolveProviderCandidates with an active Anthropic-Messages model", () => {
 	it("promotes anthropic ahead of the default chain without duplicating it", () => {
@@ -233,6 +247,21 @@ describe("resolveProviderCandidates with an active Anthropic-Messages model", ()
 
 		expect(candidates[0]).toEqual({ id: "perplexity", explicit: true });
 	});
+
+	it("leaves an official api.anthropic.com model on the standalone cheap-model path", () => {
+		const candidates = resolveProviderCandidates(undefined, { activeModel: officialAnthropicModel });
+
+		expect(candidates[0]).not.toEqual({ id: "anthropic", explicit: false });
+		expect(candidates.map(candidate => candidate.id)).toContain("anthropic");
+	});
+
+	it("yields to an explicit ANTHROPIC_SEARCH_API_KEY instead of promoting", () => {
+		process.env.ANTHROPIC_SEARCH_API_KEY = "test-anthropic-search-key";
+
+		const candidates = resolveProviderCandidates(undefined, { activeModel: anthropicRelayModel });
+
+		expect(candidates[0]).not.toEqual({ id: "anthropic", explicit: false });
+	});
 });
 
 describe("resolveAnthropicSearchTransport", () => {
@@ -270,6 +299,16 @@ describe("resolveAnthropicSearchTransport", () => {
 		expect(resolveAnthropicSearchTransport(codexAffinityModel, modelRegistry)).toBeUndefined();
 		expect(resolveAnthropicSearchTransport(bedrockClaudeModel, modelRegistry)).toBeUndefined();
 		expect(resolveAnthropicSearchTransport(undefined, modelRegistry)).toBeUndefined();
+	});
+
+	it("yields no transport for an official endpoint, so search keeps the cheap default model", () => {
+		expect(resolveAnthropicSearchTransport(officialAnthropicModel, modelRegistry)).toBeUndefined();
+	});
+
+	it("yields no transport when an explicit search endpoint is configured", () => {
+		process.env.ANTHROPIC_SEARCH_API_KEY = "test-anthropic-search-key";
+
+		expect(resolveAnthropicSearchTransport(anthropicRelayModel, modelRegistry)).toBeUndefined();
 	});
 });
 

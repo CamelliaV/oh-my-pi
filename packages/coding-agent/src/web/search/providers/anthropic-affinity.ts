@@ -1,28 +1,42 @@
 import type { Model } from "@oh-my-pi/pi-ai";
+import { isOfficialAnthropicApiUrl } from "@oh-my-pi/pi-catalog/compat/anthropic";
 import { isClaudeModelId } from "@oh-my-pi/pi-catalog/identity";
+import { $env } from "@oh-my-pi/pi-utils";
 import type { ModelRegistry } from "../../../config/model-registry";
 
 /**
  * Anthropic hosted-search affinity.
  *
- * The standalone `anthropic` search provider targets official Anthropic with
- * its own credentials (`ANTHROPIC_SEARCH_API_KEY` / stored `anthropic` auth) and
- * a fixed cheap model. That path cannot reach a custom Messages relay: the key
+ * The standalone `anthropic` search provider targets official Anthropic with its
+ * own credentials (`ANTHROPIC_SEARCH_API_KEY` / stored `anthropic` auth) and a
+ * fixed cheap model. That path cannot reach a custom Messages relay: the key
  * belongs to another provider, `isOAuth` is inferred from the `sk-ant-oat`
  * prefix (so relay keys never get the Claude Code fingerprint a
  * `claude_code_only` group requires), and the default model may not exist in
  * the relay's group at all.
  *
- * Affinity closes that gap the way Codex affinity does: when the running model
- * already speaks Anthropic Messages, hosted search reuses *that* model's
- * transport — base URL, provider credential, cloak state, request model id and
- * provider headers.
+ * Affinity closes exactly that gap: when the running model speaks Anthropic
+ * Messages against an endpoint the standalone path cannot reach, hosted search
+ * reuses *that* model's transport — base URL, provider credential, cloak state,
+ * request model id and provider headers.
+ *
+ * Scope is deliberately narrower than Codex affinity, because reusing the
+ * running model is a cost decision as well as a routing one:
+ *
+ * - Official `api.anthropic.com` models are excluded. The standalone path
+ *   already reaches them, and it does so on the cheap `ANTHROPIC_SEARCH_MODEL`
+ *   default; promoting affinity there would silently bill hosted search at the
+ *   running model's rate (e.g. Opus) and reorder a chain that was working.
+ * - An explicit `ANTHROPIC_SEARCH_API_KEY` / `ANTHROPIC_SEARCH_BASE_URL` wins.
+ *   Those name a deliberate search endpoint; affinity must not override them.
  *
  * Kept in this light module, importable by the lazy provider registry
  * (`web/search/provider.ts`) without loading any provider implementation.
  */
 export function isAnthropicSearchAffinityModel(model: Model | undefined): model is Model {
 	if (model?.api !== "anthropic-messages") return false;
+	if (isOfficialAnthropicApiUrl(model.baseUrl)) return false;
+	if ($env.ANTHROPIC_SEARCH_API_KEY || $env.ANTHROPIC_SEARCH_BASE_URL) return false;
 	const identityIds = model.requestModelId ? [model.id, model.requestModelId] : [model.id];
 	return identityIds.some(id => isClaudeModelId(id));
 }

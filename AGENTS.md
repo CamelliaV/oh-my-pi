@@ -454,13 +454,24 @@ patch series by hand/cherry-pick.
    `requestModelId`, cloak state, provider headers — via fork-local
    `web/search/providers/anthropic-affinity.ts`
    (`isAnthropicSearchAffinityModel` / `resolveAnthropicSearchTransport`).
-   Deliberately asymmetric with codex: anthropic is NEVER suppressed for a
-   foreign active model, because its standalone path targets official Anthropic
-   with its own credentials and stays a valid fallback. Two facts the mocked
-   unit tests could not have caught: the relay key lives in ModelRegistry's
-   `#configOverrides` overlay (models.yml `apiKey`), NOT as an `auth_credentials`
-   row — so availability and key resolution must go through
-   `modelRegistry.authStorage` (same precedence codex.ts:945 applies), and
+   Scope is NARROWER than codex on purpose, because reusing the running model is
+   a cost decision too: official `api.anthropic.com` models are EXCLUDED (the
+   standalone path already reaches them, on the cheap `ANTHROPIC_SEARCH_MODEL`
+   default — promoting affinity there would bill hosted search at Opus rates and
+   silently reorder a working chain), and an explicit `ANTHROPIC_SEARCH_API_KEY` /
+   `ANTHROPIC_SEARCH_BASE_URL` wins outright. Net blast radius: only Claude
+   models on a custom Messages endpoint, where hosted search previously could
+   not work at all. Also asymmetric with codex in the other direction: anthropic
+   is NEVER suppressed for a foreign active model, because its standalone path
+   targets official Anthropic with its own credentials and stays a valid
+   fallback. Note `setSearchProviderOrder` never DROPS unlisted providers
+   (unlisted ones keep built-in relative order), so promotion reorders rather
+   than injects; removal is `webSearchExclude`, which still wins. Two facts the
+   mocked unit tests could not have caught: the relay key lives in
+   ModelRegistry's `#configOverrides` overlay (models.yml `apiKey`), NOT as an
+   `auth_credentials` row — so availability and key resolution must go through
+   `modelRegistry.authStorage` (same precedence codex.ts:945 applies; the
+   standalone path deliberately keeps the caller's storage), and
    `isOAuth` must come from the resolved model, not `isOAuthToken()`, since relay
    keys are never `sk-ant-oat` yet still route to a CC-gated group. Wire-verified
    live against zzzcoding through a forwarding capture proxy with an isolated
@@ -470,8 +481,9 @@ patch series by hand/cherry-pick.
    the haiku default), exactly one `web_search_20250305` hosted tool, claude-cli
    UA + CC billing system block, and a JSON `metadata.user_id` sharing the LLM
    turn's `session_id`/`device_id`. Tests: `test/web/search/provider-chain.test.ts`
-   (anthropic promotion, no-suppression asymmetry, codex precedence, bedrock-Claude
-   rejection, transport reuse).
+   (anthropic promotion, official-endpoint and explicit-search-key exclusion,
+   no-suppression asymmetry, codex precedence, bedrock-Claude rejection,
+   transport reuse).
 9. `feat(tui)` tool intent as highlighted card annotation — intent label
    (toolCall.intent / wire `i`) threaded through event-controller live path,
    ui-helpers + chat-transcript-builder rebuilds (incl. per-readCall group

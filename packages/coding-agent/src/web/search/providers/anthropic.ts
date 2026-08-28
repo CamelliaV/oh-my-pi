@@ -323,18 +323,24 @@ export async function searchAnthropic(
 	params: SearchParams | AnthropicSearchParams,
 	_legacyStorage?: unknown,
 ): Promise<SearchResponse> {
-	// Affinity: when the running model already speaks Anthropic Messages, reuse
-	// its transport (base URL, provider credential, cloak state, request model
-	// id, provider headers) instead of the official-endpoint defaults, which
-	// cannot reach a relay group.
+	// Affinity: when the running model speaks Anthropic Messages against an
+	// endpoint the official-credential path cannot reach, reuse its transport
+	// (base URL, provider credential, cloak state, request model id, provider
+	// headers). Official endpoints keep the standalone path — see
+	// `anthropic-affinity.ts` for why the scope stops there.
 	const transport =
 		"authStorage" in params ? resolveAnthropicSearchTransport(params.activeModel, params.modelRegistry) : undefined;
 	const credentialProvider = transport?.provider ?? "anthropic";
-	// A models.yml-pinned relay key lives in the registry's config overlay, not
-	// as a stored credential, so resolve through the registry's AuthStorage when
-	// it has one (same precedence the Codex provider applies).
+	// A models.yml-pinned relay key lives only in the registry's config overlay,
+	// never as a stored credential, so the affinity path resolves through the
+	// registry's AuthStorage (same precedence the Codex provider applies). The
+	// standalone path keeps the caller's storage untouched.
 	const credentialSource =
-		"authStorage" in params ? (params.modelRegistry?.authStorage ?? params.authStorage) : undefined;
+		"authStorage" in params
+			? transport
+				? (params.modelRegistry?.authStorage ?? params.authStorage)
+				: params.authStorage
+			: undefined;
 	const searchApiKey = transport ? undefined : $env.ANTHROPIC_SEARCH_API_KEY;
 	const searchBaseUrl = transport?.baseUrl ?? $env.ANTHROPIC_SEARCH_BASE_URL;
 	const keyOrResolver: ApiKey | undefined = searchApiKey

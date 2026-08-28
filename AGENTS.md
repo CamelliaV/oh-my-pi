@@ -651,3 +651,33 @@ patch series by hand/cherry-pick.
    only insertable ghosts are accepted (slash-arg hints stay display-only).
    Tests: test/bash-autocomplete.test.ts (17); PTY-verified 6/6 (ghost render,
    → accept, popup, apply+execute, file completion, alias completion).
+17. `fix(ai)` Claude Code cloak seam + relay `device_id` enrichment — real CC
+   always pairs `session_id` with a non-empty `device_id` in the JSON
+   `metadata.user_id` envelope, and sub2api `claude_code_only` groups reject
+   envelopes missing it (503 "this group only allows Claude clients"), so an
+   OAuth-shaped caller supplying session-stable JSON now gets one filled in from
+   the install id (scoped by the envelope's own `account_uuid`) rather than
+   having the whole id regenerated, which would churn backend session
+   attribution (commit fc0c59d). The helper lives in fork-local
+   `packages/ai/src/providers/claude-code-cloak.ts`, NOT inside upstream's
+   ~4.4k-line `providers/anthropic.ts`, which keeps only a one-line import plus
+   a three-line call site in `resolveAnthropicMetadataUserId` — cloak conflict
+   surface there dropped 27 → 4 lines. The device-id deriver is injected instead
+   of imported to avoid an import cycle back into `anthropic.ts` (which owns
+   `deriveClaudeDeviceId`); compiled-binary cycles risk TDZ. Also threaded an
+   optional `modelHeaders` through `AnthropicAuthConfig` /
+   `buildAnthropicSearchHeaders` so a caller reusing a configured model's
+   transport can forward relay headers on non-streaming Messages requests.
+   Future body-shape cloak divergences belong in that module. Rationale for NOT
+   minting an `Api` kind for CC-cloaked Messages (considered and rejected
+   2026-08-29): `buildCompat`'s `default: return undefined` would silently drop
+   the whole `AnthropicCompat` (14 fields incl. `allowAnthropicHeaderOverrides`,
+   `streamIdleTimeoutMs`, `supportsCacheRetention`), and `model-thinking.ts`'s
+   `needsDisplay` / `getAnthropicAdaptiveEfforts` hard-gate on
+   `anthropic-messages` | `bedrock-converse-stream`, so opus ≥4.7 would lose
+   adaptive thinking display even with explicit `thinking.efforts` — silent
+   degradation across 152 comparison sites, all upstream. If the cloak ever needs
+   a first-class flag, add an `AnthropicCompat` field (beside
+   `escapeBuiltinToolNames` / `allowAnthropicHeaderOverrides`), which is 1 field
+   + 1 resolver default and also splits `isOAuth`'s two meanings (credential
+   mechanism vs fingerprint persona). Tests: `test/anthropic-alignment.test.ts`.

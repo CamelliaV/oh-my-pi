@@ -21,6 +21,13 @@ export interface AnthropicAuthConfig {
 	apiKey: string;
 	baseUrl: string;
 	isOAuth: boolean;
+	/**
+	 * Provider/model headers for the endpoint this request targets. Set when a
+	 * caller reuses a configured model's transport (hosted-search affinity)
+	 * rather than the env-derived official endpoint; relays that gate on custom
+	 * headers need them on the search request too.
+	 */
+	modelHeaders?: Record<string, string>;
 }
 
 const DEFAULT_BASE_URL = "https://api.anthropic.com";
@@ -79,7 +86,7 @@ export function buildAnthropicSearchHeaders(auth: AnthropicAuthConfig): Record<s
 		isOAuth: auth.isOAuth,
 		extraBetas: ["web-search-2025-03-05"],
 		stream: false,
-		modelHeaders: resolveAnthropicCustomHeadersForBaseUrl(auth.baseUrl),
+		modelHeaders: { ...resolveAnthropicCustomHeadersForBaseUrl(auth.baseUrl), ...auth.modelHeaders },
 	});
 }
 

@@ -9,9 +9,10 @@
 // listings can share it without importing provider implementations.
 
 import type { AuthStorage, Model } from "@oh-my-pi/pi-ai";
-import type { SearchProvider, SearchProviderAvailabilityContext } from "./providers/base";
 // Light predicate module (catalog identity only) — importing it here must not
 // pull a provider implementation; that would break the lazy registry above.
+import { isAnthropicSearchAffinityModel } from "./providers/anthropic-affinity";
+import type { SearchProvider, SearchProviderAvailabilityContext } from "./providers/base";
 import { isCodexSearchAffinityModel } from "./providers/codex-affinity";
 import {
 	SEARCH_PROVIDER_LABELS,
@@ -281,8 +282,12 @@ export interface ProviderChainOptions {
  * model promotes codex ahead of the configured order, while any other active
  * model drops codex from the chain entirely (its standalone config serves
  * codex/GPT sessions and explicit `provider: "codex"` requests, not foreign
- * models). Per-request forcing and exclusions always win; without an active
- * model (sessionless CLI) the configured order applies unchanged.
+ * models). An Anthropic-Messages active model instead promotes `anthropic`,
+ * whose hosted search then reuses that model's own transport. Anthropic is
+ * never suppressed the way codex is: its standalone path targets official
+ * Anthropic with its own credentials, so it stays a valid fallback for any
+ * active model. Per-request forcing and exclusions always win; without an
+ * active model (sessionless CLI) the configured order applies unchanged.
  */
 export function resolveProviderCandidates(
 	forcedProvider?: SearchProviderId,
@@ -294,11 +299,19 @@ export function resolveProviderCandidates(
 		candidates.push({ id: forcedProvider, explicit: true });
 	}
 
-	const affinityModel = options?.activeModel !== undefined && isCodexSearchAffinityModel(options.activeModel);
+	const codexAffinity = options?.activeModel !== undefined && isCodexSearchAffinityModel(options.activeModel);
+	const anthropicAffinity = !codexAffinity && isAnthropicSearchAffinityModel(options?.activeModel);
+	const affinityPreference: SearchProviderId | undefined = codexAffinity
+		? "codex"
+		: anthropicAffinity
+			? "anthropic"
+			: undefined;
 	const preferred: SearchProviderId | undefined =
-		forcedProvider === undefined && affinityModel && !isSearchProviderExcluded("codex") ? "codex" : undefined;
+		forcedProvider === undefined && affinityPreference !== undefined && !isSearchProviderExcluded(affinityPreference)
+			? affinityPreference
+			: undefined;
 	const suppressed: SearchProviderId | undefined =
-		forcedProvider === undefined && options?.activeModel !== undefined && !affinityModel ? "codex" : undefined;
+		forcedProvider === undefined && options?.activeModel !== undefined && !codexAffinity ? "codex" : undefined;
 
 	for (const id of orderedProvIds) {
 		if (id === forcedProvider || id === preferred || id === suppressed || isSearchProviderExcluded(id)) continue;

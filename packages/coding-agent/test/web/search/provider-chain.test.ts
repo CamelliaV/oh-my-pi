@@ -8,6 +8,7 @@ import {
 	setExcludedSearchProviders,
 	setSearchProviderOrder,
 } from "@oh-my-pi/pi-coding-agent/web/search/provider";
+import { resolveAnthropicSearchTransport } from "@oh-my-pi/pi-coding-agent/web/search/providers/anthropic-affinity";
 import { SEARCH_PROVIDER_ORDER } from "@oh-my-pi/pi-coding-agent/web/search/types";
 
 const authStorage = {
@@ -167,6 +168,108 @@ describe("resolveProviderCandidates with an active Codex-affinity model", () => 
 
 		expect(candidates.map(candidate => candidate.id)).not.toContain("codex");
 		expect(candidates.map(candidate => candidate.id)).toEqual(SEARCH_PROVIDER_ORDER.filter(id => id !== "codex"));
+	});
+});
+
+const anthropicRelayModel = {
+	provider: "zzzcoding-claude",
+	id: "claude-opus-5",
+	api: "anthropic-messages",
+	baseUrl: "https://api.zzzcoding.org",
+	isOAuth: true,
+	headers: { "X-Relay-Group": "cc" },
+} as unknown as Model;
+const bedrockClaudeModel = {
+	provider: "amazon-bedrock",
+	id: "claude-opus-5",
+	api: "bedrock-converse-stream",
+	baseUrl: "https://bedrock.example",
+} as unknown as Model;
+
+describe("resolveProviderCandidates with an active Anthropic-Messages model", () => {
+	it("promotes anthropic ahead of the default chain without duplicating it", () => {
+		const candidates = resolveProviderCandidates(undefined, { activeModel: anthropicRelayModel });
+
+		expect(candidates[0]).toEqual({ id: "anthropic", explicit: false });
+		expect(candidates.filter(candidate => candidate.id === "anthropic")).toHaveLength(1);
+	});
+
+	it("still drops codex, whose standalone config does not serve a Claude session", () => {
+		const candidates = resolveProviderCandidates(undefined, { activeModel: anthropicRelayModel });
+
+		expect(candidates.map(candidate => candidate.id)).not.toContain("codex");
+	});
+
+	it("keeps anthropic in the chain for a non-Anthropic active model instead of suppressing it", () => {
+		const candidates = resolveProviderCandidates(undefined, { activeModel: nonAffinityModel });
+
+		expect(candidates.map(candidate => candidate.id)).toContain("anthropic");
+		expect(candidates[0]).not.toEqual({ id: "anthropic", explicit: false });
+	});
+
+	it("leaves codex affinity in charge when the active model is GPT-on-codex", () => {
+		const candidates = resolveProviderCandidates(undefined, { activeModel: codexAffinityModel });
+
+		expect(candidates[0]).toEqual({ id: "codex", explicit: false });
+		expect(candidates.map(candidate => candidate.id)).toContain("anthropic");
+	});
+
+	it("does not promote a Claude model reached over a non-Messages transport", () => {
+		const candidates = resolveProviderCandidates(undefined, { activeModel: bedrockClaudeModel });
+
+		expect(candidates[0]).not.toEqual({ id: "anthropic", explicit: false });
+	});
+
+	it("drops anthropic entirely when the user excluded it", () => {
+		setExcludedSearchProviders(["anthropic"]);
+
+		const candidates = resolveProviderCandidates(undefined, { activeModel: anthropicRelayModel });
+
+		expect(candidates.map(candidate => candidate.id)).not.toContain("anthropic");
+	});
+
+	it("never promotes past a per-request forced provider", () => {
+		const candidates = resolveProviderCandidates("perplexity", { activeModel: anthropicRelayModel });
+
+		expect(candidates[0]).toEqual({ id: "perplexity", explicit: true });
+	});
+});
+
+describe("resolveAnthropicSearchTransport", () => {
+	const modelRegistry = {
+		getProviderHeaders(provider: string): Record<string, string> | undefined {
+			return provider === "zzzcoding-claude" ? { "X-Provider-Level": "1" } : undefined;
+		},
+	} as unknown as ModelRegistry;
+
+	it("reuses the active model's relay endpoint, request id, cloak state and headers", () => {
+		const transport = resolveAnthropicSearchTransport(anthropicRelayModel, modelRegistry);
+
+		expect(transport).toEqual({
+			provider: "zzzcoding-claude",
+			baseUrl: "https://api.zzzcoding.org",
+			model: "claude-opus-5",
+			isOAuth: true,
+			modelHeaders: { "X-Provider-Level": "1", "X-Relay-Group": "cc" },
+		});
+	});
+
+	it("prefers the wire request id over the catalog id", () => {
+		const aliased = { ...anthropicRelayModel, requestModelId: "claude-opus-5-20260801" } as unknown as Model;
+
+		expect(resolveAnthropicSearchTransport(aliased, modelRegistry)?.model).toBe("claude-opus-5-20260801");
+	});
+
+	it("reports no cloak for an api-key relay model", () => {
+		const apiKeyModel = { ...anthropicRelayModel, isOAuth: undefined } as unknown as Model;
+
+		expect(resolveAnthropicSearchTransport(apiKeyModel, modelRegistry)?.isOAuth).toBe(false);
+	});
+
+	it("yields no transport for a non-Messages model, leaving the official path in charge", () => {
+		expect(resolveAnthropicSearchTransport(codexAffinityModel, modelRegistry)).toBeUndefined();
+		expect(resolveAnthropicSearchTransport(bedrockClaudeModel, modelRegistry)).toBeUndefined();
+		expect(resolveAnthropicSearchTransport(undefined, modelRegistry)).toBeUndefined();
 	});
 });
 

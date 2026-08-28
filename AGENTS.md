@@ -448,6 +448,30 @@ patch series by hand/cherry-pick.
    `web/search/providers/codex-affinity.ts` (light, importable by the lazy
    registry). Regression driver: `test/web-search-affinity-driver.ts` (local
    mock codex relay; affinity → codex first, GLM → codex not attempted).
+   Anthropic dimension (2026-08-29): an `anthropic-messages` active model whose
+   id parses as Claude promotes the `anthropic` provider instead, and hosted
+   search then reuses THAT model's transport — `baseUrl`, provider credential,
+   `requestModelId`, cloak state, provider headers — via fork-local
+   `web/search/providers/anthropic-affinity.ts`
+   (`isAnthropicSearchAffinityModel` / `resolveAnthropicSearchTransport`).
+   Deliberately asymmetric with codex: anthropic is NEVER suppressed for a
+   foreign active model, because its standalone path targets official Anthropic
+   with its own credentials and stays a valid fallback. Two facts the mocked
+   unit tests could not have caught: the relay key lives in ModelRegistry's
+   `#configOverrides` overlay (models.yml `apiKey`), NOT as an `auth_credentials`
+   row — so availability and key resolution must go through
+   `modelRegistry.authStorage` (same precedence codex.ts:945 applies), and
+   `isOAuth` must come from the resolved model, not `isOAuthToken()`, since relay
+   keys are never `sk-ant-oat` yet still route to a CC-gated group. Wire-verified
+   live against zzzcoding through a forwarding capture proxy with an isolated
+   HOME carrying ONLY the zzzcoding-claude provider (no other search source has
+   credentials, so "anthropic served it" is itself the discriminator): the search
+   request was `/v1/messages?beta=true` at the relay, `model claude-opus-5` (not
+   the haiku default), exactly one `web_search_20250305` hosted tool, claude-cli
+   UA + CC billing system block, and a JSON `metadata.user_id` sharing the LLM
+   turn's `session_id`/`device_id`. Tests: `test/web/search/provider-chain.test.ts`
+   (anthropic promotion, no-suppression asymmetry, codex precedence, bedrock-Claude
+   rejection, transport reuse).
 9. `feat(tui)` tool intent as highlighted card annotation — intent label
    (toolCall.intent / wire `i`) threaded through event-controller live path,
    ui-helpers + chat-transcript-builder rebuilds (incl. per-readCall group

@@ -30,7 +30,8 @@ import type {
 } from "../../../web/search/types";
 import { SearchProviderError } from "../../../web/search/types";
 import { formatQuery, parseSearchQuery, type QuerySyntax, type StructuredQuery } from "../query";
-import type { SearchParams } from "./base";
+import { resolveAnthropicSearchTransport } from "./anthropic-affinity";
+import type { SearchParams, SearchProviderAvailabilityContext } from "./base";
 import { SearchProvider } from "./base";
 import { classifyProviderHttpError, withHardTimeout } from "./utils";
 
@@ -322,12 +323,28 @@ export async function searchAnthropic(
 	params: SearchParams | AnthropicSearchParams,
 	_legacyStorage?: unknown,
 ): Promise<SearchResponse> {
-	const searchApiKey = $env.ANTHROPIC_SEARCH_API_KEY;
-	const searchBaseUrl = $env.ANTHROPIC_SEARCH_BASE_URL;
+	// Affinity: when the running model already speaks Anthropic Messages, reuse
+	// its transport (base URL, provider credential, cloak state, request model
+	// id, provider headers) instead of the official-endpoint defaults, which
+	// cannot reach a relay group.
+	const transport =
+		"authStorage" in params ? resolveAnthropicSearchTransport(params.activeModel, params.modelRegistry) : undefined;
+	const credentialProvider = transport?.provider ?? "anthropic";
+	// A models.yml-pinned relay key lives in the registry's config overlay, not
+	// as a stored credential, so resolve through the registry's AuthStorage when
+	// it has one (same precedence the Codex provider applies).
+	const credentialSource =
+		"authStorage" in params ? (params.modelRegistry?.authStorage ?? params.authStorage) : undefined;
+	const searchApiKey = transport ? undefined : $env.ANTHROPIC_SEARCH_API_KEY;
+	const searchBaseUrl = transport?.baseUrl ?? $env.ANTHROPIC_SEARCH_BASE_URL;
 	const keyOrResolver: ApiKey | undefined = searchApiKey
 		? searchApiKey
-		: "authStorage" in params
-			? params.authStorage.resolver("anthropic", { sessionId: params.sessionId })
+		: credentialSource !== undefined
+			? credentialSource.resolver(credentialProvider, {
+					sessionId: "authStorage" in params ? params.sessionId : undefined,
+					baseUrl: transport?.baseUrl,
+					modelId: transport?.model,
+				})
 			: undefined;
 
 	if (!keyOrResolver) {
@@ -336,18 +353,27 @@ export async function searchAnthropic(
 		);
 	}
 
-	const model = getModel();
+	const model = transport?.model ?? getModel();
 	const systemPrompt = "authStorage" in params ? params.systemPrompt : params.system_prompt;
 	const maxTokens = "authStorage" in params ? params.maxOutputTokens : params.max_tokens;
 	const callerSessionId = "authStorage" in params ? params.sessionId : undefined;
-	const accountId =
-		"authStorage" in params ? params.authStorage.getOAuthAccountId("anthropic", params.sessionId) : undefined;
+	const accountId = credentialSource?.getOAuthAccountId(credentialProvider, callerSessionId);
 	const parsed = ("parsedQuery" in params ? params.parsedQuery : undefined) ?? parseSearchQuery(params.query);
 	const plan = planQuery(params.query, parsed);
 	const response = await withAuth(
 		keyOrResolver,
 		key => {
-			const auth = buildAnthropicAuthConfig(key, searchBaseUrl);
+			// Under affinity the cloak flag comes from the resolved model, not the
+			// token prefix: relay keys are never `sk-ant-oat` yet still route to a
+			// CC-fingerprint-gated group.
+			const auth: AnthropicAuthConfig = transport
+				? {
+						apiKey: key,
+						baseUrl: transport.baseUrl,
+						isOAuth: transport.isOAuth,
+						modelHeaders: transport.modelHeaders,
+					}
+				: buildAnthropicAuthConfig(key, searchBaseUrl);
 			// Mirror the main Messages path: OAuth requests need a Claude-Code-shaped
 			// metadata.user_id (`{session_id, account_uuid?, device_id}`) so the
 			// CC billing header + system fingerprint installed by
@@ -395,7 +421,14 @@ export class AnthropicProvider extends SearchProvider {
 	readonly id = "anthropic";
 	readonly label = "Anthropic";
 
-	isAvailable(authStorage: AuthStorage): Promise<boolean> | boolean {
+	isAvailable(authStorage: AuthStorage, context?: SearchProviderAvailabilityContext): Promise<boolean> | boolean {
+		// Under affinity the credential belongs to the active model's provider, so
+		// official Anthropic auth is not required. A models.yml-pinned relay key
+		// only exists in the registry's config overlay, so consult that storage.
+		const transport = resolveAnthropicSearchTransport(context?.activeModel, context?.modelRegistry);
+		if (transport) {
+			return (context?.modelRegistry?.authStorage ?? authStorage).hasAuth(transport.provider);
+		}
 		return Boolean($env.ANTHROPIC_SEARCH_API_KEY) || authStorage.hasAuth("anthropic");
 	}
 

@@ -10,6 +10,7 @@
 ### Fixed
 
 - Fixed CC-client-fingerprinting Anthropic relays (sub2api `claude_code_only` groups) rejecting OAuth-cloaked requests: a caller-supplied JSON `metadata.user_id` envelope without `device_id` is now enriched with a stable install-derived device id instead of being forwarded as-is.
+- Fixed prompt caching being dead on Claude relays: the Claude Code billing header's `cch` value sits in `system[0]` and changed on every request, invalidating the entire cached prefix so each turn re-billed the full context as a cache write. Non-official endpoints now scope `cch` to the session-stable part of the request; official Anthropic endpoints keep real Claude Code's whole-body hash. Measured over one six-request session: 0 → 4 cache hits, 67% fewer cache-write tokens, 46% lower wall time.
 
 ## [18.0.9] - 2026-08-28
 

@@ -47,3 +47,43 @@ export function enrichClaudeJsonUserIdDeviceId(
 	);
 	return JSON.stringify(obj);
 }
+
+/**
+ * Selects which bytes of a Messages request body seed the Claude Code `cch`
+ * attestation.
+ *
+ * Real Claude Code hashes the *whole* body, so `cch` changes on every request.
+ * On `api.anthropic.com` that is free: the edge strips the billing-header
+ * system block before the prompt reaches the cache layer, so the mutation is
+ * invisible to prefix matching. A relay forwards the block verbatim as ordinary
+ * system text, so there the mutation lands in `system[0]` — the *first* block of
+ * the cached prefix — and invalidates it on every single turn. Measured against
+ * a CC-fingerprinting relay: 0/6 cache hits and 329k cache-write tokens over one
+ * six-request session, versus 3/6 hits and 165k writes once `cch` held still.
+ * Upstream declined to fix this (anthropics/claude-code#68900), and dropping the
+ * block outright is not available to us: `claude_code_only` relays reject
+ * CC-scoped credentials that arrive without it.
+ *
+ * So off-official endpoints hash only the session-stable region — the system
+ * blocks, tools, and trailing scalars — excluding `messages`. `cch` then changes
+ * exactly when the cached prefix itself changes, which is the whole point.
+ * Relays that gate on `claude_code_only` validate the header's *shape*, not the
+ * hash (they cannot recompute it without the seed), so a prefix-scoped value
+ * still clears the gate.
+ *
+ * Order-independent by construction: Anthropic SDK payloads serialize
+ * `messages` before `system`, and the returned region is clipped to stop at the
+ * `messages` array if it ever precedes `system` instead. If neither marker is
+ * found the full body is returned, matching real CC.
+ */
+export function selectClaudeCchHashRegion(body: Buffer, stable: boolean): Buffer {
+	if (!stable) return body;
+	const systemIdx = body.indexOf(CCH_SYSTEM_ARRAY_MARKER);
+	if (systemIdx === -1) return body;
+	const messagesIdx = body.indexOf(CCH_MESSAGES_ARRAY_MARKER, systemIdx);
+	return messagesIdx === -1 ? body.subarray(systemIdx) : body.subarray(systemIdx, messagesIdx);
+}
+
+const cchRegionEncoder = new TextEncoder();
+const CCH_SYSTEM_ARRAY_MARKER = cchRegionEncoder.encode(`"system":[`);
+const CCH_MESSAGES_ARRAY_MARKER = cchRegionEncoder.encode(`"messages":[`);

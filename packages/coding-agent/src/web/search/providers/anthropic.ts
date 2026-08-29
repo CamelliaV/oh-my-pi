@@ -19,6 +19,7 @@ import {
 	withAuth,
 	wrapFetchForCch,
 } from "@oh-my-pi/pi-ai";
+import { isOfficialAnthropicApiUrl } from "@oh-my-pi/pi-catalog/compat/anthropic";
 import { hasOpus47ApiRestrictions } from "@oh-my-pi/pi-catalog/identity/family";
 import { $env } from "@oh-my-pi/pi-utils";
 import type {
@@ -190,7 +191,9 @@ async function callSearch(
 
 	// OAuth requests inject the CC billing header (buildSystemBlocks); patch its
 	// cch attestation like the streaming path instead of shipping `cch=00000`.
-	const doFetch = auth.isOAuth ? wrapFetchForCch(fetchImpl) : fetchImpl;
+	// Off-official endpoints scope it to the stable region so repeated searches
+	// through a relay can match a cached prefix.
+	const doFetch = auth.isOAuth ? wrapFetchForCch(fetchImpl, !isOfficialAnthropicApiUrl(url)) : fetchImpl;
 	const response = await doFetch(url, {
 		method: "POST",
 		headers,

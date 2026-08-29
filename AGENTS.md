@@ -717,6 +717,39 @@ patch series by hand/cherry-pick.
    `escapeBuiltinToolNames` / `allowAnthropicHeaderOverrides`), which is 1 field
    + 1 resolver default and also splits `isOAuth`'s two meanings (credential
    mechanism vs fingerprint persona). Tests: `test/anthropic-alignment.test.ts`.
+18. `fix(ai)` relay prompt-cache restored by scoping the `cch` attestation —
+   the CC billing header lives in `system[0]` and its `cch` was
+   `xxHash64(whole body)`, so it changed every turn and invalidated the entire
+   cached prefix on any endpoint that forwards the block as ordinary system
+   text. Official `api.anthropic.com` is immune (its edge strips the block
+   before the cache layer, which is why real CC gets away with a per-request
+   value), but every relay pays full `cache_creation` on every request.
+   Fork-local fix in `providers/claude-code-cloak.ts`
+   (`selectClaudeCchHashRegion`): off-official endpoints hash only the
+   session-stable region — from `"system":[` to end of body, clipped at
+   `"messages":[` if key order ever inverts — so `cch` changes exactly when the
+   cached prefix does. `patchCch` / `wrapFetchForCch` take a `stableCch` flag;
+   both call sites gate on `!isOfficialAnthropicApiUrl` (streaming
+   `anthropic.ts`, and hosted search `web/search/providers/anthropic.ts`).
+   Upstream declined the same report (anthropics/claude-code#68900, closed not
+   planned). Omitting the block — what `CLAUDE_CODE_ATTRIBUTION_HEADER=0` does
+   in real CC, and what claude-code-router/braintrust-lingua do — is NOT
+   available here: `claude_code_only` groups reject CC-scoped credentials whose
+   request lacks it, and the gist-documented placement contract requires it to
+   be `system[0]` with no `cache_control`. Safe because such relays validate the
+   header's *shape*, not the hash (they cannot recompute it without the seed) —
+   wire-verified: a deliberately bogus constant `cch` still served fine.
+   Live A/B through a forwarding capture proxy, same prompt, same 5-call tool
+   loop, before/after binaries: 6 distinct `cch` → 1 constant `cch`, 0/6 → 4/6
+   cache hits, 329,463 → 109,827 cache-write tokens, 80.8s → 43.4s wall, ≈61%
+   cheaper per session at catalog rates. Second, independent breaker found and
+   deliberately NOT addressed: cross-session hits never happen because the
+   relay routes by `metadata.user_id.session_id` to different upstream accounts
+   (proved by pinning `cch` at the proxy and observing two runs with
+   byte-identical `system`/`tools`/`msg[0]` still miss) — that is relay-side,
+   not ours. Tests: `test/anthropic-cch-cache-stability.test.ts` (stability
+   across turns, invalidation on system/tools change, official-endpoint
+   fidelity, 5-hex wire shape, API-key passthrough).
 19. `feat(ai)` provider-declared Anthropic betas via `compat.extraBetas` — a
    relay can require a beta the generated chain never carries: anyrouter 400s
    every opus-class request ("1m 上下文已经全量可用，请启用 1m 上下文后重试")

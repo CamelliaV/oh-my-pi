@@ -86,7 +86,7 @@ import {
 	type RawMessageStreamEvent,
 	type TextBlockParam,
 } from "./anthropic-wire";
-import { enrichClaudeJsonUserIdDeviceId } from "./claude-code-cloak";
+import { enrichClaudeJsonUserIdDeviceId, selectClaudeCchHashRegion } from "./claude-code-cloak";
 import {
 	CLAUDE_CODE_MAX_OUTPUT_TOKENS,
 	claudeCodeSdkVersion,
@@ -591,7 +591,7 @@ const CCH_PLACEHOLDER = cchEncoder.encode(CCH_PLACEHOLDER_STR);
 const BILLING_SYSTEM_MARKER = cchEncoder.encode(`"system":[{"type":"text","text":"${CLAUDE_BILLING_HEADER_PREFIX}`);
 const CCH_BILLING_SEARCH_WINDOW = 150;
 
-function patchCch(body: Uint8Array): "patched" | "no-billing-header" | "unanchored" {
+function patchCch(body: Uint8Array, stableCch: boolean): "patched" | "no-billing-header" | "unanchored" {
 	// Zero-copy Buffer view over the same memory; its `indexOf` is a native memmem,
 	// ~7.5x faster than a hand-rolled byte loop here — the marker sits ~99% through
 	// the body because `messages` serializes before `system`, so a JS scan would
@@ -607,8 +607,10 @@ function patchCch(body: Uint8Array): "patched" | "no-billing-header" | "unanchor
 	const idx = view.indexOf(CCH_PLACEHOLDER, searchFrom);
 	if (idx === -1 || idx - searchFrom > CCH_BILLING_SEARCH_WINDOW) return "unanchored";
 
-	// Hash the body with the placeholder in place (matches CC's in-place behaviour).
-	const h = Bun.hash.xxHash64(body, CCH_SEED);
+	// Hash with the placeholder in place (matches CC's in-place behaviour). On
+	// non-official endpoints the hashed region excludes `messages` so the value
+	// stays stable while the cached prefix does — see selectClaudeCchHashRegion.
+	const h = Bun.hash.xxHash64(selectClaudeCchHashRegion(view, stableCch), CCH_SEED);
 	const cch = (h & 0xfffffn).toString(16).padStart(5, "0");
 
 	for (let i = 0; i < 5; i++) body[idx + 4 + i] = cch.charCodeAt(i);
@@ -619,12 +621,17 @@ function patchCch(body: Uint8Array): "patched" | "no-billing-header" | "unanchor
  * Wraps a fetch implementation to patch the Claude Code billing-header `cch`
  * attestation into outgoing request bodies. Bodies without the placeholder
  * pass through untouched, so installing it on every OAuth flow is safe.
+ *
+ * `stableCch` scopes the attestation to the session-stable part of the body so a
+ * relay that forwards the billing block verbatim can still match a cached
+ * prefix; official endpoints keep real CC's whole-body hash. See
+ * `selectClaudeCchHashRegion`.
  */
-export function wrapFetchForCch(base: FetchImpl): FetchImpl {
+export function wrapFetchForCch(base: FetchImpl, stableCch = false): FetchImpl {
 	return (input, init) => {
 		if (init?.body && typeof init.body === "string" && init.body.includes(CCH_PLACEHOLDER_STR)) {
 			const encoded = cchEncoder.encode(init.body);
-			if (patchCch(encoded) === "unanchored") {
+			if (patchCch(encoded, stableCch) === "unanchored") {
 				// The OAuth billing placeholder is anchored to system[0] but we couldn't
 				// patch it — e.g. an `onPayload` hook reordered the first system block's keys
 				// so BILLING_SYSTEM_MARKER no longer matches. Send the body as-is (cch stays
@@ -3005,8 +3012,10 @@ export function buildAnthropicClientOptions(args: AnthropicClientOptionsArgs): A
 	const fetchOptions: AnthropicFetchOptions = { ...(tlsFetchOptions ?? {}), timeout: false };
 	const baseFetch = args.fetch ?? fetch;
 	// Only OAuth requests inject the CC billing header; no API-key request can ever
-	// contain it, so there is no need to install the rewriter for those.
-	const cchFetch = oauthToken ? wrapFetchForCch(baseFetch) : baseFetch;
+	// contain it, so there is no need to install the rewriter for those. Off-official
+	// endpoints forward the billing block into the cached prefix, so scope the
+	// attestation to the stable region there (selectClaudeCchHashRegion).
+	const cchFetch = oauthToken ? wrapFetchForCch(baseFetch, !isOfficialAnthropicApiUrl(baseUrl)) : baseFetch;
 	if (model.provider === "github-copilot") {
 		const copilotApiKey = parseGitHubCopilotApiKey(apiKey).accessToken;
 		// The GitHub Copilot Anthropic proxy doesn't accept Anthropic beta

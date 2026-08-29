@@ -587,7 +587,7 @@ describe("StatusLineComponent context breakdown", () => {
 		const comp = new StatusLineComponent(session);
 		expect(comp.render(80)).toHaveLength(0); // box mode: main status lives in the editor border
 
-		comp.setComposerStyle({ bottomBar: "full", bottomBarGap: false });
+		comp.setComposerStyle({ statusAttachment: "none", bottomBar: "full", bottomBarGap: false });
 		const lines = comp.render(80);
 		expect(lines).toHaveLength(1);
 		// Plain bar: transparent background, no powerline caps or bg fill.
@@ -596,7 +596,7 @@ describe("StatusLineComponent context breakdown", () => {
 
 		// Styles without bottom chrome (rule/field/rail) request a spacer row so
 		// the bar doesn't sit flush against the last input row.
-		comp.setComposerStyle({ bottomBar: "full", bottomBarGap: true });
+		comp.setComposerStyle({ statusAttachment: "none", bottomBar: "full", bottomBarGap: true });
 		const gapped = comp.render(80);
 		expect(gapped).toHaveLength(2);
 		expect(gapped[0]).toBe("");
@@ -609,7 +609,7 @@ describe("StatusLineComponent context breakdown", () => {
 			usage: { tokens: 1000, contextWindow: 100_000, percent: 1 },
 		});
 		const comp = new StatusLineComponent(session);
-		comp.setComposerStyle({ bottomBar: "full", bottomBarGap: true });
+		comp.setComposerStyle({ statusAttachment: "none", bottomBar: "full", bottomBarGap: true });
 		let menuOpen = true;
 		comp.setAutocompleteActiveProbe(() => menuOpen);
 		expect(comp.render(80)).toHaveLength(0);
@@ -630,7 +630,7 @@ describe("StatusLineComponent context breakdown", () => {
 			separator: "none",
 			sessionAccent: false,
 		});
-		comp.setComposerStyle({ bottomBar: "left", bottomBarGap: false });
+		comp.setComposerStyle({ statusAttachment: "top-rule-chip", bottomBar: "left", bottomBarGap: false });
 
 		const bottom = comp.render(80);
 		expect(bottom).toHaveLength(1);

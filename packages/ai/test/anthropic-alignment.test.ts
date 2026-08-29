@@ -269,6 +269,34 @@ describe("Anthropic request fingerprint alignment", () => {
 		expect(options.defaultHeaders["anthropic-beta"]).not.toContain("context-1m-2025-08-07");
 	});
 
+	it("unions compat.extraBetas into the chain instead of replacing it", () => {
+		// Relays that gate beta-locked 1M models on `context-1m-2025-08-07` opt in
+		// per provider. The token must join the generated chain: an
+		// `anthropic-beta` header override would replace the whole value and drop
+		// the OAuth fingerprint betas with it.
+		const relayModel = buildModel({
+			...ANTHROPIC_MODEL_SPEC,
+			id: "claude-opus-5",
+			name: "Claude Opus 5",
+			baseUrl: "https://relay.example",
+			contextWindow: 1_000_000,
+			compat: { extraBetas: ["context-1m-2025-08-07"] },
+		});
+		const options = buildAnthropicClientOptions({
+			model: relayModel,
+			apiKey: "sk-ant-oat-test",
+			stream: true,
+			hasTools: true,
+			thinkingEnabled: true,
+		});
+
+		const betas = (options.defaultHeaders["anthropic-beta"] ?? "").split(",");
+		expect(betas).toContain("context-1m-2025-08-07");
+		expect(betas).toContain("oauth-2025-04-20");
+		expect(betas).toContain("effort-2025-11-24");
+		expect(new Set(betas).size).toBe(betas.length);
+	});
+
 	it("places a short breakpoint only on the trailing message in a one-message OAuth request", async () => {
 		const payload = (await captureAnthropicPayload(ANTHROPIC_MODEL, {
 			systemPrompt: ["Stay concise."],

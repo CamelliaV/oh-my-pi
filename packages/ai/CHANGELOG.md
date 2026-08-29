@@ -5,6 +5,7 @@
 ### Added
 
 - `AnthropicAuthConfig` accepts optional `modelHeaders`, forwarded by `buildAnthropicSearchHeaders`, so non-streaming Messages callers that reuse a configured model's transport can send that provider's headers.
+- `anthropic-messages` providers accept `compat.extraBetas`, unioned into the generated `anthropic-beta` chain (and into hosted web search's) so a relay that gates requests on an extra beta — e.g. `context-1m-2025-08-07` on beta-locked 1M models — can opt in without `allowAnthropicHeaderOverrides` replacing the whole chain and dropping the OAuth fingerprint betas with it.
 
 ### Fixed
 

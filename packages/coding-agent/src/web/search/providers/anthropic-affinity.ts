@@ -33,7 +33,7 @@ import type { ModelRegistry } from "../../../config/model-registry";
  * Kept in this light module, importable by the lazy provider registry
  * (`web/search/provider.ts`) without loading any provider implementation.
  */
-export function isAnthropicSearchAffinityModel(model: Model | undefined): model is Model {
+export function isAnthropicSearchAffinityModel(model: Model | undefined): model is Model<"anthropic-messages"> {
 	if (model?.api !== "anthropic-messages") return false;
 	if (isOfficialAnthropicApiUrl(model.baseUrl)) return false;
 	if ($env.ANTHROPIC_SEARCH_API_KEY || $env.ANTHROPIC_SEARCH_BASE_URL) return false;
@@ -56,6 +56,13 @@ export interface AnthropicSearchTransport {
 	 */
 	isOAuth: boolean;
 	modelHeaders?: Record<string, string>;
+	/**
+	 * Provider-declared `anthropic-beta` tokens (`compat.extraBetas`). A relay
+	 * that gates every request on a beta gates the search request too, and the
+	 * search path builds its own header set rather than going through the
+	 * streaming client, so they have to travel with the transport.
+	 */
+	extraBetas?: readonly string[];
 }
 
 /**
@@ -76,11 +83,13 @@ export function resolveAnthropicSearchTransport(
 		...(modelRegistry?.getProviderHeaders(activeModel.provider) ?? {}),
 		...(activeModel.headers ?? {}),
 	};
+	const extraBetas = activeModel.compat?.extraBetas;
 	return {
 		provider: activeModel.provider,
 		baseUrl: activeModel.baseUrl,
 		model: activeModel.requestModelId ?? activeModel.id,
 		isOAuth: activeModel.isOAuth === true,
 		modelHeaders: Object.keys(modelHeaders).length > 0 ? modelHeaders : undefined,
+		extraBetas: extraBetas && extraBetas.length > 0 ? extraBetas : undefined,
 	};
 }

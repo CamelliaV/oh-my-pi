@@ -3039,7 +3039,16 @@ export function buildAnthropicClientOptions(args: AnthropicClientOptionsArgs): A
 		};
 	}
 
+	// Provider-declared betas (`compat.extraBetas`) join the same union, so a
+	// relay-required beta cannot displace the generated chain the way an
+	// `allowAnthropicHeaderOverrides` header replacement would. Applied here
+	// rather than at the stream call site so every client build carries them;
+	// the github-copilot branch above is excluded deliberately, since that proxy
+	// rejects Anthropic betas outright.
 	const betaFeatures = [...extraBetas];
+	for (const beta of compat.extraBetas) {
+		if (!betaFeatures.includes(beta)) betaFeatures.push(beta);
+	}
 	if (needsFineGrainedToolStreamingBeta) {
 		betaFeatures.push(fineGrainedToolStreamingBeta);
 	}

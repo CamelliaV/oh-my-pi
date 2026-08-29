@@ -717,3 +717,35 @@ patch series by hand/cherry-pick.
    `escapeBuiltinToolNames` / `allowAnthropicHeaderOverrides`), which is 1 field
    + 1 resolver default and also splits `isOAuth`'s two meanings (credential
    mechanism vs fingerprint persona). Tests: `test/anthropic-alignment.test.ts`.
+19. `feat(ai)` provider-declared Anthropic betas via `compat.extraBetas` — a
+   relay can require a beta the generated chain never carries: anyrouter 400s
+   every opus-class request ("1m 上下文已经全量可用，请启用 1m 上下文后重试")
+   without `context-1m-2025-08-07`, which upstream deliberately never advertises
+   because official OAuth subscriptions have no long-context credit and hard-429
+   on beta-gated 1M models regardless of prompt size (#7238). Wire-measured on
+   one relay, three spellings: a models.yml `headers: { anthropic-beta: … }`
+   entry is DEAD (the key is in `enforcedHeaderKeys`, stripped in BOTH cloak and
+   api-key modes — 10 betas / 2 betas, no 1M); `compat.allowAnthropicHeaderOverrides`
+   does deliver it but `mergeHeaders` is whole-value replacement per key, so the
+   10-beta cloak chain collapses to 1, losing `oauth-2025-04-20` and
+   `effort-2025-11-24`; `compat.extraBetas` unions through the existing
+   `buildBetaHeader` dedupe — 11 betas, full chain + 1M, 400 gone. Field lives on
+   `AnthropicCompat` (catalog `types.ts`, defaulted `[]` in `buildAnthropicCompat`,
+   declared in the STRICT models.yml schema bundle beside the other
+   anthropic-messages compat flags) and is unioned inside
+   `buildAnthropicClientOptions`, NOT at the stream call site, so every client
+   build carries it; the `github-copilot` early-return branch is excluded on
+   purpose (that proxy rejects Anthropic betas outright). Hosted search builds
+   its own headers and never sees `model.compat`, so a relay that gates chat
+   gates search too: threaded `AnthropicSearchTransport.extraBetas` →
+   `AnthropicAuthConfig.extraBetas` → unioned with `web-search-2025-03-05`.
+   Residual anyrouter 503/429 is upstream capacity, not request shape — plain
+   curl bypassing omp entirely, no cloak, only that beta, returns 503 while the
+   beta-specific 400 is gone; the codex-side sibling reports
+   "当前模型 … 负载已经达到上限" WITH a request id, i.e. shape accepted. Trap: a
+   compat field declared in the wrong schema block makes
+   `ModelsConfigFile.tryLoad()` return an issue whose `message` is `undefined` —
+   diagnose by locating the right block, not by reading the error. Tests:
+   `test/anthropic-alignment.test.ts` (union keeps the chain, 1M still absent by
+   default), `test/web/search/provider-chain.test.ts` (transport carries
+   provider betas).

@@ -378,6 +378,7 @@ export async function searchAnthropic(
 						baseUrl: transport.baseUrl,
 						isOAuth: transport.isOAuth,
 						modelHeaders: transport.modelHeaders,
+						extraBetas: transport.extraBetas,
 					}
 				: buildAnthropicAuthConfig(key, searchBaseUrl);
 			// Mirror the main Messages path: OAuth requests need a Claude-Code-shaped

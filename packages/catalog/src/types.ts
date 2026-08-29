@@ -507,6 +507,21 @@ export interface AnthropicCompat {
 	 */
 	allowAnthropicHeaderOverrides?: boolean;
 	/**
+	 * Additional `anthropic-beta` tokens to union into the generated beta chain.
+	 *
+	 * Unlike `allowAnthropicHeaderOverrides` — which lets a configured
+	 * `anthropic-beta` header *replace* the whole generated value, dropping the
+	 * OAuth fingerprint chain with it — these are merged and deduped, so a relay
+	 * that gates on one extra beta keeps every beta the request already needed.
+	 *
+	 * Motivating case: relays that reject beta-gated 1M-context models unless
+	 * `context-1m-2025-08-07` is present. That beta is deliberately never
+	 * advertised by default, because official OAuth subscription credentials
+	 * have no long-context credit balance and hard-429 on any beta-gated 1M
+	 * model regardless of prompt size (#7238) — so it stays opt-in per provider.
+	 */
+	extraBetas?: readonly string[];
+	/**
 	 * Replay unsigned `thinking` blocks from prior assistant turns as native
 	 * thinking instead of demoting them to text. Official Anthropic enforces
 	 * signature-based thinking-chain integrity, so unsigned blocks must stay

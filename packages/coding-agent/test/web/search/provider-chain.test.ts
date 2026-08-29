@@ -280,7 +280,17 @@ describe("resolveAnthropicSearchTransport", () => {
 			model: "claude-opus-5",
 			isOAuth: true,
 			modelHeaders: { "X-Provider-Level": "1", "X-Relay-Group": "cc" },
+			extraBetas: undefined,
 		});
+	});
+
+	it("carries provider-declared betas so a beta-gated relay accepts the search request", () => {
+		const gated = {
+			...anthropicRelayModel,
+			compat: { extraBetas: ["context-1m-2025-08-07"] },
+		} as unknown as Model;
+
+		expect(resolveAnthropicSearchTransport(gated, modelRegistry)?.extraBetas).toEqual(["context-1m-2025-08-07"]);
 	});
 
 	it("prefers the wire request id over the catalog id", () => {

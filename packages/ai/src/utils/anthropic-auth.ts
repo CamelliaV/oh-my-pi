@@ -28,6 +28,13 @@ export interface AnthropicAuthConfig {
 	 * headers need them on the search request too.
 	 */
 	modelHeaders?: Record<string, string>;
+	/**
+	 * Extra `anthropic-beta` tokens to union with the search beta. Same purpose
+	 * as `modelHeaders`: a relay that gates every request on a beta gates this
+	 * one too, and this path never goes through the streaming client that would
+	 * otherwise contribute `compat.extraBetas`.
+	 */
+	extraBetas?: readonly string[];
 }
 
 const DEFAULT_BASE_URL = "https://api.anthropic.com";
@@ -84,7 +91,7 @@ export function buildAnthropicSearchHeaders(auth: AnthropicAuthConfig): Record<s
 		apiKey: auth.apiKey,
 		baseUrl: auth.baseUrl,
 		isOAuth: auth.isOAuth,
-		extraBetas: ["web-search-2025-03-05"],
+		extraBetas: ["web-search-2025-03-05", ...(auth.extraBetas ?? [])],
 		stream: false,
 		modelHeaders: { ...resolveAnthropicCustomHeadersForBaseUrl(auth.baseUrl), ...auth.modelHeaders },
 	});

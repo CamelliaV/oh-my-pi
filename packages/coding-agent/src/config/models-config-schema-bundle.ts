@@ -59,6 +59,7 @@ export const getModelsConfigSchemaBundle = once(() => {
 		// anthropic-messages compat flags (same `compat` slot, per-api interpretation)
 		"supportsEagerToolInputStreaming?": "boolean",
 		"allowAnthropicHeaderOverrides?": "boolean",
+		"extraBetas?": "string[]",
 		"requiresToolResultId?": "boolean",
 		"replayUnsignedThinking?": "boolean",
 	} as const;

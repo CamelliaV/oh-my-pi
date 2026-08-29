@@ -590,9 +590,9 @@ export class Editor implements Component, Focusable {
 	#topBorderContent?: EditorTopBorder;
 	#topBorderProvider?: (availableWidth: number) => EditorTopBorder | undefined;
 	#borderVisible = true;
-	/** Rows injected between the top border and the text viewport (e.g. the
-	 *  composer's draft-image preview strip). Rendered on every frame; hosts
-	 *  keep their own caching. Rows are chrome-wrapped like content lines. */
+	/** Rows injected above the text viewport (e.g. the composer's draft-image
+	 *  preview strip). Rendered on every frame; hosts keep their own caching.
+	 *  Rows are chrome-wrapped by the active composer shape like content lines. */
 	#leadingRowsProvider?: (width: number, contentWidth: number) => readonly string[];
 
 	#borderStyle: EditorBorderStyle = "box";
@@ -673,11 +673,11 @@ export class Editor implements Component, Focusable {
 	}
 
 	/**
-	 * Install a provider of rows rendered inside the frame, between the top
-	 * border and the text viewport — used for attachment previews (draft
-	 * images) that belong to the composed input. Rows are padded and given the
-	 * box's side chrome exactly like content lines. Only rendered while the
-	 * border is visible; pass `undefined` to detach.
+	 * Install a provider of rows rendered above the text viewport — used for
+	 * attachment previews (draft images) that belong to the composed input.
+	 * Rows are padded to the content width and wrapped by the active composer
+	 * shape's chrome exactly like content lines, so they follow `box`'s frame
+	 * and stay flush under the borderless shapes. Pass `undefined` to detach.
 	 */
 	setLeadingRowsProvider(provider: ((width: number, contentWidth: number) => readonly string[]) | undefined): void {
 		this.#leadingRowsProvider = provider;
@@ -1108,19 +1108,32 @@ export class Editor implements Component, Focusable {
 		const topRow = style.renderTop(chromeCtx);
 		if (topRow !== undefined) result.push(topRow);
 
-		// Leading rows (attachment previews): injected inside the frame, above
-		// the scrollable text viewport, and chrome-wrapped like content lines.
-		if (this.#borderVisible && this.#leadingRowsProvider) {
+		// Leading rows (attachment previews): injected above the scrollable text
+		// viewport and wrapped by the ACTIVE composer style, exactly like content
+		// rows — hardcoding box chrome here would overflow the width by two cells
+		// on the borderless shapes (`band`, `borderless`, `rule`, …). The prompt
+		// gutter is blanked rather than repeated: its cue (`╰─ `) belongs to the
+		// input line, but its cells still belong to the content budget.
+		if (this.#leadingRowsProvider) {
 			const leadingRows = this.#leadingRowsProvider(width, contentAreaWidth);
-			if (leadingRows.length > 0) {
-				const leftBorder = this.borderColor(`${box.vertical}${padding(paddingX)}`);
-				for (const row of leadingRows) {
-					const rowWidth = visibleWidth(row);
-					const text = rowWidth > contentAreaWidth ? truncateToWidth(row, contentAreaWidth) : row;
-					const textWidth = rowWidth > contentAreaWidth ? contentAreaWidth : rowWidth;
-					const linePad = padding(Math.max(0, contentAreaWidth - textWidth));
-					result.push(`${leftBorder}${text}${linePad}${this.borderColor(box.vertical)}`);
-				}
+			const gutterPad = padding(this.#getPromptGutterWidth(width, paddingX));
+			for (const row of leadingRows) {
+				const rowWidth = visibleWidth(row);
+				const overflows = rowWidth > contentAreaWidth;
+				const text = overflows ? truncateToWidth(row, contentAreaWidth) : row;
+				const textWidth = overflows ? visibleWidth(text) : rowWidth;
+				result.push(
+					...style.renderRow({
+						...chromeCtx,
+						text,
+						pad: padding(Math.max(0, contentAreaWidth - textWidth)),
+						gutter: gutterPad,
+						isLastRow: false,
+						cursorOverflow: 0,
+						imeSafeCursorTail: false,
+						scrollbarThumb: false,
+					}),
+				);
 			}
 		}
 

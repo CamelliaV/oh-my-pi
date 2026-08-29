@@ -379,7 +379,8 @@ is the old baseline commit and whose tree is the new tag's tarball
 merge-base is correct, so only fork-touched regions conflict with full
 three-way context. Future upgrades repeat this (each new synthetic commit
 parents onto the previous one), making every upgrade incremental. v17.3.5→v18.0.7
-was done this way (34 files, 76 hunks; merge commit `008c64c`).
+was done this way (34 files, 76 hunks; merge commit `008c64c`); v18.0.9→v18.0.10
+cost exactly ONE trivial conflict (159 files, +6398−774).
 
 Legacy alternative: replace the worktree with the tarball and re-apply the
 patch series by hand/cherry-pick.
@@ -394,7 +395,7 @@ patch series by hand/cherry-pick.
    PTY probes for extensions (`/tools`) — debug sessions MUST use `--no-session`.
 
 
-### Patch list (v18.0.9 baseline; merged 2026-08-28 from v18.0.7 fork, merge commit ae8456d)
+### Patch list (v18.0.10 baseline; merged 2026-08-29 from v18.0.9 fork, merge commit recorded below)
 
 1. `feat(tui)` user message bubble rounded frame — `user-message.ts` Box +
    `theme.boxRound`, `borderAccent`, `setIgnoreTight(true)`; OSC 133 markers
@@ -782,3 +783,41 @@ patch series by hand/cherry-pick.
    `test/anthropic-alignment.test.ts` (union keeps the chain, 1M still absent by
    default), `test/web/search/provider-chain.test.ts` (transport carries
    provider betas).
+20. `fix(tui)` draft-image preview strip follows the active composer shape —
+   v18.0.10 added the `band` composer (`sideBorders: false`,
+   `sideChromeWidth() === 0`) and made it the schema default, which exposed a
+   latent bug in the fork's leading-rows hook: it hardcoded `box.vertical` +
+   `paddingX` on BOTH sides while padding the text to `contentAreaWidth`, so on
+   every borderless shape the strip came out `width + 2` cells and misaligned
+   against the frameless text rows. It now renders through
+   `style.renderRow({ …chromeCtx, gutter: <blanked>, isLastRow: false })` exactly
+   like a content row, and the `#borderVisible` gate is gone because
+   `#effectiveStyle()` already substitutes `borderlessComposerStyle` when the
+   border is hidden — so previews survive in borderless mode instead of
+   vanishing. The prompt gutter is blanked, not repeated: its `╰─ ` cue belongs
+   to the input line but its cells still belong to the content budget. Verified
+   with a throwaway driver over all 8 shapes (box/band/borderless/rule/field/
+   rail/pi/claude): strip present, every row ≤ width, box keeps `│ … │`, band and
+   friends render flush. Note for future confusion: cindy's own config pins
+   `composer.shape: box` in `~/.omp/agent/config.yml` (NOT `settings.json`, and
+   the `settings` table in `agent.db` is empty), so the band default never
+   reached her — the fix is for shape switching and the borderless shapes.
+
+   Merge adjudications (v18.0.9 → v18.0.10, 41 upstream commits / 159 files):
+   the only textual conflict was `event-controller.ts`'s import block, where
+   upstream deleted `interruptHint` (definition and call site — the interrupt cue
+   moved into the new status line, `setWorkingMessage(trimmed)`) right beside the
+   fork's `work-usage` imports; resolution keeps ours minus the now-dead import.
+   Everything else auto-merged, including two overlaps worth knowing: (a)
+   upstream's `→`-accepts-completion (`#acceptWordCompletion`, end of LINE) and
+   the fork's `→`-accepts-provider-ghost (`#getInsertableHint`, end of BUFFER)
+   form a fallback chain rather than double-inserting, and the fork's hook is
+   still required because history ghosts come from the provider, not the built-in
+   word completion; (b) `turn-recovery.ts` / `agent-loop.ts` grew only additive
+   helpers (`toolReplayStart`, `hasAbortedToolCallTail`, `unpairedToolCallTail`),
+   so pet-bridge's `auto_retry_end` → ERROR settle is unaffected — though the new
+   idle "F5 to Retry" state is not yet a pose the daemon knows.
+   NATIVES ARE A HARD PREREQUISITE for this tag: `execReplace` (`/restart`) and
+   `VcsGitRepo.mergeBase` (`/review` PR mode) are new and BOTH call sites are
+   unguarded, so v18.0.9 `.node` files give a degraded `/restart` and a
+   `TypeError` on `/review`.

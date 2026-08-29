@@ -77,7 +77,7 @@ const DEFAULT_ACTION_KEYS: Record<ConfigurableEditorAction, KeyId[]> = {
 	"app.editor.external": ["ctrl+g"],
 	"app.history.search": ["ctrl+r"],
 	"app.message.dequeue": ["alt+up", "shift+up"],
-	"app.retry": ["alt+r"],
+	"app.retry": ["f5", "alt+r"],
 	"app.clipboard.pasteImage": ["ctrl+v"],
 	"app.clipboard.pasteTextRaw": ["ctrl+shift+v", "alt+shift+v"],
 	"app.clipboard.copyPrompt": ["alt+shift+c"],
@@ -527,7 +527,6 @@ export class CustomEditor extends Editor {
 		// The strip renders inside the editor frame via the leading-rows hook, so
 		// it travels with the composer through every editorContainer swap.
 		this.setLeadingRowsProvider((_width, contentWidth) => {
-			this.#draftImageStrip?.setImages(this.pendingImages);
 			this.#draftImageStrip?.setImages(this.pendingImages);
 			return this.#draftImageStrip?.render(contentWidth) ?? [];
 		});

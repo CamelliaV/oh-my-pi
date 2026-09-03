@@ -298,18 +298,14 @@ describe("executeSearch abort propagation", () => {
 	});
 
 	it("falls through when a provider returns no renderable search content", async () => {
-		const emptyProviderSearch = vi.fn(
-			async (): Promise<SearchResponse> => ({
-				provider: "searxng",
-				sources: [],
-			}),
-		);
-		const sourceProviderSearch = vi.fn(
-			async (): Promise<SearchResponse> => ({
-				provider: "brave",
-				sources: [{ title: "Fallback result", url: "https://example.com/fallback", snippet: "fallback body" }],
-			}),
-		);
+		const emptyProviderSearch = vi.fn(async (): Promise<SearchResponse> => ({
+			provider: "searxng",
+			sources: [],
+		}));
+		const sourceProviderSearch = vi.fn(async (): Promise<SearchResponse> => ({
+			provider: "brave",
+			sources: [{ title: "Fallback result", url: "https://example.com/fallback", snippet: "fallback body" }],
+		}));
 		mockProviderChain([fakeProvider("searxng", emptyProviderSearch), fakeProvider("brave", sourceProviderSearch)]);
 
 		const tool = new WebSearchTool(FAKE_SESSION);
@@ -343,12 +339,10 @@ describe("executeSearch abort propagation", () => {
 	});
 
 	it("exposes a rate-limit fallback to the model and renderer metadata", async () => {
-		const fallbackSearch = vi.fn(
-			async (): Promise<SearchResponse> => ({
-				provider: "brave",
-				sources: [{ title: "Fallback result", url: "https://example.com/fallback" }],
-			}),
-		);
+		const fallbackSearch = vi.fn(async (): Promise<SearchResponse> => ({
+			provider: "brave",
+			sources: [{ title: "Fallback result", url: "https://example.com/fallback" }],
+		}));
 		const getProvider = mockProviderChain(
 			[
 				fakeProvider(
@@ -384,13 +378,34 @@ describe("executeSearch abort propagation", () => {
 		expect(fallbackSearch).toHaveBeenCalledTimes(1);
 	});
 
-	it("does not fall through after an explicitly selected provider fails", async () => {
-		const fallbackSearch = vi.fn(
-			async (): Promise<SearchResponse> => ({
-				provider: "brave",
-				sources: [{ title: "Hidden fallback", url: "https://example.com/fallback" }],
-			}),
+	it("falls through after the preferred provider fails", async () => {
+		const fallbackSearch = vi.fn(async (): Promise<SearchResponse> => ({
+			provider: "brave",
+			sources: [{ title: "Fallback result", url: "https://example.com/fallback" }],
+		}));
+		const getProvider = mockProviderChain(
+			[
+				fakeProvider("exa", async () => {
+					throw new SearchProviderError("exa", "Preferred provider failed.", 500);
+				}),
+				fakeProvider("brave", fallbackSearch),
+			],
+			{ explicitFirst: true },
 		);
+
+		const tool = new WebSearchTool(FAKE_SESSION);
+		const result = await tool.execute("test-id", { query: "anything" });
+
+		expect(result.details?.response.provider).toBe("brave");
+		expect(getProvider).toHaveBeenCalledTimes(2);
+		expect(fallbackSearch).toHaveBeenCalledTimes(1);
+	});
+
+	it("does not fall through after an explicitly selected provider fails", async () => {
+		const fallbackSearch = vi.fn(async (): Promise<SearchResponse> => ({
+			provider: "brave",
+			sources: [{ title: "Hidden fallback", url: "https://example.com/fallback" }],
+		}));
 		const getProvider = mockProviderChain(
 			[
 				fakeProvider("codex", async () => {

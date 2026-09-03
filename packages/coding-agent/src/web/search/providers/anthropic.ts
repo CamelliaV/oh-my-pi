@@ -20,7 +20,7 @@ import {
 	wrapFetchForCch,
 } from "@oh-my-pi/pi-ai";
 import { isOfficialAnthropicApiUrl } from "@oh-my-pi/pi-catalog/compat/anthropic";
-import { hasOpus47ApiRestrictions } from "@oh-my-pi/pi-catalog/identity/family";
+import { classifyModel, compareRevision, parseRevision } from "@oh-my-pi/pi-catalog/identity";
 import { $env } from "@oh-my-pi/pi-utils";
 import type {
 	AnthropicApiResponse,
@@ -35,6 +35,22 @@ import { resolveAnthropicSearchTransport } from "./anthropic-affinity";
 import type { SearchParams, SearchProviderAvailabilityContext } from "./base";
 import { SearchProvider } from "./base";
 import { classifyProviderHttpError, withHardTimeout } from "./utils";
+
+function hasSamplingRestrictions(modelId: string): boolean {
+	const identity = classifyModel("anthropic", modelId, { lenient: true });
+	if (identity.class !== "anthropic" || identity.revision === undefined) return false;
+	const revision = parseRevision(identity.revision);
+	const floor = parseRevision(identity.family === "opus" ? "4.7" : "5");
+	return (
+		revision !== undefined &&
+		floor !== undefined &&
+		(identity.family === "opus" ||
+			identity.family === "sonnet" ||
+			identity.family === "fable" ||
+			identity.family === "mythos") &&
+		compareRevision(revision, floor) >= 0
+	);
+}
 
 const DEFAULT_MODEL = "claude-haiku-4-5";
 const DEFAULT_MAX_TOKENS = 4096;
@@ -181,7 +197,7 @@ async function callSearch(
 	}
 
 	// Opus 4.7+, Sonnet 5+, and Fable/Mythos 5 reject sampling parameters with a 400.
-	if (temperature !== undefined && !hasOpus47ApiRestrictions(model)) {
+	if (temperature !== undefined && !hasSamplingRestrictions(model)) {
 		body.temperature = temperature;
 	}
 

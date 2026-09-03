@@ -416,8 +416,8 @@ function resolveCodexSearchTransport(
 		baseUrl,
 		url,
 		headers: {
-			...(modelRegistry?.getProviderHeaders("openai-codex") ?? {}),
-			...(registryModel?.headers ?? {}),
+			...modelRegistry?.getProviderHeaders("openai-codex"),
+			...registryModel?.headers,
 		},
 		protocol: "codex",
 		authMode: customEndpoint ? "api-key" : "codex-oauth",

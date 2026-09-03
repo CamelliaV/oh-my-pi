@@ -7,6 +7,7 @@ import { attachmentSgr, collapseImageMarkers, renderPlaceholders } from "../comp
 import { imageReferenceHyperlink } from "../image-references";
 import { highlightMagicKeywords } from "../magic-keywords";
 import { ImageStrip } from "./image-strip";
+import type { ReactionTarget } from "./reaction";
 import { formatSessionUsageRow, type SessionUsageSnapshot } from "./work-usage";
 
 // OSC 133 shell integration: marks prompt zones for terminal multiplexers.
@@ -32,9 +33,10 @@ const OSC133_COMMAND_DONE = "\x1b]133;D;0\x07";
 const OSC133_ZONE_CLOSE = OSC133_ZONE_END + OSC133_COMMAND_START + OSC133_COMMAND_DONE;
 
 /**
- * Component that renders a user message
+ * Component that renders a user message. Accepts an agent reaction badge
+ * (see {@link ReactionTarget}) drawn right-aligned in the bubble's top padding row.
  */
-export class UserMessageComponent extends Container {
+export class UserMessageComponent extends Container implements ReactionTarget {
 	// Memoized OSC 133 zone wrapping keyed on the underlying container render
 	// (same source ref ⇒ identical rows ⇒ reuse the wrapped copy). Keeps this
 	// component reference-stable for the transcript's incremental assembly and
@@ -52,6 +54,9 @@ export class UserMessageComponent extends Container {
 	 * {@link AssistantMessageComponent} uses for late tool images.
 	 */
 	#blockVersion = 0;
+	readonly #bgColor: (value: string) => string;
+	#reaction: string | undefined;
+	#badgeLine: Text | undefined;
 
 	constructor(
 		text: string,
@@ -76,6 +81,7 @@ export class UserMessageComponent extends Container {
 		// Markdown layout so wrapping and bubble padding are computed on the visible text.
 		text = collapseImageMarkers(text, Number.POSITIVE_INFINITY, () => {});
 		const bgColor = (value: string) => theme.bg("userMessageBg", value);
+		this.#bgColor = bgColor;
 		// Paint the magic keywords ("ultrathink"/"orchestrate"/"workflowz") inside the rendered
 		// bubble too — matching the live editor glow. The Markdown component routes code spans and
 		// fenced blocks through its own code styling (never `color`), so those are already excluded;
@@ -96,7 +102,9 @@ export class UserMessageComponent extends Container {
 						form === "chip"
 							? `${attachmentSgr(kind, index)}\x1b[1m${label}\x1b[22m${keywordReset}`
 							: theme.fg("accent", `\x1b[1m${label}\x1b[22m`);
-					return kind === "image" ? imageReferenceHyperlink(label, index, imageLinks, () => styled) : styled;
+					return kind === "image" || kind === "video"
+						? imageReferenceHyperlink(label, index, imageLinks, () => styled)
+						: styled;
 				},
 			});
 		const md = new Markdown(text, 1, 1, getMarkdownTheme(), {
@@ -159,6 +167,26 @@ export class UserMessageComponent extends Container {
 			}
 		}
 		this.#zoneSource = undefined;
+		this.#zoneLines = undefined;
+		this.invalidate();
+	}
+
+	setReaction(emoji: string): void {
+		if (this.#reaction === emoji) return;
+		this.#reaction = emoji;
+		if (this.#badgeLine) {
+			this.#frame.removeChild(this.#badgeLine);
+			this.#badgeLine = undefined;
+		}
+		if (emoji) {
+			// Badge as the first row INSIDE the rounded frame (this fork's bubble
+			// shape): upstream's borderless bubble overwrote its own top padding
+			// row, which here would wipe the frame's top border instead.
+			this.#badgeLine = new Text(emoji, 1, 0).setStyleFn(value => this.#bgColor(value));
+			this.#badgeLine.setIgnoreTight?.(true);
+			this.#frame.children.unshift(this.#badgeLine);
+			this.#frame.invalidate?.();
+		}
 		this.#zoneLines = undefined;
 		this.invalidate();
 	}

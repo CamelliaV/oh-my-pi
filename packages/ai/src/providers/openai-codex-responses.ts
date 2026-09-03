@@ -137,13 +137,9 @@ export interface OpenAICodexResponsesOptions extends StreamOptions {
 	preferWebsockets?: boolean;
 	serviceTier?: ServiceTier;
 	/**
-	 * Responses Lite transport override; defaults to the model's catalog
-	 * `useResponsesLite` flag (codex-rs `use_responses_lite`). Sends
-	 * `x-openai-internal-codex-responses-lite: true` on HTTP requests and on the
-	 * WebSocket upgrade (the marker is connection-scoped there, so lite and
-	 * non-lite turns never share a pooled socket), moves instructions/tools
-	 * into input items, strips image detail, and disables parallel tool
-	 * calling — mirroring codex-rs.
+	 * Responses Lite transport opt-in. Normal inference defaults to full
+	 * Responses; provider-native compaction explicitly follows the model's
+	 * `useResponsesLite` flag.
 	 */
 	responsesLite?: boolean;
 	/**
@@ -1330,17 +1326,11 @@ function unrollCodexComputerToolResult(message: ToolResultMessage): ToolResultMe
 }
 
 function getCodexServiceTierCostMultiplier(
-	model: Pick<Model<"openai-codex-responses">, "id">,
+	model: Pick<Model<"openai-codex-responses">, "serviceTierCost">,
 	serviceTier: ServiceTier | "default" | undefined,
 ): number {
-	switch (serviceTier) {
-		case "flex":
-			return 0.5;
-		case "priority":
-			return model.id === "gpt-5.5" ? 2.5 : 2;
-		default:
-			return 1;
-	}
+	if (serviceTier !== "flex" && serviceTier !== "priority") return 1;
+	return model.serviceTierCost?.[serviceTier] ?? 1;
 }
 
 function resolveCodexCostServiceTier(res: unknown, req?: unknown): ServiceTier | "default" | undefined {
@@ -1358,7 +1348,7 @@ function resolveCodexCostServiceTier(res: unknown, req?: unknown): ServiceTier |
 }
 
 function applyCodexServiceTierPricing(
-	model: Pick<Model<"openai-codex-responses">, "id">,
+	model: Pick<Model<"openai-codex-responses">, "serviceTierCost">,
 	usage: AssistantMessage["usage"],
 	resTier: unknown,
 	reqTier: unknown,
@@ -1440,7 +1430,7 @@ function createCodexRequestContext(
 
 	const transportSessionId = normalizeOpenAIPromptCacheKey(options?.sessionId);
 	const codexClientVersion = CODEX_CLIENT_VERSION;
-	const requestHeaders = { ...(model.headers ?? {}), ...(options?.headers ?? {}) };
+	const requestHeaders = { ...model.headers, ...options?.headers };
 	const rawRequestDump: RawHttpRequestDump = {
 		provider: model.provider,
 		api: model.api,
@@ -1456,7 +1446,7 @@ function createCodexRequestContext(
 			? createCodexProviderSessionState()
 			: undefined;
 	const transportProviderSessionState = isolatedTransportState ?? providerSessionState;
-	const responsesLite = resolveCodexResponsesLite(model, options?.responsesLite);
+	const responsesLite = resolveCodexResponsesLite(options?.responsesLite);
 	const sessionKey = getCodexWebSocketSessionKey(transportSessionId, model, accountId, apiKey, baseUrl, responsesLite);
 	const publicSessionKey = transportSessionId ? `${baseUrl}:${model.id}:${transportSessionId}` : undefined;
 	if (sessionKey && publicSessionKey) {
@@ -1781,7 +1771,7 @@ async function openCodexWebSocketTransport(
 	// request identity is already in `client_metadata`; connection-scoped
 	// compatibility values that can change after the upgrade ride alongside it
 	// on every `response.create`.
-	const websocketClientMetadata = { ...(chainedBody.client_metadata ?? {}) };
+	const websocketClientMetadata = { ...chainedBody.client_metadata };
 	if (requestContext.responsesLite) {
 		websocketClientMetadata[CODEX_WS_RESPONSES_LITE_CLIENT_METADATA_KEY] = "true";
 	}
@@ -2817,9 +2807,7 @@ class CodexStreamProcessor {
 
 	async #tryRetryProviderError(error: unknown): Promise<boolean> {
 		const retryable =
-			error instanceof CodexProviderStreamError
-				? error.retryable
-				: AIError.isProviderRetryableError(error, { provider: this.model.provider });
+			error instanceof CodexProviderStreamError ? error.retryable : AIError.isProviderRetryableError(error);
 		// A leading `response.output_item.added` opens an empty block and emits only
 		// a `*_start` before any delta; that is replay-safe. But once any text or
 		// thinking delta has streamed — including a whitespace-only
@@ -3075,7 +3063,7 @@ export async function prewarmOpenAICodexResponses(
 	const transportSessionId = normalizeOpenAIPromptCacheKey(options?.sessionId);
 	const promptCacheKey = transportSessionId;
 	const providerSessionState = getCodexProviderSessionState(options?.providerSessionState);
-	const responsesLite = resolveCodexResponsesLite(model, options?.responsesLite);
+	const responsesLite = resolveCodexResponsesLite(options?.responsesLite);
 	const sessionKey = getCodexWebSocketSessionKey(transportSessionId, model, accountId, apiKey, baseUrl, responsesLite);
 	const publicSessionKey = transportSessionId ? `${baseUrl}:${model.id}:${transportSessionId}` : undefined;
 	if (publicSessionKey && sessionKey) {
@@ -3095,7 +3083,7 @@ export async function prewarmOpenAICodexResponses(
 	const headers = logger.time(
 		"prewarmCodex:createHeaders",
 		createCodexHeaders,
-		{ ...(model.headers ?? {}), ...(options?.headers ?? {}) },
+		{ ...model.headers, ...options?.headers },
 		accountId,
 		apiKey,
 		codexClientVersion,

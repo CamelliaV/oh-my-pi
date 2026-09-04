@@ -3241,15 +3241,11 @@ function applyPromptCaching(params: MessageCreateParamsStreaming, cacheControl?:
 	const messageEnd = hasTrailingAssistantPad ? trailingIndex - 1 : trailingIndex;
 	const start = Math.max(0, messageEnd - 1);
 	for (let index = messageEnd; index >= start; index--) {
-		const message = params.messages[index];
-		if (!message) continue;
-		if (typeof message.content === "string") {
-			message.content = [
-				{ type: "text", text: message.content, cache_control: cloneAnthropicCacheControl(cacheControl) },
-			];
-		} else if (Array.isArray(message.content)) {
-			applyCacheControlToLastBlock(message.content, cacheControl);
-		}
+		const content = params.messages[index]?.content;
+		// Real user/assistant turns are always block form (`convertAnthropicMessages`
+		// normalizes them so the cached prefix stays byte-stable). Only the synthetic
+		// `Continue.` pad is a bare string, and it is excluded above.
+		if (Array.isArray(content)) applyCacheControlToLastBlock(content, cacheControl);
 	}
 }
 
@@ -3663,15 +3659,23 @@ export function convertAnthropicMessages(
 		if (msg.role === "user" || msg.role === "developer") {
 			if (!msg.content) continue;
 
-			let content: string | ContentBlockParam[];
+			// Always emit block form, never a bare string. `applyPromptCaching`
+			// can only attach `cache_control` to a block, so a string-content
+			// message silently changed shape whenever it held the rolling cache
+			// anchor and changed back once the window moved past it, rewriting a
+			// byte inside the cached prefix on every user turn and truncating the
+			// reusable region there. A single text block is the documented
+			// equivalent of string content, so wire meaning and token count are
+			// unchanged - only the shape is now stable.
+			let content: ContentBlockParam[];
 			if (typeof msg.content === "string") {
 				if (msg.content.trim().length === 0) continue;
-				content = msg.content.toWellFormed();
+				content = [{ type: "text", text: msg.content.toWellFormed() }];
 			} else {
 				const contentBlocks = convertContentBlocks(msg.content, model.input.includes("image"));
 				if (typeof contentBlocks === "string") {
 					if (contentBlocks.trim().length === 0) continue;
-					content = contentBlocks;
+					content = [{ type: "text", text: contentBlocks }];
 				} else {
 					if (contentBlocks.length === 0) continue;
 					content = contentBlocks;

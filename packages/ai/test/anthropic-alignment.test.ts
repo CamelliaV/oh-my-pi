@@ -371,12 +371,12 @@ describe("Anthropic request fingerprint alignment", () => {
 			],
 		})) as {
 			system?: Array<{ cache_control?: unknown }>;
-			messages?: Array<{ content?: Array<{ type?: string; cache_control?: unknown }> | string }>;
+			messages?: Array<{ content?: Array<{ type?: string; text?: string; cache_control?: unknown }> | string }>;
 		};
 
 		expect(payload.system?.some(block => block.cache_control != null)).toBe(false);
 		const messages = payload.messages ?? [];
-		expect(messages[0]?.content).toBe("Use the tool");
+		expect(messages[0]?.content).toEqual([{ type: "text", text: "Use the tool" }]);
 		const assistantContent = messages.at(-2)?.content;
 		expect(Array.isArray(assistantContent) ? assistantContent.at(-1)?.type : undefined).toBe("tool_use");
 		expect(Array.isArray(assistantContent) ? assistantContent.at(-1)?.cache_control : undefined).toEqual({

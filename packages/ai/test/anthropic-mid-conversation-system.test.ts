@@ -68,8 +68,10 @@ describe("Anthropic mid-conversation system messages", () => {
 		expect(params.map(p => p.role)).toEqual(["user", "system"]);
 		const sys = params[1];
 		expect(sys.role).toBe("system");
-		// A single text block collapses to a plain string, same as a user turn.
-		expect(sys.content).toBe("Use parameterized SQL.");
+		// Block form on the wire: `convertAnthropicMessages` normalizes every
+		// user/developer turn so a message's shape never depends on whether it
+		// currently holds the rolling cache anchor.
+		expect(sys.content).toEqual([{ type: "text", text: "Use parameterized SQL." }]);
 		// A trailing system message is a valid final entry; no synthetic Continue.
 		expect(params.at(-1)?.role).toBe("system");
 	});
@@ -118,7 +120,7 @@ describe("Anthropic mid-conversation system messages", () => {
 			false,
 		);
 		expect(params.map(p => p.role)).toEqual(["user", "assistant", "user"]);
-		expect(params.at(-1)?.content).toBe("Switch to German.");
+		expect(params.at(-1)?.content).toEqual([{ type: "text", text: "Switch to German." }]);
 	});
 
 	it("never emits a developer message in the first position as system", () => {

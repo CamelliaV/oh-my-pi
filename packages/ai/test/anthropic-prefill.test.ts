@@ -117,7 +117,7 @@ describe("Anthropic assistant-prefill fallback", () => {
 			false,
 		);
 		expect(params.at(-1)?.role).toBe("user");
-		expect(params.at(-1)?.content).toBe("what now?");
+		expect(params.at(-1)?.content).toEqual([{ type: "text", text: "what now?" }]);
 	});
 });
 

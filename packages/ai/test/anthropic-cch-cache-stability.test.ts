@@ -1,6 +1,9 @@
 import { describe, expect, it } from "bun:test";
 import { wrapFetchForCch } from "@oh-my-pi/pi-ai";
-import type { FetchImpl } from "@oh-my-pi/pi-ai/types";
+import { convertAnthropicMessages } from "@oh-my-pi/pi-ai/providers/anthropic";
+import type { MessageParam } from "@oh-my-pi/pi-ai/providers/anthropic-wire";
+import type { FetchImpl, Message, Model } from "@oh-my-pi/pi-ai/types";
+import { buildModel } from "@oh-my-pi/pi-catalog/build";
 
 // Real Claude Code hashes the whole request body into the `cch` attestation that
 // rides in `system[0]`. On api.anthropic.com the edge strips that block before
@@ -91,5 +94,71 @@ describe("cch attestation cache stability", () => {
 		void wrapFetchForCch(base, true)("https://relay.example/v1/messages", { method: "POST", body: apiKeyBody });
 		// API-key requests never carry the block; they must not be re-encoded.
 		expect(sent).toBe(apiKeyBody);
+	});
+});
+
+// Second, independent prefix breaker found the same way (byte-diffing consecutive
+// wire bodies of one tool loop): `applyPromptCaching` can only attach
+// `cache_control` to a content block, so a string-content user message was
+// rewritten into a single-element block array whenever it held the rolling cache
+// anchor - and serialized back as a bare string once the window moved past it.
+// Every user turn therefore rewrote a byte in the middle of the cached prefix.
+// `convertAnthropicMessages` now always emits block form so the shape no longer
+// depends on the anchor position.
+describe("wire shape stability of the cached prefix", () => {
+	const model: Model<"anthropic-messages"> = buildModel({
+		id: "claude-opus-5",
+		name: "Claude Opus 5",
+		api: "anthropic-messages",
+		provider: "anthropic",
+		baseUrl: "https://relay.example",
+		reasoning: true,
+		input: ["text"],
+		cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+		contextWindow: 1_000_000,
+		maxTokens: 32_000,
+	});
+	const userTurn = (text: string): Message => ({ role: "user", content: text, timestamp: 1 }) as unknown as Message;
+	const assistantTurn = (text: string): Message =>
+		({
+			role: "assistant",
+			content: [{ type: "text", text }],
+			model: "claude-opus-5",
+			usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+			stopReason: "stop",
+			timestamp: 1,
+		}) as unknown as Message;
+
+	it("serializes a user turn identically whether or not it holds the cache anchor", () => {
+		const history: Message[] = [userTurn("Q1"), assistantTurn("A1"), userTurn("Q2")];
+		// Turn 1: Q1 is the trailing message, so it owns the rolling anchor.
+		const anchored = convertAnthropicMessages([history[0]], model, true);
+		// Turn 2: the anchor has moved to Q2; Q1 is now interior cached prefix.
+		const interior = convertAnthropicMessages(history, model, true);
+		const strip = (message: MessageParam): string =>
+			JSON.stringify(message, (key, value) => (key === "cache_control" ? undefined : value));
+		expect(strip(interior[0])).toBe(strip(anchored[0]));
+	});
+
+	it("keeps every interior turn byte-stable as a tool loop grows", () => {
+		const full: Message[] = [
+			userTurn("Q1"),
+			assistantTurn("A1"),
+			userTurn("Q2"),
+			assistantTurn("A2"),
+			userTurn("Q3"),
+		];
+		const strip = (message: MessageParam): string =>
+			JSON.stringify(message, (key, value) => (key === "cache_control" ? undefined : value));
+		// Each turn of a loop re-sends the whole history plus new entries. Any
+		// interior message that serializes differently between two consecutive
+		// requests truncates the reusable prefix at that point.
+		const turns = [1, 3, 5].map(length => convertAnthropicMessages(full.slice(0, length), model, true));
+		for (let turn = 1; turn < turns.length; turn++) {
+			const previous = turns[turn - 1];
+			for (let index = 0; index < previous.length; index++) {
+				expect(strip(turns[turn][index])).toBe(strip(previous[index]));
+			}
+		}
 	});
 });

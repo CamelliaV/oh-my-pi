@@ -258,7 +258,10 @@ describe("issue #967 vision guard", () => {
 			false,
 		);
 		expect(countTaggedValues(messages, "image")).toBe(0);
-		expect(messages[0]).toMatchObject({ role: "user", content: `plot summary\n${NON_VISION_IMAGE_PLACEHOLDER}` });
+		expect(messages[0]).toMatchObject({
+			role: "user",
+			content: [{ type: "text", text: `plot summary\n${NON_VISION_IMAGE_PLACEHOLDER}` }],
+		});
 		const toolResult = messages.at(-1) as { role: string; content: Array<{ type: string; content: unknown }> };
 		expect(toolResult.role).toBe("user");
 		expect(toolResult.content[0]).toMatchObject({

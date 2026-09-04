@@ -1,5 +1,5 @@
 import type { ImageContent } from "@oh-my-pi/pi-ai";
-import { Box, type Component, Container, type ImageBudget, Markdown, Text } from "@oh-my-pi/pi-tui";
+import { Box, type Component, Container, type ImageBudget, Markdown, Text, visibleWidth } from "@oh-my-pi/pi-tui";
 import { formatBytes } from "@oh-my-pi/pi-utils";
 import { getMarkdownTheme, theme } from "../../modes/theme/theme";
 import { resolveImageOptions } from "../../tools/render-utils";
@@ -56,7 +56,6 @@ export class UserMessageComponent extends Container implements ReactionTarget {
 	#blockVersion = 0;
 	readonly #bgColor: (value: string) => string;
 	#reaction: string | undefined;
-	#badgeLine: Text | undefined;
 
 	constructor(
 		text: string,
@@ -174,21 +173,24 @@ export class UserMessageComponent extends Container implements ReactionTarget {
 	setReaction(emoji: string): void {
 		if (this.#reaction === emoji) return;
 		this.#reaction = emoji;
-		if (this.#badgeLine) {
-			this.#frame.removeChild(this.#badgeLine);
-			this.#badgeLine = undefined;
-		}
-		if (emoji) {
-			// Badge as the first row INSIDE the rounded frame (this fork's bubble
-			// shape): upstream's borderless bubble overwrote its own top padding
-			// row, which here would wipe the frame's top border instead.
-			this.#badgeLine = new Text(emoji, 1, 0).setStyleFn(value => this.#bgColor(value));
-			this.#badgeLine.setIgnoreTight?.(true);
-			this.#frame.children.unshift(this.#badgeLine);
-			this.#frame.invalidate?.();
-		}
+		// The badge is spliced into the rendered rows in `render()` (below the
+		// frame's top border), so clearing the zone cache is all the redraw a
+		// reaction change needs — no child surgery, no Box cache involvement.
 		this.#zoneLines = undefined;
 		this.invalidate();
+	}
+
+	/** Reaction badge row drawn inside the frame, right-aligned in its interior. */
+	#reactionRow(width: number): string {
+		const vertical = theme.boxRound.vertical;
+		const emoji = this.#reaction!;
+		const interior = Math.max(0, width - vertical.length * 2);
+		const pad = Math.max(0, interior - visibleWidth(emoji) - 1);
+		return (
+			theme.fg("borderAccent", vertical) +
+			this.#bgColor(" ".repeat(pad) + emoji) +
+			theme.fg("borderAccent", vertical)
+		);
 	}
 
 	override render(width: number): readonly string[] {
@@ -200,6 +202,9 @@ export class UserMessageComponent extends Container implements ReactionTarget {
 			return this.#zoneLines;
 		}
 		const wrapped = lines.slice();
+		if (this.#reaction !== undefined && wrapped.length > 1) {
+			wrapped.splice(1, 0, this.#reactionRow(width));
+		}
 		wrapped[0] = OSC133_ZONE_START + wrapped[0];
 		wrapped[wrapped.length - 1] = wrapped[wrapped.length - 1] + OSC133_ZONE_CLOSE;
 		this.#zoneSource = lines;

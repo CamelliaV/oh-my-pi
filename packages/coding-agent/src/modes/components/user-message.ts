@@ -54,6 +54,7 @@ export class UserMessageComponent extends Container implements ReactionTarget {
 	 * {@link AssistantMessageComponent} uses for late tool images.
 	 */
 	#blockVersion = 0;
+	#imageStrip: ImageStrip | undefined;
 	readonly #bgColor: (value: string) => string;
 	#reaction: string | undefined;
 
@@ -141,14 +142,24 @@ export class UserMessageComponent extends Container implements ReactionTarget {
 				},
 			});
 			strip.setImages(images);
+			this.#imageStrip = strip;
 			this.#frame.addChild(strip);
 		}
 		this.addChild(this.#frame);
 		if (sessionUsage) this.setSessionUsage(sessionUsage);
 	}
 
-	getTranscriptBlockVersion(): number {
-		return this.#blockVersion;
+	/**
+	 * Hold this block in the transcript's ACTIVE (live, re-renderable) state
+	 * while the strip's webp→PNG kitty conversions are in flight: the 18.1.x
+	 * transcript container treats finalized blocks as append-only (published
+	 * bytes never change), so a block that settles with the dim
+	 * `[Image: …]` placeholder row would freeze it forever — the conversion
+	 * lands ~hundreds of ms later with nobody left to re-render it. Staying
+	 * un-finalized keeps the rows mutable until the image actually renders.
+	 */
+	isTranscriptBlockFinalized(): boolean {
+		return this.#imageStrip === undefined || this.#imageStrip.conversionsPending === 0;
 	}
 
 	/** Show cumulative completed-session usage as a dedicated row inside this input card. */

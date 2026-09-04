@@ -52,6 +52,11 @@ export class ImageStrip implements Component {
 		// Image components cache by width internally; nothing extra to drop.
 	}
 
+	/** Async webp→PNG kitty conversions still in flight (transcript-block finalization gate). */
+	get conversionsPending(): number {
+		return this.#kittyConversionsInFlight.size;
+	}
+
 	render(width: number): readonly string[] {
 		const images = this.#images;
 		const budget = this.#options.budget;

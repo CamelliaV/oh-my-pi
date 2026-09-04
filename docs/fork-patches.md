@@ -580,3 +580,37 @@ upstream-new tests (18.1.6→18.1.10 diff) incl. `read-image-question`,
 eval-preludes, terminal-graphics; gallery + `/tools` (history_search,
 pet_poke) + `-r` fuzzy PTY smokes on the installed binary; upstream's
 `createInteractiveModeContext` test harness adopted where it conflicted.
+
+## Post-merge regression: resumed webp/jpg user images frozen (2026-09-04, fixed same day)
+
+Symptom: after the v18.1.10 upgrade, resuming a session in kitty showed
+historical user-input images as a dim `[Image: image/webp]` placeholder (or
+nothing) instead of rendered graphics; the Alt+U session-nav viewer kept
+working. Root cause chain (probed live via logger.debug instrumentation in
+`image-strip.ts`): blob refs resolve ✓, the fork's webp→PNG
+`convertImageToPng` completes in ~400 ms ✓, the repaint callback fires ✓ —
+but nothing re-renders. Upstream 18.1.x's transcript container made
+finalized blocks append-only ("published bytes never change"), and
+`UserMessageComponent` — unlike `AssistantMessageComponent` — never
+implemented the `FinalizableBlock.isTranscriptBlockFinalized` gate, so the
+user bubble settled/committed with the placeholder row DURING the initial
+incremental render, microseconds before the conversion landed. The frozen
+block never re-rendered: no Image component, no transmit, no placement.
+PNG payloads never hit this because they need no conversion.
+
+Fix: `ImageStrip` exposes `conversionsPending` (in-flight
+webp→PNG count), and `UserMessageComponent.isTranscriptBlockFinalized()`
+returns false while any conversion is in flight — the block stays ACTIVE
+(live, re-renderable) until the conversion lands, then settles with the
+image rows. Messages without an image strip finalize immediately
+(`#imageStrip === undefined ||`) so pressure retirement is never pinned.
+
+Verified on the real regression session (2026-08-22 wallpaper search,
+webp + jpeg blobs): wire-level a=t transmit goes 0 → 2 (both images),
+placeholder text gone, kimg re-renders after conversion; kitty real-screen
+binding follows the same Image-component path that the inline-PNG case
+visually proved earlier. Visual on-screen confirmation in the user's kitty
+is the one step left to eyeball: resume the session and scroll to the image.
+Also exposed while debugging: a usage-less assistant message crashes
+`work-usage.ts` `usageIsBilled` at session load (synthetic sessions only —
+all real assistant turns carry usage); latent, left as-is.

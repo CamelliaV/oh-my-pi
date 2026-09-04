@@ -1,6 +1,5 @@
 import type { Model } from "@oh-my-pi/pi-ai";
 import { isOfficialAnthropicApiUrl } from "@oh-my-pi/pi-catalog/compat/anthropic";
-import { isClaudeModelId } from "@oh-my-pi/pi-catalog/identity";
 import { $env } from "@oh-my-pi/pi-utils";
 import type { ModelRegistry } from "../../../config/model-registry";
 
@@ -33,6 +32,17 @@ import type { ModelRegistry } from "../../../config/model-registry";
  * Kept in this light module, importable by the lazy provider registry
  * (`web/search/provider.ts`) without loading any provider implementation.
  */
+/**
+ * Claude ids in any namespace form: bare (`claude-*`), path-namespaced
+ * (`anthropic/claude.x`), or dot-prefixed Bedrock cross-region profiles
+ * (`us.anthropic.claude-…`). Inlined (was `identity/family.isClaudeModelId`,
+ * removed by the 18.1.x identity rewrite) to keep this module dependency-light
+ * for the lazy provider registry.
+ */
+function isClaudeModelId(modelId: string): boolean {
+	return /(^|[/.])claude[-.]/i.test(modelId);
+}
+
 export function isAnthropicSearchAffinityModel(model: Model | undefined): model is Model<"anthropic-messages"> {
 	if (model?.api !== "anthropic-messages") return false;
 	if (isOfficialAnthropicApiUrl(model.baseUrl)) return false;

@@ -29,14 +29,6 @@ function isTransientTransportMessage(message: string): boolean {
 	return message.includes("tls: bad record mac") || message.includes("type=server_error");
 }
 
-/** Hook for provider-specific transient detection that the error module must not import directly. */
-export interface ProviderRetryableHooks {
-	/** Provider id of the failing request, used to gate provider-specific checks. */
-	provider?: string;
-	/** Provider-specific transient predicate (e.g. Copilot model-availability 400s). */
-	isProviderTransient?: (error: Error) => boolean;
-}
-
 /**
  * Whether a provider stream error should be retried against the same credential.
  *
@@ -44,12 +36,11 @@ export interface ProviderRetryableHooks {
  * here — they are owned by the credential-rotation layer (auth-gateway /
  * `streamSimple` a/b/c policy), not this seconds-scale provider backoff.
  *
- * Provider-specific transient cases are injected via {@link ProviderRetryableHooks}
- * so this stays free of provider imports.
+ * Every 4xx other than 408/429 is terminal: a request the provider rejected
+ * as malformed, unauthorized, or unentitled fails identically on replay.
  */
-export function isProviderRetryableError(error: unknown, hooks: ProviderRetryableHooks = {}): boolean {
+export function isProviderRetryableError(error: unknown): boolean {
 	if (!(error instanceof Error)) return false;
-	if (hooks.isProviderTransient?.(error)) return true;
 	if (isUsageLimit(error)) return false;
 	// Misrouted relay nodes: new-api gateways sometimes route a request to an
 	// upstream that rejects it with a misleading 400 (code 1210 该模型始终思考，

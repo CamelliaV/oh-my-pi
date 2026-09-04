@@ -232,6 +232,7 @@ export function convertMessageToLlm(message: AgentMessage): Message | undefined 
 						},
 					],
 					attribution: "agent",
+					historyRewriteAt: message.timestamp,
 					timestamp: message.timestamp,
 				};
 			case "compactionSummary":
@@ -251,6 +252,7 @@ export function convertMessageToLlm(message: AgentMessage): Message | undefined 
 									...(message.images ?? []),
 								],
 					attribution: "agent",
+					historyRewriteAt: message.timestamp,
 					providerPayload: message.providerPayload,
 					timestamp: message.timestamp,
 				};

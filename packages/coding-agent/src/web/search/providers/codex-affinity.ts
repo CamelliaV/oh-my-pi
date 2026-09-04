@@ -1,5 +1,5 @@
 import type { Model } from "@oh-my-pi/pi-ai";
-import { bareModelId, parseOpenAIModel } from "@oh-my-pi/pi-catalog/identity";
+import { bareModelId, classifyModel } from "@oh-my-pi/pi-catalog/identity";
 
 /**
  * Provider APIs whose transports can carry a hosted OpenAI web-search tool for
@@ -18,5 +18,5 @@ const ACTIVE_GPT_PROVIDER_APIS: Readonly<Record<string, true>> = {
 export function isCodexSearchAffinityModel(model: Model | undefined): model is Model {
 	if (!model || ACTIVE_GPT_PROVIDER_APIS[model.api] !== true) return false;
 	const identityIds = model.requestModelId ? [model.id, model.requestModelId] : [model.id];
-	return identityIds.some(id => parseOpenAIModel(bareModelId(id)) !== null);
+	return identityIds.some(id => classifyModel("openai", bareModelId(id), { lenient: true })?.family === "gpt");
 }

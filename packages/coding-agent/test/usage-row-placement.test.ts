@@ -5,6 +5,7 @@
  */
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "bun:test";
 import type { AgentMessage } from "@oh-my-pi/pi-agent-core";
+import type { AssistantMessage } from "@oh-my-pi/pi-ai";
 import type { CompactionRequestUsage } from "@oh-my-pi/pi-agent-core/compaction";
 import { resetSettingsForTest, Settings, settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import { ChatTranscriptBuilder } from "@oh-my-pi/pi-coding-agent/modes/components/chat-transcript-builder";
@@ -14,8 +15,9 @@ import type { InteractiveModeContext } from "@oh-my-pi/pi-coding-agent/modes/typ
 import { UiHelpers } from "@oh-my-pi/pi-coding-agent/modes/utils/ui-helpers";
 import type { SessionContext } from "@oh-my-pi/pi-coding-agent/session/session-context";
 import type { SessionEntry } from "@oh-my-pi/pi-coding-agent/session/session-entries";
-import { Container, type TUI } from "@oh-my-pi/pi-tui";
+import { Container, TUI } from "@oh-my-pi/pi-tui";
 import { formatNumber } from "@oh-my-pi/pi-utils";
+import { VirtualTerminal } from "../../tui/test/virtual-terminal";
 import { UserMessageComponent } from "../src/modes/components/user-message";
 import {
 	buildSessionUsageTimeline,
@@ -74,7 +76,6 @@ function makeHarness(
 	branch: readonly SessionEntry[] = [],
 	isStreaming = false,
 ): { ctx: InteractiveModeContext; helpers: UiHelpers } {
-	let helpers: UiHelpers;
 	const ctx = {
 		chatContainer: new Container(),
 		transcriptMessageComponents: new WeakMap(),
@@ -110,7 +111,7 @@ function makeHarness(
 		hideThinkingBlock: false,
 		clearTransientSessionUi: () => {},
 	} as unknown as InteractiveModeContext;
-	helpers = new UiHelpers(ctx);
+	const helpers = new UiHelpers(ctx);
 	return { ctx, helpers };
 }
 
@@ -317,6 +318,38 @@ describe("ChatTranscriptBuilder token-usage row timestamp", () => {
 		expect(
 			builder.container.children.filter(component => component.render(160).join("\n").includes("SESSION")),
 		).toEqual([users[1]!]);
+	});
+
+	it("deep-links tool-only assistant entries to their first rendered row", () => {
+		const builder = new ChatTranscriptBuilder({
+			ui: new TUI(new VirtualTerminal(120, 20)),
+			cwd: process.cwd(),
+			requestRender: () => {},
+		});
+		const message: AssistantMessage = {
+			role: "assistant",
+			content: [{ type: "toolCall", id: "call-1", name: "bash", arguments: { command: "echo ok" } }],
+			api: "anthropic-messages",
+			provider: "anthropic",
+			model: "claude-sonnet-4-5",
+			stopReason: "toolUse",
+			usage: {
+				input: 1,
+				output: 1,
+				cacheRead: 0,
+				cacheWrite: 0,
+				totalTokens: 2,
+				cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+			},
+			timestamp: 1_000,
+		};
+		builder.rebuild([
+			{ type: "message", id: "tool-entry", parentId: null, timestamp: new Date(0).toISOString(), message },
+		]);
+
+		const rendered = builder.container.render(120);
+		expect(Bun.stripANSI(rendered.join("\n"))).toContain("echo ok");
+		expect(builder.rowForEntry("tool-entry")).toBe(0);
 	});
 
 	it("keeps grouped read metrics nested on the reusable transcript-builder path", () => {

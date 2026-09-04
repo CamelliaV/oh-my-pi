@@ -80,7 +80,6 @@ function createContext(options: {
 }
 function createUsageContext(entries: readonly SessionEntry[]): InteractiveModeContext {
 	const chatContainer = new TranscriptContainer();
-	let helpers: UiHelpers;
 	const sessionManager = {
 		getBranch: () => entries,
 		putBlobSync: () => "local://unused",
@@ -112,7 +111,7 @@ function createUsageContext(entries: readonly SessionEntry[]): InteractiveModeCo
 		session: { isAborting: false },
 		toolOutputExpanded: false,
 	} as unknown as InteractiveModeContext;
-	helpers = new UiHelpers(ctx);
+	const helpers = new UiHelpers(ctx);
 	return ctx;
 }
 

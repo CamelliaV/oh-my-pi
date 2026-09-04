@@ -116,6 +116,8 @@ export interface MCPStdioServerConfig extends MCPServerConfigBase {
 	 * (`${PLUGIN_ROOT}`/`${PLUGIN_DATA}`).
 	 */
 	envPolicy?: "literal";
+	/** Env keys whose values are final package data; auth resolution keeps them verbatim. */
+	envLiteralKeys?: string[];
 	cwd?: string;
 }
 
@@ -300,6 +302,12 @@ export interface MCPAuthChallenge {
 export interface MCPToolCallResult {
 	content: MCPContent[];
 	isError?: boolean;
+	/**
+	 * Machine-readable payload channel (MCP spec 2025-06-18, Tools → Structured
+	 * Content). Servers may return their data here while keeping `content`
+	 * minimal; the bridge surfaces it so it reaches the model.
+	 */
+	structuredContent?: Record<string, unknown>;
 	_meta?: Record<string, unknown>;
 }
 

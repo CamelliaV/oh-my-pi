@@ -3992,25 +3992,27 @@ export const SETTINGS_SCHEMA = {
 		},
 	},
 
-	"eval.rb": {
+	"eval.tools.enabled": {
 		type: "boolean",
-		default: false,
+		default: true,
 		ui: {
 			tab: "shell",
 			group: "Eval & Runtimes",
-			label: "Ruby Eval Backend",
-			description: "Allow the eval tool to dispatch Ruby cells to the persistent Ruby kernel",
+			label: "Eval-Defined Tools",
+			description:
+				"Let eval cells define tools (@tool in Python, tool(fn) in JS) that task, agent(), and workpool() subagents can call",
 		},
 	},
 
-	"eval.jl": {
+	"eval.workpool.freshAgents": {
 		type: "boolean",
 		default: false,
 		ui: {
 			tab: "shell",
 			group: "Eval & Runtimes",
-			label: "Julia Eval Backend",
-			description: "Allow the eval tool to dispatch Julia cells to the persistent Julia kernel",
+			label: "Fresh Workpool Agents",
+			description:
+				"Spawn a new subagent for every workpool item instead of reusing workers or batching queued items",
 		},
 	},
 
@@ -4051,28 +4053,6 @@ export const SETTINGS_SCHEMA = {
 			label: "Python Interpreter",
 			description:
 				"Optional path to an exact Python executable. When set, automatic Python runtime discovery is skipped.",
-		},
-	},
-	"ruby.interpreter": {
-		type: "string",
-		default: "",
-		ui: {
-			tab: "shell",
-			group: "Eval & Runtimes",
-			label: "Ruby Interpreter",
-			description:
-				"Optional path to an exact Ruby executable. When set, automatic Ruby runtime discovery is skipped.",
-		},
-	},
-	"julia.interpreter": {
-		type: "string",
-		default: "",
-		ui: {
-			tab: "shell",
-			group: "Eval & Runtimes",
-			label: "Julia Interpreter",
-			description:
-				"Optional path to an exact Julia executable. When set, automatic Julia runtime discovery is skipped.",
 		},
 	},
 
@@ -4318,31 +4298,6 @@ export const SETTINGS_SCHEMA = {
 		},
 	},
 
-	// Legacy boolean kept only for back-compat migration to `inspect_image.mode`
-	// (see config/settings.ts). Hidden from UI.
-	"inspect_image.enabled": {
-		type: "boolean",
-		default: false,
-	},
-
-	"inspect_image.mode": {
-		type: "enum",
-		values: ["auto", "on", "off"] as const,
-		default: "auto",
-		ui: {
-			tab: "tools",
-			group: "Available Tools",
-			label: "Inspect Image",
-			description:
-				"Controls the inspect_image tool, which delegates image understanding to a vision-capable model. 'auto' exposes it only when the active model lacks native image input; 'on' always exposes it; 'off' never does.",
-			options: [
-				{ value: "auto", label: "Auto (only for models without vision)" },
-				{ value: "on", label: "On" },
-				{ value: "off", label: "Off" },
-			],
-		},
-	},
-
 	"computer.enabled": {
 		type: "boolean",
 		default: false,
@@ -4350,7 +4305,7 @@ export const SETTINGS_SCHEMA = {
 			tab: "tools",
 			group: "Available Tools",
 			label: "Computer",
-			description: "Enable the scriptable host-desktop control tool (screenshots, input, accessibility)",
+			description: "Enable the scriptable host-desktop eval prelude (screenshots, input, accessibility)",
 		},
 	},
 
@@ -4387,15 +4342,15 @@ export const SETTINGS_SCHEMA = {
 		},
 	},
 
-	"inspect_image.timeoutMs": {
+	"images.questionTimeoutMs": {
 		type: "number",
 		default: 300_000,
 		ui: {
 			tab: "tools",
 			group: "Execution",
-			label: "Inspect Image Timeout",
+			label: "Image Question Timeout",
 			description:
-				"Per-request timeout for the inspect_image vision-model call, in milliseconds. A stalled provider fails fast with a timeout error instead of blocking until manual abort. Set to 0 to disable the timeout.",
+				"Per-request timeout for the vision-model call behind read's ?q= image questions, in milliseconds. A stalled provider fails fast with a timeout error instead of blocking until manual abort. Set to 0 to disable the timeout.",
 			options: [
 				{ value: "0", label: "Disabled" },
 				{ value: "60000", label: "1 minute" },
@@ -4529,7 +4484,7 @@ export const SETTINGS_SCHEMA = {
 			tab: "tools",
 			group: "Available Tools",
 			label: "Browser",
-			description: "Enable the browser tool for scripted Chromium automation (puppeteer)",
+			description: "Enable the browser eval prelude for scripted Chromium automation (Puppeteer)",
 		},
 	},
 
@@ -4553,7 +4508,7 @@ export const SETTINGS_SCHEMA = {
 			group: "Grep & Browser",
 			label: "Browser Relay",
 			description:
-				"Drive your own Chrome tabs through the omp browser relay. Install the extension once (`omp browser-relay install`); the relay server auto-starts when the browser tool needs it. Takes precedence over Browser CDP URL; set PI_BROWSER_RELAY=0 or PI_BROWSER_RELAY=1 to override.",
+				"Drive your own Chrome tabs through the omp browser relay. Install the extension once (`omp browser-relay install`); the relay server auto-starts when the browser prelude needs it. Takes precedence over Browser CDP URL; set PI_BROWSER_RELAY=0 or PI_BROWSER_RELAY=1 to override.",
 		},
 	},
 
@@ -4926,6 +4881,18 @@ export const SETTINGS_SCHEMA = {
 			label: "Clone Checkout into Worktrees",
 			description:
 				"New worktrees from `github pr_checkout` and `git worktree add` in bash start as a copy-on-write clone of the current checkout so ignored build artifacts (node_modules, target) carry over; falls back to a plain checkout when the filesystem cannot clone",
+		},
+	},
+
+	"worktree.cleanSource": {
+		type: "boolean",
+		default: false,
+		ui: {
+			tab: "tasks",
+			group: "Isolation",
+			label: "Clean Source Checkout on /wt",
+			description:
+				"When creating a worktree with `/wt`, reset tracked changes and remove untracked files from the original checkout after carrying them over",
 		},
 	},
 
@@ -5573,7 +5540,7 @@ export const SETTINGS_SCHEMA = {
 			group: "Tiny Model",
 			label: "Tiny Model Device",
 			description:
-				"ONNX execution provider for local tiny models (titles + memory). Default uses CPU-only inference. The PI_TINY_DEVICE env var overrides this.",
+				"Inference backend for local tiny models (titles + memory): an ONNX execution provider, or `mlx` to download MLX weights and run them through mlx-lm on Apple silicon. Default uses CPU-only ONNX. The PI_TINY_DEVICE env var overrides this.",
 			options: TINY_MODEL_DEVICE_SETTING_OPTIONS,
 		},
 	},
@@ -5586,7 +5553,7 @@ export const SETTINGS_SCHEMA = {
 			group: "Tiny Model",
 			label: "Tiny Model Precision",
 			description:
-				"ONNX quantization/precision for local tiny models. Default uses each model's shipped dtype (q4); lower precision is faster, higher is more faithful. The PI_TINY_DTYPE env var overrides this.",
+				"ONNX quantization/precision for local tiny models. Default uses each model's shipped dtype (q4); lower precision is faster, higher is more faithful. Ignored by the MLX backend (its repos are pre-quantized 4-bit). The PI_TINY_DTYPE env var overrides this.",
 			options: TINY_MODEL_DTYPE_SETTING_OPTIONS,
 		},
 	},

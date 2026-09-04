@@ -1734,6 +1734,24 @@ export function applyAnthropicUsageExtras(usage: Usage, source: AnthropicUsageLi
 	}
 }
 
+/**
+ * Anthropic's wire counts `input_tokens` as the prompt's uncached remainder —
+ * the cache buckets are separate and additive. Relays synthesized from
+ * OpenAI-style backends (new-api serving GLM) instead report the whole prompt
+ * with the cached subset inside `input_tokens`. `compat.usageInputIncludesCache`
+ * declares that dialect so the cached portion is never counted twice in
+ * cache-rate denominators, cost and totalTokens.
+ */
+function uncachedAnthropicInputTokens(
+	model: Model<"anthropic-messages">,
+	inputTokens: number,
+	cacheReadTokens: number,
+	cacheWriteTokens: number,
+): number {
+	if (!model.compat?.usageInputIncludesCache) return inputTokens;
+	return Math.max(0, inputTokens - cacheReadTokens - cacheWriteTokens);
+}
+
 function parseAnthropicWireUsage(value: unknown): AnthropicWireUsage | undefined {
 	if (!isRecord(value)) return undefined;
 	const cacheCreation = isRecord(value.cache_creation)
@@ -2287,7 +2305,12 @@ const streamAnthropicOnce = (
 					body.input_transformations,
 					seenInputTransformations,
 				);
-				output.usage.input = wireUsage.input_tokens ?? 0;
+				output.usage.input = uncachedAnthropicInputTokens(
+					model,
+					wireUsage.input_tokens ?? 0,
+					wireUsage.cache_read_input_tokens ?? 0,
+					wireUsage.cache_creation_input_tokens ?? 0,
+				);
 				output.usage.output = wireUsage.output_tokens ?? 0;
 				output.usage.cacheRead = wireUsage.cache_read_input_tokens ?? 0;
 				output.usage.cacheWrite = wireUsage.cache_creation_input_tokens ?? 0;
@@ -2539,7 +2562,12 @@ const streamAnthropicOnce = (
 							const startUsage = startMessage?.usage;
 							if (startUsage) {
 								applyAnthropicUsageExtras(output.usage, startUsage);
-								output.usage.input = startUsage.input_tokens || 0;
+								output.usage.input = uncachedAnthropicInputTokens(
+									model,
+									startUsage.input_tokens || 0,
+									startUsage.cache_read_input_tokens || 0,
+									startUsage.cache_creation_input_tokens || 0,
+								);
 								output.usage.output = startUsage.output_tokens || 0;
 								output.usage.cacheRead = startUsage.cache_read_input_tokens || 0;
 								output.usage.cacheWrite = startUsage.cache_creation_input_tokens || 0;
@@ -2863,7 +2891,15 @@ const streamAnthropicOnce = (
 							const deltaUsage = event.usage;
 							if (deltaUsage) {
 								if (deltaUsage.input_tokens != null) {
-									output.usage.input = deltaUsage.input_tokens;
+									// Inclusive-dialect relays repeat the full prompt in every usage
+									// snapshot; a delta that omits the cache buckets falls back to the
+									// freshest values message_start already recorded.
+									output.usage.input = uncachedAnthropicInputTokens(
+										model,
+										deltaUsage.input_tokens,
+										deltaUsage.cache_read_input_tokens ?? output.usage.cacheRead,
+										deltaUsage.cache_creation_input_tokens ?? output.usage.cacheWrite,
+									);
 								}
 								if (deltaUsage.output_tokens != null) {
 									output.usage.output = deltaUsage.output_tokens;

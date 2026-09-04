@@ -573,6 +573,15 @@ export interface AnthropicCompat {
 	 */
 	extraBetas?: readonly string[];
 	/**
+	 * The endpoint reports `input_tokens` with the cached subset inside it —
+	 * OpenAI `prompt_tokens` dialect on an Anthropic-shaped wire — instead of
+	 * Anthropic's uncached remainder. Relays synthesized from OpenAI-style
+	 * backends (new-api serving GLM) do this; without the declaration the
+	 * cache buckets double-count the prompt in cache-rate denominators, cost
+	 * and totalTokens.
+	 */
+	usageInputIncludesCache?: boolean;
+	/**
 	 * Replay unsigned `thinking` blocks from prior assistant turns as native
 	 * thinking instead of demoting them to text. Official Anthropic enforces
 	 * signature-based thinking-chain integrity, so unsigned blocks must stay

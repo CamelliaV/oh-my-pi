@@ -475,6 +475,41 @@ reasoning matters.
    tokens/request vs CC ~20,700 for the same task, so on any miss omp pays ~2.3×.
    That is what shrinking the injected context attacks (see the AGENTS.md split
    in this commit series), not breakpoint geometry.
+22. `fix(ai)` prompt-inclusive `input_tokens` on anthropic-wire relays —
+   relays synthesized from OpenAI-style backends (cindy's `elysiver.h-e.top`
+   — `elysiver-claude`/`ely-claude` providers serving glm-5.3-flash) answer
+   the Anthropic wire with `input_tokens` = the WHOLE prompt and
+   `cache_read_input_tokens` a subset of it (OpenAI `prompt_tokens`
+   dialect), while `runanytime.hxi.me` is Anthropic-correct (`input`
+   excludes the cache buckets; e.g. in=2092/cr=67072). omp's uniform
+   denominator `input+cacheRead+cacheWrite` (work-usage cache rate,
+   status-line `cache_hit`, `totalTokens`, context-overflow check) then
+   double-counted the cached portion: turn usage read `cache 49.5%` where
+   the relay dashboard showed 97.7% (= 59,904/61,293), `cost.input` billed
+   the full prompt alongside `cost.cacheRead`, and `totalTokens` ran ~2×.
+   Diagnosis signature: on the inclusive relay, persisted `cr` ≈ previous
+   request's full prompt and `in` ≈ `cr` + fresh; on exclusive relays `in`
+   is tiny while `cr` is huge. Fix follows patch 19's provider-declared
+   pattern instead of TS heuristics: new `compat.usageInputIncludesCache`
+   (catalog `AnthropicCompat` + resolve default `false` + models.yml schema
+   field), consumed by `uncachedAnthropicInputTokens()` at all three
+   wire→Usage sites in `anthropic.ts` (non-streaming/cache-refresh,
+   `message_start`, `message_delta`); the delta falls back to the buckets
+   `message_start` recorded when the delta omits them, so the subtraction
+   never re-applies or clamps to zero. OpenAI-wire accounting was already
+   correct (`calculateOpenAIUsageAccounting` subtracts) — untouched.
+   Config: `usageInputIncludesCache: true` on both elysiver anthropic
+   providers in `~/.omp/agent/models.yml`, added AFTER installing the new
+   binary — the models.yml schema rejects unknown compat keys, so
+   flag-first would have broken the sibling sessions' model refresh. Tests:
+   `anthropic usage input dialect` describe in
+   `anthropic-stream-envelope.test.ts` — subtraction, delta-omits-cache
+   fallback, and a no-flag control pinning exclusive pass-through. Live
+   A/B: old binary persisted `in=61293/cr=59904/tot=121224` per request;
+   new binary on the same relay persists `in=23336/cr=1344/tot=24698` —
+   local rate == relay dashboard rate by construction. History JSONL keeps
+   the inflated rows; only new requests are corrected.
+
 
 ## Merge adjudications (v18.0.10 → v18.1.6 → v18.1.10, 2026-09-04)
 

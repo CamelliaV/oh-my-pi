@@ -445,3 +445,4 @@ editing a patched region, or when a patch's reasoning matters.
 19. `feat(ai)` provider-declared Anthropic betas via `compat.extraBetas` — `types.ts, anthropic-alignment.test.ts, provider-chain.test.ts`
 20. `fix(tui)` draft-image preview strip follows the active composer shape — `custom-editor.ts, editor.ts`
 21. `fix(ai)` Anthropic user turns always serialize as content blocks — `anthropic.ts, anthropic-cch-cache-stability.test.ts`
+22. `fix(ai)` prompt-inclusive `input_tokens` on anthropic-wire relays — `anthropic.ts, types.ts, resolve.ts, models-config-schema-bundle.ts, anthropic-stream-envelope.test.ts`

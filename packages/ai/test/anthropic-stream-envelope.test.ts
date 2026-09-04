@@ -1928,3 +1928,118 @@ describe("anthropic stream envelope handling", () => {
 		expect(cacheControls[2]).toEqual({ type: "ephemeral", ttl: "1h" });
 	});
 });
+
+describe("anthropic usage input dialect", () => {
+	const INCLUSIVE_INPUT_TOKENS = 61_293;
+	const CACHED_TOKENS = 59_904;
+	const FRESH_TOKENS = INCLUSIVE_INPUT_TOKENS - CACHED_TOKENS;
+
+	const inclusiveRelayModel: Model<"anthropic-messages"> = buildModel({
+		id: "glm-5.3-flash",
+		name: "GLM 5.3 Flash (inclusive-input relay)",
+		api: "anthropic-messages",
+		provider: "relay-inclusive",
+		baseUrl: "https://relay.example",
+		input: ["text"],
+		cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+		contextWindow: 200_000,
+		maxTokens: 8_192,
+		compat: { usageInputIncludesCache: true },
+	} as ModelSpec<"anthropic-messages">);
+
+	// Wire numbers captured from a live new-api relay serving GLM on the
+	// Anthropic wire: input_tokens is the whole prompt with the cached subset
+	// inside it (OpenAI prompt_tokens dialect).
+	const relayUsageEvents = (deltaUsage: Record<string, unknown>): MockAnthropicEvent[] => [
+		{
+			type: "message_start",
+			message: {
+				id: "msg_inclusive_relay",
+				usage: {
+					input_tokens: INCLUSIVE_INPUT_TOKENS,
+					output_tokens: 27,
+					cache_read_input_tokens: CACHED_TOKENS,
+					cache_creation_input_tokens: 0,
+				},
+			},
+		},
+		{ type: "content_block_start", index: 0, content_block: { type: "text", text: "" } },
+		{ type: "content_block_delta", index: 0, delta: { type: "text_delta", text: "ok" } },
+		{ type: "content_block_stop", index: 0 },
+		{ type: "message_delta", delta: { stop_reason: "end_turn" }, usage: deltaUsage },
+		{ type: "message_stop" },
+	];
+
+	it("subtracts the cached subset when compat.usageInputIncludesCache is declared", async () => {
+		vi.spyOn(AnthropicMessages.prototype, "create").mockImplementation(
+			() =>
+				createMockRequest(
+					relayUsageEvents({
+						input_tokens: INCLUSIVE_INPUT_TOKENS,
+						output_tokens: 1_400,
+						cache_read_input_tokens: CACHED_TOKENS,
+						cache_creation_input_tokens: 0,
+					}),
+				) as never,
+		);
+
+		const stream = streamAnthropic(inclusiveRelayModel, context, { apiKey: "sk-relay-test" });
+		for await (const _ of stream) {
+			// drain stream
+		}
+		const result = await stream.result();
+
+		// The uncached remainder is the prompt minus the cached subset, so the
+		// cache-rate denominator (input + cacheRead) reconstructs the true
+		// 61,293-token prompt instead of double-counting to 121,197.
+		expect(result.usage.input).toBe(FRESH_TOKENS);
+		expect(result.usage.cacheRead).toBe(CACHED_TOKENS);
+		expect(result.usage.cacheWrite).toBe(0);
+		expect(result.usage.output).toBe(1_400);
+		expect(result.usage.totalTokens).toBe(FRESH_TOKENS + CACHED_TOKENS + 1_400);
+	});
+
+	it("falls back to recorded cache buckets when the delta repeats input without cache fields", async () => {
+		vi.spyOn(AnthropicMessages.prototype, "create").mockImplementation(
+			() => createMockRequest(relayUsageEvents({ input_tokens: INCLUSIVE_INPUT_TOKENS, output_tokens: 1_400 })) as never,
+		);
+
+		const stream = streamAnthropic(inclusiveRelayModel, context, { apiKey: "sk-relay-test" });
+		for await (const _ of stream) {
+			// drain stream
+		}
+		const result = await stream.result();
+
+		// message_start already recorded the buckets; the delta must reuse them
+		// rather than re-subtracting nothing (input back at the full prompt) or
+		// clamping to zero.
+		expect(result.usage.input).toBe(FRESH_TOKENS);
+		expect(result.usage.cacheRead).toBe(CACHED_TOKENS);
+		expect(result.usage.output).toBe(1_400);
+	});
+
+	it("keeps Anthropic's exclusive input_tokens semantics without the declaration", async () => {
+		vi.spyOn(AnthropicMessages.prototype, "create").mockImplementation(
+			() =>
+				createMockRequest(
+					relayUsageEvents({
+						input_tokens: INCLUSIVE_INPUT_TOKENS,
+						output_tokens: 1_400,
+						cache_read_input_tokens: CACHED_TOKENS,
+						cache_creation_input_tokens: 0,
+					}),
+				) as never,
+		);
+
+		const stream = streamAnthropic(model, context, { apiKey: "sk-ant-test" });
+		for await (const _ of stream) {
+			// drain stream
+		}
+		const result = await stream.result();
+
+		// Compliant endpoints report input_tokens as the uncached remainder;
+		// the number must pass through untouched.
+		expect(result.usage.input).toBe(INCLUSIVE_INPUT_TOKENS);
+		expect(result.usage.cacheRead).toBe(CACHED_TOKENS);
+	});
+});

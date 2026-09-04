@@ -38,7 +38,8 @@ export class ImageStrip implements Component {
 	#keySeq = 0;
 	#keys = new WeakMap<ImageContent, string>();
 	#convertedKitty = new WeakMap<ImageContent, ImageContent>();
-	#kittyConversionsInFlight = new WeakSet<ImageContent>();
+	#kittyConversionsInFlight = new Set<ImageContent>();
+	#kittyConversionsFailed = new WeakSet<ImageContent>();
 
 	constructor(options: ImageStripOptions) {
 		this.#options = options;
@@ -52,9 +53,26 @@ export class ImageStrip implements Component {
 		// Image components cache by width internally; nothing extra to drop.
 	}
 
-	/** Async webp→PNG kitty conversions still in flight (transcript-block finalization gate). */
+	/**
+	 * Non-PNG images still awaiting a kitty-conversion outcome — not yet
+	 * converted, conversion in flight, or conversion not even started because
+	 * the terminal protocol was still unknown at the strip's last render (the
+	 * 18.1.x append-only transcript freezes finalized blocks, so the block must
+	 * not finalize until every conversion either landed or failed). Zero when
+	 * rendering is disabled, the protocol is a known non-kitty one, or every
+	 * non-PNG image has a conversion outcome.
+	 */
 	get conversionsPending(): number {
-		return this.#kittyConversionsInFlight.size;
+		if (this.#images.length === 0) return 0;
+		if (!this.#options.budget || (isSettingsInitialized() && !settings.get("terminal.showImages"))) return 0;
+		if (TERMINAL.imageProtocol !== undefined && TERMINAL.imageProtocol !== ImageProtocol.Kitty) return 0;
+		let pending = 0;
+		for (const image of this.#images) {
+			if (image.mimeType === "image/png") continue;
+			if (this.#convertedKitty.has(image) || this.#kittyConversionsFailed.has(image)) continue;
+			pending++;
+		}
+		return pending;
 	}
 
 	render(width: number): readonly string[] {

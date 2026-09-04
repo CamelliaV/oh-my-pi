@@ -1,5 +1,5 @@
 import type { Component, HistoryBatch } from "@oh-my-pi/pi-tui";
-import { Container } from "@oh-my-pi/pi-tui";
+import { Container, TERMINAL } from "@oh-my-pi/pi-tui";
 import { logger } from "@oh-my-pi/pi-utils";
 import { isToolActivityComponent } from "./tool-activity";
 
@@ -93,6 +93,12 @@ const EMPTY_ROWS: readonly string[] = [];
 const EMPTY_STABLE_ROWS: readonly TranscriptStableRow[] = [];
 
 function isFinalized(component: Component): boolean {
+	// Terminal image-protocol detection resolves asynchronously during startup;
+	// blocks rendered before it lands show degraded rows (text fallbacks,
+	// conversion placeholders). Hold settlement until the protocol resolves so
+	// every image-bearing block re-renders with real graphics first. `null`
+	// (explicitly no image support) is a resolved value and settles normally.
+	if (TERMINAL.imageProtocol === undefined) return false;
 	const block = component as Component & FinalizableBlock;
 	return block.isTranscriptBlockFinalized?.() ?? true;
 }

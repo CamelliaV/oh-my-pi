@@ -137,7 +137,7 @@ export class UserMessageComponent extends Container implements ReactionTarget {
 				maxRows: caps.maxHeightCells ?? 20,
 				maxImages: 8,
 				requestRender: () => {
-					this.#blockVersion++;
+										this.#blockVersion++;
 					requestRepaint?.();
 				},
 			});
@@ -160,6 +160,10 @@ export class UserMessageComponent extends Container implements ReactionTarget {
 	 */
 	isTranscriptBlockFinalized(): boolean {
 		return this.#imageStrip === undefined || this.#imageStrip.conversionsPending === 0;
+	}
+
+	getTranscriptBlockVersion(): number {
+		return this.#blockVersion;
 	}
 
 	/** Show cumulative completed-session usage as a dedicated row inside this input card. */

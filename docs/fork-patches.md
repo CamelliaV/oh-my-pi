@@ -581,36 +581,52 @@ eval-preludes, terminal-graphics; gallery + `/tools` (history_search,
 pet_poke) + `-r` fuzzy PTY smokes on the installed binary; upstream's
 `createInteractiveModeContext` test harness adopted where it conflicted.
 
-## Post-merge regression: resumed webp/jpg user images frozen (2026-09-04, fixed same day)
+## Post-merge regression: resumed webp/jpg images frozen (2026-09-04, fixed same day)
 
 Symptom: after the v18.1.10 upgrade, resuming a session in kitty showed
 historical user-input images as a dim `[Image: image/webp]` placeholder (or
-nothing) instead of rendered graphics; the Alt+U session-nav viewer kept
-working. Root cause chain (probed live via logger.debug instrumentation in
-`image-strip.ts`): blob refs resolve ✓, the fork's webp→PNG
-`convertImageToPng` completes in ~400 ms ✓, the repaint callback fires ✓ —
-but nothing re-renders. Upstream 18.1.x's transcript container made
-finalized blocks append-only ("published bytes never change"), and
-`UserMessageComponent` — unlike `AssistantMessageComponent` — never
-implemented the `FinalizableBlock.isTranscriptBlockFinalized` gate, so the
-user bubble settled/committed with the placeholder row DURING the initial
-incremental render, microseconds before the conversion landed. The frozen
-block never re-rendered: no Image component, no transmit, no placement.
-PNG payloads never hit this because they need no conversion.
+nothing) instead of rendered graphics. THREE stacked root causes, all
+probed live (logger.debug instrumentation in the strip/tool components,
+kimg logs, PTY wire captures):
 
-Fix: `ImageStrip` exposes `conversionsPending` (in-flight
-webp→PNG count), and `UserMessageComponent.isTranscriptBlockFinalized()`
-returns false while any conversion is in flight — the block stays ACTIVE
-(live, re-renderable) until the conversion lands, then settles with the
-image rows. Messages without an image strip finalize immediately
-(`#imageStrip === undefined ||`) so pressure retirement is never pinned.
+1. **Append-only freeze vs async conversion.** Upstream 18.1.x's transcript
+   container treats finalized blocks as append-only ("published bytes never
+   change"). `UserMessageComponent` never implemented the
+   `FinalizableBlock.isTranscriptBlockFinalized` gate (default = finalized),
+   so the user bubble settled/committed its placeholder row during the
+   initial incremental render, microseconds before the fork's webp→PNG
+   `convertImageToPng` (~400 ms) landed. The frozen block never re-rendered.
+2. **Protocol-detection race.** The transcript's FIRST renders happen while
+   `TERMINAL.imageProtocol` is still undefined (async kitty probing); the
+   strip's render guard early-returns, so the conversion never even starts,
+   and tool-execution's `#maybeConvertImagesForKitty` (called once from
+   `updateResult`) skipped permanently. Pre-merge this self-healed because
+   every block re-rendered every frame; the append-only model froze the
+   degraded first render. The first fix attempt also had a trap:
+   `#kittyConversionsInFlight` was a `WeakSet` — no `.size` — so the gate
+   returned `undefined === 0` (false) and image blocks NEVER finalized,
+   pinning pressure retirement and wrecking the whole transcript layout
+   (plus the then-missing `getTranscriptBlockVersion` broke Alt+U assembly).
+3. **Tool-result images.** tool-execution converts non-PNG for kitty
+   asynchronously too, with the same freeze exposure and no retry.
 
-Verified on the real regression session (2026-08-22 wallpaper search,
-webp + jpeg blobs): wire-level a=t transmit goes 0 → 2 (both images),
-placeholder text gone, kimg re-renders after conversion; kitty real-screen
-binding follows the same Image-component path that the inline-PNG case
-visually proved earlier. Visual on-screen confirmation in the user's kitty
-is the one step left to eyeball: resume the session and scroll to the image.
-Also exposed while debugging: a usage-less assistant message crashes
-`work-usage.ts` `usageIsBilled` at session load (synthetic sessions only —
-all real assistant turns carry usage); latent, left as-is.
+Fix (4 files): `ImageStrip.conversionsPending` counts non-PNG images still
+awaiting a conversion OUTCOME (not yet converted, in flight, or not started
+because the protocol was unknown at the last render; failures excluded,
+rendering-disabled/known-non-kitty = 0) — `UserMessageComponent.
+isTranscriptBlockFinalized` gates on it; `tool-execution` retries
+`#maybeConvertImagesForKitty` from `render()` with in-flight/failed
+tracking and gates finalization the same way; `transcript-container.
+isFinalized` holds ALL settlement while `TERMINAL.imageProtocol ===
+undefined` (null = resolved-no-support settles normally); and
+`getTranscriptBlockVersion` restored on UserMessageComponent.
+
+Verified on the real regression session (2026-08-22 wallpaper search, webp
+user image + jpeg tool-result image): wire-level a=t transmit 0 → 2 (both
+images), placeholder gone, stable across repeated runs; kitty real-screen
+binding follows the same Image-component path the inline-PNG case visually
+proved. 75/75 contract tests + zh driver re-green after the fix; binary
+rebuilt and installed. Also exposed while debugging: a usage-less
+assistant message crashes `work-usage.ts` `usageIsBilled` at session load
+(synthetic sessions only — real assistant turns all carry usage); latent,
+left as-is.

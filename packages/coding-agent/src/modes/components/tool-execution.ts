@@ -334,6 +334,10 @@ export class ToolExecutionComponent extends Container {
 	#previewReady?: PromiseWithResolvers<void>;
 	// Cached converted images for Kitty protocol (which requires PNG), keyed by index
 	#convertedImages: Map<number, { data: string; mimeType: string }> = new Map();
+	// Non-PNG images whose kitty conversion is in flight (render-level retry + finalization gate).
+	#kittyConversionsInFlight = new Set<number>();
+	// Indices whose kitty conversion failed; they no longer gate finalization.
+	#kittyConversionsFailed = new Set<number>();
 	// Spinner animation for partial task results
 	#spinnerFrame?: number;
 	#spinnerActive = false;
@@ -601,6 +605,20 @@ export class ToolExecutionComponent extends Container {
 		return [...contentImages, ...detailImages, ...xdevImages];
 	}
 
+	#pendingKittyConversions(): number {
+		if (TERMINAL.imageProtocol !== ImageProtocol.Kitty) return 0;
+		const blocks = this.#getAllImageBlocks();
+		let pending = 0;
+		for (let i = 0; i < blocks.length; i++) {
+			const img = blocks[i];
+			if (!img?.data || !img.mimeType) continue;
+			if (img.mimeType === "image/png") continue;
+			if (this.#convertedImages.has(i) || this.#kittyConversionsFailed.has(i)) continue;
+			pending++;
+		}
+		return pending;
+	}
+
 	/**
 	 * Convert non-PNG images to PNG for Kitty graphics protocol.
 	 * Kitty requires PNG format (f=100), so JPEG/GIF/WebP won't display.
@@ -615,14 +633,17 @@ export class ToolExecutionComponent extends Container {
 		for (let i = 0; i < imageBlocks.length; i++) {
 			const img = imageBlocks[i];
 			if (!img.data || !img.mimeType) continue;
-			// Skip if already PNG or already converted
+			// Skip if already PNG, already converted, in flight, or already failed
 			if (img.mimeType === "image/png") continue;
-			if (this.#convertedImages.has(i)) continue;
+			if (this.#convertedImages.has(i) || this.#kittyConversionsInFlight.has(i)) continue;
+			if (this.#kittyConversionsFailed.has(i)) continue;
 
 			// Convert async - catch errors from processing
 			const index = i;
+			this.#kittyConversionsInFlight.add(index);
 			convertImageToPng({ type: "image", data: img.data, mimeType: img.mimeType })
 				.then(converted => {
+					this.#kittyConversionsInFlight.delete(index);
 					this.#convertedImages.set(index, converted);
 					this.#displayInputVersion++;
 					this.#updateDisplay();
@@ -630,6 +651,8 @@ export class ToolExecutionComponent extends Container {
 				})
 				.catch(() => {
 					// Ignore conversion failures - display will use original image format
+					this.#kittyConversionsInFlight.delete(index);
+					this.#kittyConversionsFailed.add(index);
 				});
 		}
 	}
@@ -750,6 +773,10 @@ export class ToolExecutionComponent extends Container {
 		if (!this.#toolActivityVisible) return true;
 		if (this.#sealed) return true;
 		if (this.#result === undefined) return false;
+		// Async kitty image conversions (webp/jpeg -> PNG) must land before this
+		// block settles: the append-only transcript freezes published rows, and a
+		// block that settles mid-conversion strands its placeholder forever.
+		if (TERMINAL.imageProtocol === ImageProtocol.Kitty && this.#pendingKittyConversions() > 0) return false;
 		// A parked background task's call already returned; job frames that land
 		// while it is still live keep updating it, but it must not gate history.
 		if (this.#parkedBackground) return true;
@@ -896,6 +923,7 @@ export class ToolExecutionComponent extends Container {
 
 	override render(width: number): readonly string[] {
 		if (!this.#toolActivityVisible || this.#allocation === 0) return [];
+		this.#maybeConvertImagesForKitty();
 		let lines = super.render(width);
 		if (this.#allocation < 3) {
 			// A squeezed allocation degrades only blocks that genuinely overflow it.

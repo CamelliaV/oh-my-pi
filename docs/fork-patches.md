@@ -510,6 +510,35 @@ reasoning matters.
    local rate == relay dashboard rate by construction. History JSONL keeps
    the inflated rows; only new requests are corrected.
 
+23. `feat(web)` Grok relay web-search channel — turns the wong relay
+   (`https://wzw.pp.ua/v1`) into a first-class `grok` websearch provider.
+   Probe summary that shaped it (2026-09-05, curl wire-level):
+   grok-4.3 executes real hosted search (`web_search_call` output items,
+   `usage.num_server_side_tools_used>0`, `url_citation` annotations,
+   98.9% stable prefix cache, `allowed_domains` honored most of the time);
+   grok-4.5/4.6 on the same relay accept the tool schema but flatten it
+   (`used=0`) while the answer claims "I performed a targeted web search" —
+   a hallucination hazard; `grok-4.20-multi-agent-0309` also searches for
+   real but at 21× tokens / 2× latency with polluted usage (identical
+   requests return input_tokens 33K→57K→24K), so 4.3 is the channel default.
+   Implementation: the xai provider's Responses wire+parser moved verbatim
+   into a shared `grok-responses.ts` core (xai keeps its official-auth stack,
+   grok-4.5 pin, and effort=low); new `providers/grok.ts` resolves a
+   declarable triple — base URL, wire model, credential — where each slot is
+   `providers.webSearchGrok{BaseUrl,Model,Provider}` settings over
+   `GROK_SEARCH_{BASE_URL,MODEL,PROVIDER}` env, and the credential defaults
+   to the apiKey/headers of the declared models.yml provider (wong:
+   baseUrl+key+claude-cli UA gate all reused; search needs no new secret).
+   The shared core enforces a real-search gate: completed responses with
+   `num_server_side_tools_used=0`, or no web_search_call/citations/annotation
+   evidence, reject as 502 so the chain advances instead of surfacing
+   fabricated citations — this also protects the official xai path. Live
+   config: `webSearchOrder: [grok, codex]` in `~/.omp/agent/config.yml`.
+   Verified end-to-end via `omp-patched q web-search` (forced provider and
+   chain default; HN #1 matched the firebaseio ground truth; site: mapped
+   onto allowed_domains) plus 15 grok-channel contract tests and the 31
+   migrated xai tests, all green.
+
 
 ## Merge adjudications (v18.0.10 → v18.1.6 → v18.1.10, 2026-09-04)
 

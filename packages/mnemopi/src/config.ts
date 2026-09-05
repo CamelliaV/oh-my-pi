@@ -41,7 +41,8 @@ export const EMBEDDING_DIMS: Readonly<Record<string, number>> = {
 	"intfloat/multilingual-e5-large": 1024,
 	"BAAI/bge-m3": 1024,
 	"BAAI/bge-multilingual-gemma2": 3584,
-	"openai/text-embedding-3-small": 1536,
+	"google/gemini-embedding-001": 3072,
+	"google/gemini-embedding-2": 3072,
 	"openai/text-embedding-3-large": 3072,
 	"text-embedding-3-small": 1536,
 	"text-embedding-3-large": 3072,
@@ -120,7 +121,12 @@ export function embeddingMaxInputChars(env: Env = process.env): number {
 }
 
 export function isApiEmbeddingModel(model = embeddingModel(), env: Env = process.env): boolean {
-	if (model.startsWith("openai/") || model.includes("text-embedding") || model.startsWith("text-embedding"))
+	if (
+		model.startsWith("openai/") ||
+		model.startsWith("google/") ||
+		model.includes("text-embedding") ||
+		model.startsWith("text-embedding")
+	)
 		return true;
 	const baseUrl = envString("MNEMOPI_EMBEDDING_API_URL", envString("OPENROUTER_BASE_URL", "", env), env);
 	if (baseUrl && !hostMatchesUrl(baseUrl, "openrouter")) return true;

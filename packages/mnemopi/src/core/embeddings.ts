@@ -1,6 +1,7 @@
 import { mkdirSync } from "node:fs";
 import * as fsp from "node:fs/promises";
 import * as nodePath from "node:path";
+import { scheduler } from "node:timers/promises";
 import { type ApiKey, getOpenRouterHeaders, withAuth } from "@oh-my-pi/pi-ai";
 import { ProviderHttpError } from "@oh-my-pi/pi-ai/error";
 import { hostMatchesUrl } from "@oh-my-pi/pi-catalog/hosts";
@@ -324,6 +325,7 @@ export function currentEmbeddingModel(): string {
 export function isApiModel(modelName: string): boolean {
 	if (
 		modelName.startsWith("openai/") ||
+		modelName.startsWith("google/") ||
 		modelName.includes("text-embedding") ||
 		modelName.startsWith("text-embedding")
 	) {
@@ -349,6 +351,8 @@ const MODEL_DIMS: Record<string, number> = {
 	"intfloat/multilingual-e5-large": 1024,
 	"BAAI/bge-m3": 1024,
 	"BAAI/bge-multilingual-gemma2": 3584,
+	"google/gemini-embedding-001": 3072,
+	"google/gemini-embedding-2": 3072,
 	"openai/text-embedding-3-small": 1536,
 	"openai/text-embedding-3-large": 3072,
 	"text-embedding-3-small": 1536,
@@ -424,15 +428,31 @@ async function getLocalModel(): Promise<LocalEmbeddingModel | null> {
 	}
 }
 
-async function embedApi(texts: readonly string[]): Promise<EmbeddingMatrix | null> {
+/**
+ * Gemini native embedding task types. Gemini's retrieval embeddings are trained
+ * asymmetrically: `RETRIEVAL_DOCUMENT` for corpus memories (the `embed` path) and
+ * `RETRIEVAL_QUERY` for recall queries (the `embedQuery` path). OpenAI-compatible
+ * endpoints ignore this and keep their single symmetric wire shape.
+ */
+type GeminiTaskType = "RETRIEVAL_DOCUMENT" | "RETRIEVAL_QUERY";
+
+async function embedApi(texts: readonly string[], taskType: GeminiTaskType): Promise<EmbeddingMatrix | null> {
 	const baseUrl = embeddingBaseUrl();
+	const model = defaultModel();
+	// `google/<id>` models against Google's Generative Language API speak the native
+	// `models/<id>:embedContent` wire, not the OpenAI `/embeddings` shape. Any other
+	// base URL (e.g. an OpenAI-compatible relay fronting Gemini) keeps the wire below.
+	const geminiId = model.startsWith("google/") ? model.slice("google/".length) : null;
+	if (geminiId !== null && baseUrl.startsWith("https://generativelanguage.googleapis.com")) {
+		return embedGeminiApi(geminiId, baseUrl, texts, taskType);
+	}
 	const isCustom = !hostMatchesUrl(baseUrl, "openrouter");
 	const apiKey = embeddingApiKey();
 	if (!isCustom && !embeddingKeyConfigured(apiKey)) {
 		return null;
 	}
 
-	const body = JSON.stringify({ model: defaultModel(), input: texts });
+	const body = JSON.stringify({ model, input: texts });
 	try {
 		// withAuth re-resolves the key on 401 (force-refresh, then sibling
 		// rotation) when `apiKey` is a resolver. The 429 backoff stays inside
@@ -468,6 +488,103 @@ async function embedApi(texts: readonly string[]): Promise<EmbeddingMatrix | nul
 		}
 		apiCallCount += 1;
 		return rows.map(row => new Float32Array(row.embedding));
+	} catch (error) {
+		logger.debug("mnemopi embedding request failed", { status: extractHttpStatusFromError(error) });
+		return null;
+	}
+}
+
+/**
+ * Embed texts against Google's Generative Language API `embedContent` endpoint,
+ * one request per text (the API has no synchronous batch form; `batchEmbedContents`
+ * is async-job only). 401 re-auth rides the same `withAuth` machinery as the OpenAI
+ * wire path.
+ *
+ * Rate limiting is two-layered: requests are paced to stay under the free tier's
+ * per-minute embedding quota (HTTP keep-alive makes sequential fetches far faster
+ * than one-per-round-trip, so unpaced batches burst past the RPM ceiling), and a
+ * 429 that still gets through backs off on the quota's retry window — honoring the
+ * body's `error.retryDelay` when present — before re-fetching. All-or-nothing like
+ * `embedApi`: a non-recoverable failure on any text nulls the whole call so the
+ * caller's retry semantics stay uniform.
+ */
+const GEMINI_MIN_REQUEST_INTERVAL_MS = 700;
+const GEMINI_QUOTA_RETRY_ATTEMPTS = 4;
+let lastGeminiRequestAt = 0;
+
+async function embedGeminiApi(
+	geminiId: string,
+	baseUrl: string,
+	texts: readonly string[],
+	taskType: GeminiTaskType,
+): Promise<EmbeddingMatrix | null> {
+	const apiKey = embeddingApiKey();
+	if (!embeddingKeyConfigured(apiKey)) {
+		return null;
+	}
+	const url = `${baseUrl.replace(/\/+$/, "")}/models/${geminiId}:embedContent`;
+	try {
+		const vectors = await withAuth(apiKey, async key => {
+			const headers: Record<string, string> = { "Content-Type": "application/json" };
+			if (key !== "") {
+				headers["x-goog-api-key"] = key;
+			}
+			const rows: Vector[] = [];
+			for (const text of texts) {
+				const gap = lastGeminiRequestAt + GEMINI_MIN_REQUEST_INTERVAL_MS - Date.now();
+				if (gap > 0) {
+					await scheduler.wait(gap);
+				}
+				lastGeminiRequestAt = Date.now();
+				for (let attempt = 0; ; attempt++) {
+					const res = await fetchWithRetry(url, {
+						method: "POST",
+						headers,
+						body: JSON.stringify({
+							model: `models/${geminiId}`,
+							content: { parts: [{ text }] },
+							taskType,
+						}),
+						signal: AbortSignal.timeout(30000),
+						maxAttempts: 3,
+						defaultDelayMs: attempt => 2 ** attempt * 1000,
+					});
+					if (res.status === 429 && attempt < GEMINI_QUOTA_RETRY_ATTEMPTS) {
+						// A quota window is ~60s; fetchWithRetry's short ladder cannot clear
+						// it, so wait on the API's own retry hint (or a long fixed ladder)
+						// and refetch. Falling out of attempts lands in the !res.ok null
+						// below — the same all-or-nothing contract as any other failure.
+						const quotaBody = await res.text();
+						const retryDelay = /"retryDelay"\s*:\s*"([0-9.]+)s"/.exec(quotaBody);
+						const waitMs =
+							retryDelay === null ? 15_000 * (attempt + 1) : Number.parseFloat(retryDelay[1]!) * 1000;
+						await scheduler.wait(Math.max(1000, waitMs));
+						continue;
+					}
+					if (res.status === 401) {
+						throw new ProviderHttpError("mnemopi gemini embedding request unauthorized (401)", 401, {
+							headers: res.headers,
+						});
+					}
+					if (!res.ok) {
+						return null;
+					}
+					const { embedding } = (await res.json()) as { embedding?: { values?: number[] } };
+					const values = embedding?.values;
+					if (!Array.isArray(values) || values.length === 0) {
+						return null;
+					}
+					rows.push(new Float32Array(values));
+					break;
+				}
+			}
+			return rows;
+		});
+		if (vectors === null) {
+			return null;
+		}
+		apiCallCount += texts.length;
+		return vectors;
 	} catch (error) {
 		logger.debug("mnemopi embedding request failed", { status: extractHttpStatusFromError(error) });
 		return null;
@@ -556,7 +673,9 @@ export async function embedQuery(text: string): Promise<Vector | null> {
 	if (cached !== undefined) {
 		return cached;
 	}
-	const vectors = await embed([text]);
+	// RETRIEVAL_QUERY, not the document task type — Gemini embeds the query side of
+	// retrieval asymmetrically; every other backend ignores the distinction.
+	const vectors = await embedForTask([text], "RETRIEVAL_QUERY");
 	const vector = vectors?.[0] ?? null;
 	if (vector !== null) {
 		queryCache.set(key, vector);
@@ -565,6 +684,17 @@ export async function embedQuery(text: string): Promise<Vector | null> {
 }
 
 export async function embed(texts: readonly string[]): Promise<EmbeddingMatrix | null> {
+	return embedForTask(texts, "RETRIEVAL_DOCUMENT");
+}
+
+/**
+ * The embed pipeline behind both public entry points. Documents flow through
+ * {@link embed} as `RETRIEVAL_DOCUMENT` and recall queries through
+ * {@link embedQuery} as `RETRIEVAL_QUERY` so Gemini's asymmetric retrieval
+ * embeddings land on the right side of the pair; custom providers and local
+ * fastembed models ignore the task type.
+ */
+async function embedForTask(texts: readonly string[], taskType: GeminiTaskType): Promise<EmbeddingMatrix | null> {
 	if (texts.length === 0 || embeddingsDisabled()) {
 		return null;
 	}
@@ -585,7 +715,7 @@ export async function embed(texts: readonly string[]): Promise<EmbeddingMatrix |
 		}
 	}
 	if (isApiModel(defaultModel())) {
-		return embedApi(texts);
+		return embedApi(texts, taskType);
 	}
 	if (texts.length === 1) {
 		const key = queryCacheKey(texts[0] ?? "");

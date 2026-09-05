@@ -98,8 +98,18 @@ function captureFetch(responseBody: Record<string, unknown> | string, status = 2
 			headers: init?.headers,
 			body: init?.body ? (JSON.parse(String(init.body)) as Record<string, unknown>) : null,
 		});
+		const body =
+			typeof responseBody === "string"
+				? responseBody
+				: JSON.stringify({
+						// Successful hosted-search traffic always carries executed-search
+						// evidence (usage counter, calls, or citations); the provider's
+						// real-search gate rejects fixtures without it.
+						usage: { num_server_side_tools_used: 1 },
+						...responseBody,
+					});
 		return Promise.resolve(
-			new Response(typeof responseBody === "string" ? responseBody : JSON.stringify(responseBody), {
+			new Response(body, {
 				status,
 				headers: { "Content-Type": "application/json" },
 			}),

@@ -36,6 +36,12 @@ export const SEARCH_PROVIDER_OPTIONS = [
 		description:
 			"Grok web search via xAI Responses API (uses SuperGrok/X Premium+ OAuth via /login xai-oauth, or XAI_API_KEY)",
 	},
+	{
+		value: "grok",
+		label: "Grok",
+		description:
+			"Grok web search via a declared OpenAI-Responses-compatible relay (GROK_SEARCH_BASE_URL/GROK_SEARCH_API_KEY or providers.webSearchGrokBaseUrl)",
+	},
 	{ value: "zai", label: "Z.AI", description: "Calls Z.AI webSearchPrime MCP" },
 	{ value: "exa", label: "Exa", description: "API via /login exa or EXA_API_KEY; explicit keyless fallback via MCP" },
 	{ value: "tinyfish", label: "TinyFish", description: "Requires TINYFISH_API_KEY" },

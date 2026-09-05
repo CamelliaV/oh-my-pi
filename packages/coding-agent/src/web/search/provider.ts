@@ -59,6 +59,11 @@ const PROVIDER_META: Record<SearchProviderId, ProviderMeta> = {
 		label: SEARCH_PROVIDER_LABELS.xai,
 		load: async () => new (await import("./providers/xai")).XAIProvider(),
 	},
+	grok: {
+		id: "grok",
+		label: SEARCH_PROVIDER_LABELS.grok,
+		load: async () => new (await import("./providers/grok")).GrokProvider(),
+	},
 	zai: {
 		id: "zai",
 		label: SEARCH_PROVIDER_LABELS.zai,

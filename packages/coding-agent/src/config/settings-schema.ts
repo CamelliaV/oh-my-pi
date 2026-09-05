@@ -5341,6 +5341,39 @@ export const SETTINGS_SCHEMA = {
 			description: "Model ID for Gemini Google Search grounding. Defaults to gemini-2.5-flash.",
 		},
 	},
+	"providers.webSearchGrokBaseUrl": {
+		type: "string",
+		default: undefined,
+		ui: {
+			tab: "providers",
+			group: "Services",
+			label: "Grok web_search relay URL",
+			description:
+				"Base URL of an OpenAI-Responses-compatible endpoint serving Grok hosted web_search (e.g. a relay fronting grok-4.3). Optional: GROK_SEARCH_BASE_URL.",
+		},
+	},
+	"providers.webSearchGrokModel": {
+		type: "string",
+		default: undefined,
+		ui: {
+			tab: "providers",
+			group: "Services",
+			label: "Grok web_search model",
+			description:
+				"Model ID for Grok hosted web_search through the relay. Defaults to grok-4.3; some models flatten the tool and fabricate results.",
+		},
+	},
+	"providers.webSearchGrokProvider": {
+		type: "string",
+		default: undefined,
+		ui: {
+			tab: "providers",
+			group: "Services",
+			label: "Grok web_search credential provider",
+			description:
+				"models.yml provider name whose apiKey (and headers) the Grok search channel borrows, e.g. wong. Optional: GROK_SEARCH_PROVIDER.",
+		},
+	},
 	"providers.antigravityEndpoint": {
 		type: "enum",
 		values: ["auto", "production", "sandbox"] as const,

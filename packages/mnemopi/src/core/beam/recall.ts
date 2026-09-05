@@ -5,6 +5,7 @@ import { adjustWeights, classifyIntent } from "../query-intent";
 import { getSynonyms, normalizeQuery, STOP_WORDS as QUERY_STOP_WORDS } from "../synonyms";
 import { extractTemporal } from "../temporal-parser";
 import { cosineSimilarity } from "../vector-math";
+import { cjkBigramize } from "../../util/regex";
 import type { BeamMemoryState, RecallEnhancedOptions, RecallOptions, RecallResult } from "./types";
 
 type DbValue = string | number | null | Uint8Array;
@@ -181,14 +182,20 @@ function clamp01(value: number): number {
 	if (value >= 1) return 1;
 	return value;
 }
-
 function tokenize(text: string): string[] {
 	const lowered = text.toLowerCase();
 	const matches = lowered.match(/[\p{L}\p{N}_]+/gu) ?? [];
 	const tokens: string[] = [];
 	for (const token of matches) {
-		if (token.length === 0 || STOP_WORDS.has(token)) continue;
-		tokens.push(token);
+		// A CJK match is a whole run (`记忆库` → one token) because the CJK
+		// scripts carry no word separators. Decompose into overlapping bigrams —
+		// the same protocol the FTS mirrors store via cjkBigramize() — so
+		// sub-run queries match bigram tokens instead of never matching.
+		const parts = cjkBigramize(token).split(" ");
+		for (const part of parts) {
+			if (part.length === 0 || STOP_WORDS.has(part)) continue;
+			tokens.push(part);
+		}
 	}
 	return tokens;
 }

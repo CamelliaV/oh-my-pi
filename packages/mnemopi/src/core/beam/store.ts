@@ -8,6 +8,7 @@ import { EpisodicGraph } from "../episodic-graph";
 import { countExtractedFactCategories, extractFactCategoriesSafe } from "../extraction";
 import { getMnemopiRuntimeOptions, withMnemopiRuntimeOptions } from "../runtime-options";
 import { storeExtractedFactCategories } from "./consolidate";
+import { resyncFtsEpisodes, resyncFtsWorking } from "./fts-sync";
 import { type EmbedItem, scheduleEmbedding, vecAvailable, vecInsert } from "./helpers";
 import type {
 	BeamEvent,
@@ -251,9 +252,11 @@ function trimWorkingMemory(beam: BeamMemoryState): void {
 				)
 			  )
 		`);
-		const ids = (selectStatement.all(beam.sessionId, cutoff, beam.sessionId, limit) as { id: string }[]).map(
-			row => row.id,
-		);
+		const ids = (
+			selectStatement.all(beam.sessionId, cutoff, beam.sessionId, limit) as {
+				id: string;
+			}[]
+		).map(row => row.id);
 		if (ids.length === 0) return;
 		const placeholders = ids.map(() => "?").join(", ");
 		beam.db.run(`DELETE FROM working_memory WHERE id IN (${placeholders}) AND session_id = ?`, [
@@ -429,7 +432,10 @@ export function reconcileEmbeddingModel(beam: BeamMemoryState): void {
 		`)
 		.all(active, active) as EmbedItem[];
 	if (missing.length === 0) return;
-	logger.info("mnemopi: resuming interrupted embedding rebuild", { to: active, count: missing.length });
+	logger.info("mnemopi: resuming interrupted embedding rebuild", {
+		to: active,
+		count: missing.length,
+	});
 	rebuild(missing);
 }
 
@@ -484,6 +490,9 @@ export function remember(beam: BeamMemoryState, content: string, options: StoreR
 				beam.sessionId,
 			],
 		);
+		// embed_text may have changed even when content did not — the FTS mirror
+		// indexes COALESCE(embed_text, content).
+		resyncFtsWorking(beam.db, existingId);
 		emitEvent(beam, "MEMORY_UPDATED", {
 			memoryId: existingId,
 			content,
@@ -523,6 +532,7 @@ export function remember(beam: BeamMemoryState, content: string, options: StoreR
 			trustTier,
 		],
 	);
+	resyncFtsWorking(beam.db, memoryId);
 	addTemporalAnnotations(beam, memoryId, timestamp, source);
 	// `extractText` lets a caller decouple "what gets stored" from "what facts are
 	// mined". coding-agent retains full multi-author transcripts but wants
@@ -596,6 +606,7 @@ export function rememberBatch(
 				trustTier,
 				item.scope ?? defaultScope,
 			);
+			resyncFtsWorking(beam.db, memoryId);
 			addTemporalAnnotations(beam, memoryId, itemTimestamp, source);
 			emitEvent(beam, "MEMORY_ADDED", {
 				memoryId,
@@ -612,7 +623,10 @@ export function rememberBatch(
 	items.forEach((item, index) => {
 		const id = ids[index];
 		if (id === undefined) return;
-		embeddingItems.push({ memoryId: id, content: embeddingText(item.content, item as StoreRememberOptions) });
+		embeddingItems.push({
+			memoryId: id,
+			content: embeddingText(item.content, item as StoreRememberOptions),
+		});
 	});
 	scheduleEmbedding(beam, embeddingItems);
 	items.forEach((item, index) => {
@@ -691,8 +705,14 @@ export function getWorkingStats(
 	using lastStatement = beam.db.prepare(
 		`SELECT timestamp FROM working_memory${where} ORDER BY timestamp DESC LIMIT 1`,
 	);
-	const last = lastStatement.get(...params) as { timestamp: string | null } | null;
-	return { total: total.total, count: total.total, last: last?.timestamp ?? null };
+	const last = lastStatement.get(...params) as {
+		timestamp: string | null;
+	} | null;
+	return {
+		total: total.total,
+		count: total.total,
+		last: last?.timestamp ?? null,
+	};
 }
 
 export function getGlobalWorkingStats(beam: BeamMemoryState): BeamStats {
@@ -722,6 +742,7 @@ export function updateWorking(
 		params,
 	);
 	if (result.changes > 0) {
+		if (content !== null) resyncFtsWorking(beam.db, memoryId);
 		invalidateCaches(beam);
 		if (content !== null) scheduleEmbedding(beam, [{ memoryId, content }]);
 	}
@@ -736,7 +757,12 @@ export function get(beam: BeamMemoryState, memoryId: string): Row | null {
 		WHERE id = ?
 	`);
 	const working = workingStatement.get(memoryId) as Row | null | undefined;
-	if (working != null) return { ...working, metadata: working.metadata_json, memory_store: "working" };
+	if (working != null)
+		return {
+			...working,
+			metadata: working.metadata_json,
+			memory_store: "working",
+		};
 
 	using episodicStatement = beam.db.prepare(`
 		SELECT id, content, source, timestamp, session_id,
@@ -745,7 +771,12 @@ export function get(beam: BeamMemoryState, memoryId: string): Row | null {
 		WHERE id = ? AND (session_id = ? OR scope = 'global')
 	`);
 	const episodic = episodicStatement.get(memoryId, beam.sessionId) as Row | null | undefined;
-	if (episodic != null) return { ...episodic, metadata: episodic.metadata_json, memory_store: "episodic" };
+	if (episodic != null)
+		return {
+			...episodic,
+			metadata: episodic.metadata_json,
+			memory_store: "episodic",
+		};
 
 	return getFact(beam, memoryId);
 }
@@ -884,7 +915,12 @@ export function exportToDict(beam: BeamMemoryState): Record<string, unknown> {
 export function importFromDict(beam: BeamMemoryState, data: Record<string, unknown>, force = false): ImportStats {
 	const stats = {
 		working_memory: { inserted: 0, skipped: 0, overwritten: 0 },
-		episodic_memory: { inserted: 0, skipped: 0, overwritten: 0, embeddings_inserted: 0 },
+		episodic_memory: {
+			inserted: 0,
+			skipped: 0,
+			overwritten: 0,
+			embeddings_inserted: 0,
+		},
 		scratchpad: { inserted: 0, updated: 0 },
 		consolidation_log: { inserted: 0 },
 	} satisfies ImportStats;
@@ -949,6 +985,7 @@ export function importFromDict(beam: BeamMemoryState, data: Record<string, unkno
 					sqlBinding(item.temporal_tags, "[]"),
 				],
 			);
+			resyncFtsWorking(db, id);
 		}
 
 		for (const raw of Array.isArray(data.episodic_memory) ? data.episodic_memory : []) {
@@ -1013,6 +1050,7 @@ export function importFromDict(beam: BeamMemoryState, data: Record<string, unkno
 					sqlBinding(item.temporal_tags, "[]"),
 				],
 			);
+			resyncFtsEpisodes(db, id);
 			const oldRowid = Number(item.rowid);
 			const newRow = rowidStatement.get(id) as {
 				rowid: number;

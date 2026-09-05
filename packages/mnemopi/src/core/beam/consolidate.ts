@@ -5,6 +5,7 @@ import { REGEX_EXTRACTION_MAX_INPUT_CHARS } from "../entities";
 import { EpisodicGraph } from "../episodic-graph";
 import { type ExtractedFactCategories, heuristicExtractFacts } from "../extraction";
 import { clampVeracity } from "../veracity-consolidation";
+import { resyncFtsEpisodes, resyncFtsFacts } from "./fts-sync";
 import { scheduleEmbedding } from "./helpers";
 import type { BeamMemoryState, BeamStats, JsonValue, MemoriaRetrieveResult, Metadata, SleepResult } from "./types";
 
@@ -281,12 +282,16 @@ function insertFactRows(
 	);
 
 	const factId = stableMemoryId(`${sourceSession(beam)}\0${factType}\0${key}\0${value}`, sourceMemoryId ?? "");
-	beam.db.run(
+	const result = beam.db.run(
 		`INSERT OR IGNORE INTO facts
 		 (fact_id, session_id, subject, predicate, object, timestamp, source_msg_id, confidence)
 		 VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
 		[factId, sourceSession(beam), key, factType, value, timestamp, sourceMemoryId, importance],
 	);
+	if (result.changes > 0) {
+		const row = beam.db.query("SELECT rowid FROM facts WHERE fact_id = ?").get(factId) as { rowid: number } | null;
+		if (row !== null) resyncFtsFacts(beam.db, row.rowid);
+	}
 }
 
 function insertTimeline(
@@ -423,6 +428,7 @@ export function consolidateToEpisodic(
 			timestamp,
 		],
 	);
+	resyncFtsEpisodes(beam.db, memoryId);
 	extractAndStoreFacts(beam, summary, 0, memoryId);
 	ingestIntoEpisodicGraph(beam, memoryId, summary);
 	scheduleEmbedding(beam, [{ memoryId, content: summary }]);
@@ -784,7 +790,13 @@ export function getEpisodicStats(
 	const last = beam.db
 		.query(`SELECT timestamp FROM episodic_memory${where} ORDER BY timestamp DESC LIMIT 1`)
 		.get(...params) as { timestamp: string | null } | null;
-	return { count: total, total, last: last?.timestamp ?? null, vectors: 0, vec_type: "none" };
+	return {
+		count: total,
+		total,
+		last: last?.timestamp ?? null,
+		vectors: 0,
+		vec_type: "none",
+	};
 }
 export function getMemoriaStats(beam: BeamMemoryState): BeamStats {
 	const stats: Record<string, number> = Object.create(null);
@@ -796,7 +808,11 @@ export function getMemoriaStats(beam: BeamMemoryState): BeamStats {
 		"memoria_instructions",
 		"memoria_preferences",
 	] as const) {
-		const count = (beam.db.query(`SELECT COUNT(*) AS count FROM ${table}`).get() as { count: number }).count;
+		const count = (
+			beam.db.query(`SELECT COUNT(*) AS count FROM ${table}`).get() as {
+				count: number;
+			}
+		).count;
 		stats[table] = count;
 		total += count;
 	}
@@ -868,6 +884,7 @@ export function degradeEpisodic(beam: BeamMemoryState, dryRun = false): Record<s
 				now,
 				id,
 			]);
+			resyncFtsEpisodes(beam.db, id);
 			if (compressed !== content) invalidateEpisodicVectors(beam, id);
 			beam.db.run("RELEASE degrade_episodic");
 		} catch {
@@ -888,8 +905,8 @@ export function degradeEpisodic(beam: BeamMemoryState, dryRun = false): Record<s
 				now,
 				id,
 			]);
+			resyncFtsEpisodes(beam.db, id);
 			if (compressed !== content) invalidateEpisodicVectors(beam, id);
-			beam.db.run("RELEASE degrade_episodic");
 		} catch {
 			beam.db.run("ROLLBACK TO degrade_episodic");
 			beam.db.run("RELEASE degrade_episodic");
@@ -933,7 +950,10 @@ export function health(
 			error_count: errors.err_count,
 			stale_hours: null,
 			stale_threshold_hours: staleThresholdHours,
-			details: { stale: true, consolidation_log_entries_checked: "last 7 days" },
+			details: {
+				stale: true,
+				consolidation_log_entries_checked: "last 7 days",
+			},
 			recommendation:
 				"No consolidation_log entries found with items_consolidated > 0. Run sleepAllSessions() or check logs.",
 		};
@@ -946,7 +966,10 @@ export function health(
 		error_count: errors.err_count,
 		stale_hours: staleHours,
 		stale_threshold_hours: staleThresholdHours,
-		details: { stale: status === "stale", consolidation_log_entries_checked: "last 7 days" },
+		details: {
+			stale: status === "stale",
+			consolidation_log_entries_checked: "last 7 days",
+		},
 		recommendation:
 			status === "stale"
 				? `Last successful consolidation was ${staleHours.toFixed(1)} hours ago (threshold: ${staleThresholdHours.toFixed(0)}h). Run sleepAllSessions().`
@@ -972,7 +995,11 @@ function eligibleWorkingRows(beam: BeamMemoryState, sessionId: string): Row[] {
 export function sleep(beam: BeamMemoryState, dryRun = false): SleepResult {
 	let rows = eligibleWorkingRows(beam, sourceSession(beam));
 	if (rows.length === 0)
-		return { dry_run: dryRun, status: "no_op", message: "No old working memories to consolidate" };
+		return {
+			dry_run: dryRun,
+			status: "no_op",
+			message: "No old working memories to consolidate",
+		};
 	if (!dryRun) {
 		const claimTs = isoNow();
 		const ids = rows.map(row => rowValue(row, "id")).filter((id): id is string => id !== null);
@@ -1018,7 +1045,11 @@ export function sleep(beam: BeamMemoryState, dryRun = false): SleepResult {
 				if (itemValidUntil && (validUntil === null || itemValidUntil < validUntil)) validUntil = itemValidUntil;
 			}
 			const sleepSummary = buildSleepSummary(beam, source, chunk);
-			const metadata: Metadata = { original_count: chunk.items.length, source, llm_used: false };
+			const metadata: Metadata = {
+				original_count: chunk.items.length,
+				source,
+				llm_used: false,
+			};
 			if (sleepSummary.truncated) {
 				metadata.truncated = true;
 				metadata.original_chars = sleepSummary.originalChars;

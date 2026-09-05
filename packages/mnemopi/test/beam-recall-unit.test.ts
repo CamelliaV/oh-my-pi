@@ -2,8 +2,8 @@ import { Database } from "bun:sqlite";
 import { afterEach, describe, expect, it } from "bun:test";
 import { factRecall, formatContext, recall, recallEnhanced } from "@oh-my-pi/pi-mnemopi/core/beam/recall";
 import { initBeam } from "@oh-my-pi/pi-mnemopi/core/beam/schema";
+import { resyncFtsEpisodes, resyncFtsWorking } from "@oh-my-pi/pi-mnemopi/core/beam/fts-sync";
 import type { BeamMemoryState } from "@oh-my-pi/pi-mnemopi/core/beam/types";
-
 type TestBeam = BeamMemoryState & { close(): void };
 
 const beams: TestBeam[] = [];
@@ -64,6 +64,7 @@ function insertWorking(
 			options.scope ?? "global",
 		],
 	);
+	resyncFtsWorking(beam.db, id);
 }
 
 function insertEpisodic(
@@ -83,6 +84,7 @@ function insertEpisodic(
 			options.eventDate ?? null,
 		],
 	);
+	resyncFtsEpisodes(beam.db, id);
 }
 
 describe("beam recall free functions", () => {

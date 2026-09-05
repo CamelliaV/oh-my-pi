@@ -13,6 +13,7 @@ import type { BeamMemoryState } from "@oh-my-pi/pi-mnemopi/core/beam";
 import { ftsSearch, ftsSearchWorking } from "@oh-my-pi/pi-mnemopi/core/beam/helpers";
 import { recall } from "@oh-my-pi/pi-mnemopi/core/beam/recall";
 import { initBeam } from "@oh-my-pi/pi-mnemopi/core/beam/schema";
+import { resyncFtsEpisodes, resyncFtsWorking } from "@oh-my-pi/pi-mnemopi/core/beam/fts-sync";
 
 function makeBeam(db: Database): BeamMemoryState {
 	return {
@@ -51,6 +52,7 @@ function seedWorking(db: Database, id: string, content: string): void {
 			 'unknown', 'episode', NULL, 'tester', 'agent', 'bank-a', 'private', '2026-08-25T00:00:00.000Z')`,
 		[id, content, content],
 	);
+	resyncFtsWorking(db, id);
 }
 
 function seedEpisodic(db: Database, id: string, content: string): void {
@@ -62,6 +64,7 @@ function seedEpisodic(db: Database, id: string, content: string): void {
 			 'episode', 'bank', 'tester', 'agent', 'bank-a', 'private', '2026-08-25T00:00:00.000Z')`,
 		[id, content],
 	);
+	resyncFtsEpisodes(db, id);
 }
 
 describe("fts candidate slots exclude superseded rows", () => {
@@ -245,8 +248,14 @@ describe("expired rows do not occupy FTS candidate slots", () => {
 		);
 		const past = new Date(Date.now() - 60_000).toISOString();
 		// Retired rows repeat the term so FTS ranks them above the live ones.
-		for (let i = 0; i < 80; i++) insert.run(`dead-${i}`, `zzqq zzqq zzqq zzqq retired ${i}`, past);
-		for (let i = 0; i < 3; i++) insert.run(`live-${i}`, `zzqq live candidate ${i}`, null);
+		for (let i = 0; i < 80; i++) {
+			insert.run(`dead-${i}`, `zzqq zzqq zzqq zzqq retired ${i}`, past);
+			resyncFtsWorking(db, `dead-${i}`);
+		}
+		for (let i = 0; i < 3; i++) {
+			insert.run(`live-${i}`, `zzqq live candidate ${i}`, null);
+			resyncFtsWorking(db, `live-${i}`);
+		}
 
 		const hits = ftsSearchWorking(db, "zzqq", 5);
 		expect(hits.length).toBeGreaterThan(0);

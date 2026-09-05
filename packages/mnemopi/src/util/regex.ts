@@ -1,5 +1,6 @@
 const RECALL_TOKEN_RE = /[a-z0-9][a-z0-9_.:/+-]*/g;
 const CJK_RE = /[\u3040-\u30ff\u4e00-\u9fff\uac00-\ud7af]/;
+const CJK_RUN_RE = /[\u3040-\u30ff\u4e00-\u9fff\uac00-\ud7af]+/gu;
 
 export const FACT_MATCH_STOPWORDS = new Set([
 	"a",
@@ -75,6 +76,24 @@ export function isCjkChar(ch: string): boolean {
 
 export function hasCjk(text: string): boolean {
 	return CJK_RE.test(text);
+}
+
+/**
+ * Splices every CJK run in `text` into space-separated overlapping bigrams
+ * (`记忆库` → `记忆 忆库`). A single-char run stays as-is; non-CJK passes
+ * through untouched. This is the INDEX-side transform for FTS5 recall under
+ * the default unicode61 tokenizer, which otherwise folds a whole CJK run into
+ * one token that no sub-run query can ever match. The query side decomposes
+ * runs the same way (see `tokenize` in beam/recall.ts), so bigram tokens on
+ * both sides meet as exact-term matches.
+ */
+export function cjkBigramize(text: string): string {
+	return text.replace(CJK_RUN_RE, run => {
+		if (run.length === 1) return run;
+		const out: string[] = [];
+		for (let i = 0; i < run.length - 1; i += 1) out.push(run.slice(i, i + 2));
+		return out.join(" ");
+	});
 }
 
 export const containsSpacelessCjk = hasCjk;

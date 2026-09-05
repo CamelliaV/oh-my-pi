@@ -1,4 +1,5 @@
 import type { Database } from "bun:sqlite";
+import { rebuildFtsMirrors } from "./fts-sync";
 
 type PragmaTableInfoRow = {
 	name: string;
@@ -128,11 +129,35 @@ export function initBeam(db: Database): void {
 	`);
 	db.run("CREATE INDEX IF NOT EXISTS idx_sp_session ON scratchpad(session_id)");
 
+	// FTS mirrors store cjkBigramize()d text so unicode61 indexes CJK as
+	// overlapping bigram tokens instead of one unmatchable whole-run token.
+	// bun:sqlite has no UDF registration, so the bigram transform cannot live in
+	// a trigger: INSERT/UPDATE sites call fts-sync.ts resync helpers, and only
+	// the DELETE triggers (plain SQL, no transform) remain here.
+	// `em_au` (pre-v18.2 raw-index trigger) or `wm_ai` (independent-table insert
+	// trigger) mark a legacy bank whose rows were indexed raw → rebuild.
+	if (
+		db.query("SELECT 1 FROM sqlite_master WHERE type='trigger' AND name='em_au'").get() !== null ||
+		db.query("SELECT 1 FROM sqlite_master WHERE type='trigger' AND name='wm_ai'").get() !== null ||
+		db.query("SELECT 1 FROM sqlite_master WHERE type='trigger' AND name='facts_ai'").get() !== null
+	) {
+		runAll(db, [
+			"DROP TRIGGER IF EXISTS em_ai",
+			"DROP TRIGGER IF EXISTS em_ad",
+			"DROP TRIGGER IF EXISTS em_au",
+			"DROP TRIGGER IF EXISTS wm_ai",
+			"DROP TRIGGER IF EXISTS wm_ad",
+			"DROP TRIGGER IF EXISTS wm_au",
+			"DROP TRIGGER IF EXISTS facts_ai",
+			"DROP TRIGGER IF EXISTS facts_ad",
+			"DROP TABLE IF EXISTS fts_episodes",
+			"DROP TABLE IF EXISTS fts_working",
+			"DROP TABLE IF EXISTS fts_facts",
+		]);
+	}
 	db.run(`
 		CREATE VIRTUAL TABLE IF NOT EXISTS fts_episodes USING fts5(
-			content,
-			content='episodic_memory',
-			content_rowid='rowid'
+			content
 		)
 	`);
 	db.run(`
@@ -142,29 +167,14 @@ export function initBeam(db: Database): void {
 		)
 	`);
 	runAll(db, [
-		`CREATE TRIGGER IF NOT EXISTS em_ai AFTER INSERT ON episodic_memory BEGIN
-			INSERT INTO fts_episodes(rowid, content) VALUES (new.rowid, new.content);
-		END`,
 		`CREATE TRIGGER IF NOT EXISTS em_ad AFTER DELETE ON episodic_memory BEGIN
-			INSERT INTO fts_episodes(fts_episodes, rowid, content) VALUES ('delete', old.rowid, old.content);
-		END`,
-		`CREATE TRIGGER IF NOT EXISTS em_au AFTER UPDATE ON episodic_memory BEGIN
-			INSERT INTO fts_episodes(fts_episodes, rowid, content) VALUES ('delete', old.rowid, old.content);
-			INSERT INTO fts_episodes(rowid, content) VALUES (new.rowid, new.content);
-		END`,
-		"DROP TRIGGER IF EXISTS wm_ai",
-		`CREATE TRIGGER IF NOT EXISTS wm_ai AFTER INSERT ON working_memory BEGIN
-			INSERT INTO fts_working(id, content) VALUES (new.id, COALESCE(new.embed_text, new.content));
+			DELETE FROM fts_episodes WHERE rowid = old.rowid;
 		END`,
 		`CREATE TRIGGER IF NOT EXISTS wm_ad AFTER DELETE ON working_memory BEGIN
 			DELETE FROM fts_working WHERE id = old.id;
 		END`,
-		"DROP TRIGGER IF EXISTS wm_au",
-		`CREATE TRIGGER IF NOT EXISTS wm_au AFTER UPDATE OF content, embed_text ON working_memory BEGIN
-			DELETE FROM fts_working WHERE id = old.id;
-			INSERT INTO fts_working(id, content) VALUES (new.id, COALESCE(new.embed_text, new.content));
-		END`,
 	]);
+	rebuildFtsMirrors(db);
 
 	db.run(`
 		CREATE TABLE IF NOT EXISTS memoria_facts (
@@ -362,17 +372,12 @@ export function initBeam(db: Database): void {
 	]);
 	db.run(`
 		CREATE VIRTUAL TABLE IF NOT EXISTS fts_facts USING fts5(
-			subject, predicate, object, content='facts'
+			subject, predicate, object
 		)
 	`);
 	runAll(db, [
-		`CREATE TRIGGER IF NOT EXISTS facts_ai AFTER INSERT ON facts BEGIN
-			INSERT INTO fts_facts(rowid, subject, predicate, object)
-			VALUES (new.rowid, new.subject, new.predicate, new.object);
-		END`,
 		`CREATE TRIGGER IF NOT EXISTS facts_ad AFTER DELETE ON facts BEGIN
-			INSERT INTO fts_facts(fts_facts, rowid, subject, predicate, object)
-			VALUES ('delete', old.rowid, old.subject, old.predicate, old.object);
+			DELETE FROM fts_facts WHERE rowid = old.rowid;
 		END`,
 	]);
 

@@ -1,5 +1,6 @@
 import type { Database } from "bun:sqlite";
 import { closeQuietly, type DatabasePath, openDatabase } from "../db";
+import { resyncFtsFacts } from "./beam/fts-sync";
 
 export interface Gist {
 	readonly id: string;
@@ -376,6 +377,8 @@ export class EpisodicGraph {
 				VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
 			[fact.id, sessionId, fact.subject, fact.predicate, fact.object, fact.timestamp, memoryId, fact.confidence],
 		);
+		const row = this.db.query("SELECT rowid FROM facts WHERE fact_id = ?").get(fact.id) as { rowid: number } | null;
+		if (row !== null) resyncFtsFacts(this.db, row.rowid);
 	}
 	getFact(id: string): Fact | null {
 		const row = this.db.query("SELECT * FROM facts WHERE fact_id = ?").get(id) as FactRow | null;
@@ -476,7 +479,13 @@ export class EpisodicGraph {
 
 		const previousMemoryIds = linkExisting ? this.knownMemoryIds(memoryId) : [];
 		this.storeGist(gist, memoryId);
-		const gistEdge = { source: memoryId, target: gist.id, edgeType: "ctx", weight: 1, timestamp };
+		const gistEdge = {
+			source: memoryId,
+			target: gist.id,
+			edgeType: "ctx",
+			weight: 1,
+			timestamp,
+		};
 		this.addEdge(gistEdge);
 		edges.push(gistEdge);
 

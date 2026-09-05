@@ -185,3 +185,58 @@ describe("google/ model behind an OpenAI-compatible gateway", () => {
 		expect(body.input).toEqual(["中转文档"]);
 	});
 });
+
+describe("gemini key pool rotation", () => {
+	function keyUsedBy(call: CapturedCall): string {
+		return (call.init.headers as Record<string, string>)["x-goog-api-key"] ?? "";
+	}
+
+	it("rotates to the next key on a per-minute 429", async () => {
+		calls.length = 0;
+		globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) => {
+			calls.push({ url: String(input), init: init ?? {} });
+			const key = (init?.headers as Record<string, string>)["x-goog-api-key"];
+			if (key === "pool-key-a") {
+				return new Response(JSON.stringify({ error: { code: 429, retryDelay: "0.5s" } }), { status: 429 });
+			}
+			return geminiResponse([0.5]);
+		}) as typeof fetch;
+		const env = { ...GEMINI_ENV, MNEMOPI_EMBEDDING_API_KEY: "pool-key-a, pool-key-b" };
+		const result = await withEnv(env, () => embed(["轮询文档"]));
+		expect(result).not.toBeNull();
+		expect(Array.from(result?.[0] ?? [])).toEqual([0.5]);
+		expect(calls.length).toBe(2);
+		expect(keyUsedBy(calls[0]!)).toBe("pool-key-a");
+		expect(keyUsedBy(calls[1]!)).toBe("pool-key-b");
+	});
+
+	it("parks a day-quota key and serves the rest of the batch from the next key", async () => {
+		calls.length = 0;
+		globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) => {
+			calls.push({ url: String(input), init: init ?? {} });
+			const key = (init?.headers as Record<string, string>)["x-goog-api-key"];
+			if (key === "day-key-a") {
+				return new Response(
+					JSON.stringify({
+						error: {
+							code: 429,
+							details: [
+								{ quotaId: "EmbedContentRequestsPerDayPerUserPerProjectPerModel-FreeTier" },
+								{ retryDelay: "30s" },
+							],
+						},
+					}),
+					{ status: 429 },
+				);
+			}
+			return geminiResponse([0.25]);
+		}) as typeof fetch;
+		const env = { ...GEMINI_ENV, MNEMOPI_EMBEDDING_API_KEY: "day-key-a,day-key-b" };
+		const result = await withEnv(env, () => embed(["第一条", "第二条"]));
+		expect(result).not.toBeNull();
+		expect(result?.length).toBe(2);
+		// First text: day-key-a rejected (parks for the long cooldown), rotated to
+		// day-key-b; second text: day-key-a still cooling, day-key-b serves directly.
+		expect(calls.map(call => keyUsedBy(call))).toEqual(["day-key-a", "day-key-b", "day-key-b"]);
+	});
+});

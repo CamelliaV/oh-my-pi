@@ -497,21 +497,41 @@ async function embedApi(texts: readonly string[], taskType: GeminiTaskType): Pro
 /**
  * Embed texts against Google's Generative Language API `embedContent` endpoint,
  * one request per text (the API has no synchronous batch form; `batchEmbedContents`
- * is async-job only). 401 re-auth rides the same `withAuth` machinery as the OpenAI
- * wire path.
+ * is async-job only).
  *
- * Rate limiting is two-layered: requests are paced (HTTP keep-alive makes
- * sequential fetches far faster than one-per-round-trip, so unpaced batches burst
- * past per-minute ceilings), and quota 429s are handled INSIDE fetchWithRetry —
- * it parses Google's `error.details` `retryDelay` ("42s") and parks on the
- * server's own hint. That is why no abort signal is passed here: a per-request
- * timeout would abort fetchWithRetry mid-wait (the day-quota storm that motivated
- * this shape); Bun's native fetch ceiling remains the hang guard. All-or-nothing
- * like `embedApi`: a non-recoverable failure on any text nulls the whole call so
- * the caller's retry semantics stay uniform.
+ * `mnemopi.embeddingApiKey` (or MNEMOPI_EMBEDDING_API_KEY) may hold a
+ * comma/space separated key pool: keys rotate round-robin so the free tier's
+ * 1000-requests-per-day-per-key budget aggregates, and a quota 429 rotates to the
+ * next key instead of parking. A day-quota rejection (quotaId containing PerDay)
+ * parks that key for half an hour — the body's `retryDelay` hint only reflects
+ * per-minute windows and would just cycle keys uselessly. A 401 key is bad
+ * credentials and sits out for an hour. 5xx/network retries stay inside
+ * fetchWithRetry (`shouldRetryResponse` surfaces 429s immediately so the rotation
+ * owns cooldowns); no abort signal is passed because a per-request timeout would
+ * abort fetchWithRetry mid-wait during quota backoff — Bun's native fetch ceiling
+ * remains the hang guard. Requests are paced (HTTP keep-alive makes sequential
+ * fetches far faster than one-per-round-trip, so unpaced batches burst past
+ * per-minute ceilings). All-or-nothing like `embedApi`: a non-recoverable failure
+ * on any text nulls the whole call so the caller's retry semantics stay uniform.
  */
 const GEMINI_MIN_REQUEST_INTERVAL_MS = 700;
+const GEMINI_DAY_QUOTA_COOLDOWN_MS = 30 * 60 * 1000;
+const GEMINI_BAD_KEY_COOLDOWN_MS = 60 * 60 * 1000;
 let lastGeminiRequestAt = 0;
+const geminiKeyCooldowns = new Map<string, number>();
+let geminiKeyCursor = 0;
+
+function nextGeminiKey(keys: readonly string[]): string | undefined {
+	const now = Date.now();
+	for (let i = 0; i < keys.length; i++) {
+		const key = keys[(geminiKeyCursor + i) % keys.length]!;
+		if ((geminiKeyCooldowns.get(key) ?? 0) <= now) {
+			geminiKeyCursor = (geminiKeyCursor + i + 1) % keys.length;
+			return key;
+		}
+	}
+	return undefined;
+}
 
 async function embedGeminiApi(
 	geminiId: string,
@@ -523,23 +543,44 @@ async function embedGeminiApi(
 	if (!embeddingKeyConfigured(apiKey)) {
 		return null;
 	}
+	// A resolver resolves once to a single key; a static string may be a pool.
+	const keys =
+		typeof apiKey === "function"
+			? [await apiKey({ lastChance: false, error: undefined })].filter(
+					(key): key is string => key !== undefined && key !== "",
+				)
+			: apiKey.split(/[,\s]+/).filter(key => key !== "");
+	if (keys.length === 0) {
+		return null;
+	}
 	const url = `${baseUrl.replace(/\/+$/, "")}/models/${geminiId}:embedContent`;
 	try {
-		const vectors = await withAuth(apiKey, async key => {
-			const headers: Record<string, string> = { "Content-Type": "application/json" };
-			if (key !== "") {
-				headers["x-goog-api-key"] = key;
+		const rows: Vector[] = [];
+		for (const text of texts) {
+			const gap = lastGeminiRequestAt + GEMINI_MIN_REQUEST_INTERVAL_MS - Date.now();
+			if (gap > 0) {
+				await scheduler.wait(gap);
 			}
-			const rows: Vector[] = [];
-			for (const text of texts) {
-				const gap = lastGeminiRequestAt + GEMINI_MIN_REQUEST_INTERVAL_MS - Date.now();
-				if (gap > 0) {
-					await scheduler.wait(gap);
+			lastGeminiRequestAt = Date.now();
+			for (let keyAttempt = 0; ; keyAttempt++) {
+				let key = nextGeminiKey(keys);
+				if (key === undefined) {
+					// Every key is cooling. A near expiry is worth waiting out; a far one
+					// (day quota everywhere) fails fast so the reconcile re-enqueue heals.
+					const earliest = Math.min(...keys.map(k => geminiKeyCooldowns.get(k) ?? 0));
+					const waitMs = earliest - Date.now();
+					if (waitMs > 90_000) {
+						return null;
+					}
+					await scheduler.wait(Math.max(waitMs, 1000));
+					key = nextGeminiKey(keys);
+					if (key === undefined) {
+						return null;
+					}
 				}
-				lastGeminiRequestAt = Date.now();
 				const res = await fetchWithRetry(url, {
 					method: "POST",
-					headers,
+					headers: { "Content-Type": "application/json", "x-goog-api-key": key },
 					body: JSON.stringify({
 						model: `models/${geminiId}`,
 						content: { parts: [{ text }] },
@@ -547,11 +588,23 @@ async function embedGeminiApi(
 					}),
 					maxAttempts: 5,
 					defaultDelayMs: attempt => 2 ** attempt * 1000,
+					shouldRetryResponse: response => response.status !== 429,
 				});
-				if (res.status === 401) {
-					throw new ProviderHttpError("mnemopi gemini embedding request unauthorized (401)", 401, {
-						headers: res.headers,
-					});
+				if (res.status === 429 || res.status === 401) {
+					const quotaBody = res.status === 429 ? await res.text() : "";
+					const retryDelay = /"retryDelay"\s*:\s*"([0-9.]+)s"/.exec(quotaBody);
+					const cooldownMs =
+						res.status === 401
+							? GEMINI_BAD_KEY_COOLDOWN_MS
+							: /PerDay/.test(quotaBody)
+								? GEMINI_DAY_QUOTA_COOLDOWN_MS
+								: Math.max(1000, (retryDelay === null ? 30 : Number.parseFloat(retryDelay[1]!)) * 1000);
+					geminiKeyCooldowns.set(key, Date.now() + cooldownMs);
+					// A full rotation rejected this text under every key.
+					if (keyAttempt > keys.length) {
+						return null;
+					}
+					continue;
 				}
 				if (!res.ok) {
 					return null;
@@ -562,14 +615,11 @@ async function embedGeminiApi(
 					return null;
 				}
 				rows.push(new Float32Array(values));
+				break;
 			}
-			return rows;
-		});
-		if (vectors === null) {
-			return null;
 		}
 		apiCallCount += texts.length;
-		return vectors;
+		return rows;
 	} catch (error) {
 		logger.debug("mnemopi embedding request failed", { status: extractHttpStatusFromError(error) });
 		return null;
@@ -616,6 +666,9 @@ export function resetEmbeddingProviderForTests(): void {
 	localModelInitializer = defaultLocalModelInitializer;
 	apiCallCount = 0;
 	queryCache.clear();
+	geminiKeyCooldowns.clear();
+	geminiKeyCursor = 0;
+	lastGeminiRequestAt = 0;
 }
 
 export const resetEmbeddingStateForTests = resetEmbeddingProviderForTests;

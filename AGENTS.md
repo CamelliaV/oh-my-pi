@@ -446,3 +446,4 @@ editing a patched region, or when a patch's reasoning matters.
 20. `fix(tui)` draft-image preview strip follows the active composer shape — `custom-editor.ts, editor.ts`
 21. `fix(ai)` Anthropic user turns always serialize as content blocks — `anthropic.ts, anthropic-cch-cache-stability.test.ts`
 22. `fix(ai)` prompt-inclusive `input_tokens` on anthropic-wire relays — `anthropic.ts, types.ts, resolve.ts, models-config-schema-bundle.ts, anthropic-stream-envelope.test.ts`
+23. `feat(web)` Grok relay web-search channel (declarable endpoint/model/credential + real-search gate) — `grok.ts, grok-responses.ts, xai.ts, provider.ts, types.ts, settings-schema.ts, web-search-grok.test.ts`

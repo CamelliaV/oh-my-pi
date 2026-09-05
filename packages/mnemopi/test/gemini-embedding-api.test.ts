@@ -152,12 +152,12 @@ describe("gemini native embedContent wire", () => {
 	});
 
 	it("returns null without throwing when a text fails non-recoverably", async () => {
-		stubFetch(() => new Response("rate limited", { status: 500 }));
+		// 403 is non-retryable, so fetchWithRetry returns it immediately instead of
+		// sleeping through a 5xx backoff ladder that would blow the test timeout.
+		stubFetch(() => new Response("forbidden", { status: 403 }));
 		const result = await withEnv(GEMINI_ENV, () => embed(["失败的文档"]));
-		// fetchWithRetry exhausts its attempts (3) before giving up — assert the
-		// call count rather than sleeping through backoff delays in assertions.
 		expect(result).toBeNull();
-		expect(calls.length).toBeGreaterThanOrEqual(1);
+		expect(calls.length).toBe(1);
 	});
 
 	it("requires a configured key", async () => {

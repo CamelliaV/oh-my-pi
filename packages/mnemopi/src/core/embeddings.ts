@@ -500,16 +500,17 @@ async function embedApi(texts: readonly string[], taskType: GeminiTaskType): Pro
  * is async-job only). 401 re-auth rides the same `withAuth` machinery as the OpenAI
  * wire path.
  *
- * Rate limiting is two-layered: requests are paced to stay under the free tier's
- * per-minute embedding quota (HTTP keep-alive makes sequential fetches far faster
- * than one-per-round-trip, so unpaced batches burst past the RPM ceiling), and a
- * 429 that still gets through backs off on the quota's retry window — honoring the
- * body's `error.retryDelay` when present — before re-fetching. All-or-nothing like
- * `embedApi`: a non-recoverable failure on any text nulls the whole call so the
- * caller's retry semantics stay uniform.
+ * Rate limiting is two-layered: requests are paced (HTTP keep-alive makes
+ * sequential fetches far faster than one-per-round-trip, so unpaced batches burst
+ * past per-minute ceilings), and quota 429s are handled INSIDE fetchWithRetry —
+ * it parses Google's `error.details` `retryDelay` ("42s") and parks on the
+ * server's own hint. That is why no abort signal is passed here: a per-request
+ * timeout would abort fetchWithRetry mid-wait (the day-quota storm that motivated
+ * this shape); Bun's native fetch ceiling remains the hang guard. All-or-nothing
+ * like `embedApi`: a non-recoverable failure on any text nulls the whole call so
+ * the caller's retry semantics stay uniform.
  */
 const GEMINI_MIN_REQUEST_INTERVAL_MS = 700;
-const GEMINI_QUOTA_RETRY_ATTEMPTS = 4;
 let lastGeminiRequestAt = 0;
 
 async function embedGeminiApi(
@@ -536,47 +537,31 @@ async function embedGeminiApi(
 					await scheduler.wait(gap);
 				}
 				lastGeminiRequestAt = Date.now();
-				for (let attempt = 0; ; attempt++) {
-					const res = await fetchWithRetry(url, {
-						method: "POST",
-						headers,
-						body: JSON.stringify({
-							model: `models/${geminiId}`,
-							content: { parts: [{ text }] },
-							taskType,
-						}),
-						signal: AbortSignal.timeout(30000),
-						maxAttempts: 3,
-						defaultDelayMs: attempt => 2 ** attempt * 1000,
+				const res = await fetchWithRetry(url, {
+					method: "POST",
+					headers,
+					body: JSON.stringify({
+						model: `models/${geminiId}`,
+						content: { parts: [{ text }] },
+						taskType,
+					}),
+					maxAttempts: 5,
+					defaultDelayMs: attempt => 2 ** attempt * 1000,
+				});
+				if (res.status === 401) {
+					throw new ProviderHttpError("mnemopi gemini embedding request unauthorized (401)", 401, {
+						headers: res.headers,
 					});
-					if (res.status === 429 && attempt < GEMINI_QUOTA_RETRY_ATTEMPTS) {
-						// A quota window is ~60s; fetchWithRetry's short ladder cannot clear
-						// it, so wait on the API's own retry hint (or a long fixed ladder)
-						// and refetch. Falling out of attempts lands in the !res.ok null
-						// below — the same all-or-nothing contract as any other failure.
-						const quotaBody = await res.text();
-						const retryDelay = /"retryDelay"\s*:\s*"([0-9.]+)s"/.exec(quotaBody);
-						const waitMs =
-							retryDelay === null ? 15_000 * (attempt + 1) : Number.parseFloat(retryDelay[1]!) * 1000;
-						await scheduler.wait(Math.max(1000, waitMs));
-						continue;
-					}
-					if (res.status === 401) {
-						throw new ProviderHttpError("mnemopi gemini embedding request unauthorized (401)", 401, {
-							headers: res.headers,
-						});
-					}
-					if (!res.ok) {
-						return null;
-					}
-					const { embedding } = (await res.json()) as { embedding?: { values?: number[] } };
-					const values = embedding?.values;
-					if (!Array.isArray(values) || values.length === 0) {
-						return null;
-					}
-					rows.push(new Float32Array(values));
-					break;
 				}
+				if (!res.ok) {
+					return null;
+				}
+				const { embedding } = (await res.json()) as { embedding?: { values?: number[] } };
+				const values = embedding?.values;
+				if (!Array.isArray(values) || values.length === 0) {
+					return null;
+				}
+				rows.push(new Float32Array(values));
 			}
 			return rows;
 		});

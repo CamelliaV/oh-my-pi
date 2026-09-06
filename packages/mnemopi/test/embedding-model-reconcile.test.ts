@@ -157,6 +157,86 @@ describe("reconcileEmbeddingModel on store open", () => {
 		}
 	});
 
+	it("preserves a foreign-model corpus on an option-less open (no replacement source)", () => {
+		const { db } = seedDb(OLD_MODEL);
+		let memory: Mnemopi | undefined;
+		try {
+			// Option-less tooling opens (diagnostics, one-shot CLIs) silently fall
+			// back to the bundled default model. Claiming it as "active" used to
+			// wipe the corpus another configuration produced — the missing-row
+			// re-embed would additionally REPLACE rows by memory_id — leaving the
+			// bank with vectors this runtime cannot generate (and the next
+			// configured open wipes THOSE, ping-ponging forever).
+			memory = new Mnemopi({ db });
+			expect(countEmbeddings(memory)).toBe(2);
+			expect(memory.beam.pendingExtractions.size).toBe(0);
+			const rows = memory.conn.query("SELECT model FROM memory_embeddings").all() as { model: string }[];
+			expect(rows.every(row => row.model === OLD_MODEL)).toBe(true);
+			const ep = memory.conn.query("SELECT binary_vector AS v FROM episodic_memory WHERE id = 'ep-1'").get() as {
+				v: Uint8Array | null;
+			};
+			expect(ep.v).not.toBeNull();
+		} finally {
+			memory?.close();
+			db.close();
+		}
+	});
+
+	it("preserves a corpus when the model is explicit but its API key is absent", () => {
+		const { db } = seedDb(OLD_MODEL);
+		let memory: Mnemopi | undefined;
+		try {
+			// A model switch to an API embedder without credentials cannot rebuild
+			// anything either; the wipe must wait for a runtime that can.
+			memory = new Mnemopi({ db, embeddings: { model: "google/gemini-embedding-2" } });
+			expect(countEmbeddings(memory)).toBe(2);
+			expect(memory.beam.pendingExtractions.size).toBe(0);
+		} finally {
+			memory?.close();
+			db.close();
+		}
+	});
+
+	it("suppresses the interrupted-rebuild re-enqueue for a cooldown window after an enqueue", async () => {
+		const db = new Database(":memory:");
+		initBeam(db);
+		const ts = new Date().toISOString();
+		db.prepare(
+			"INSERT INTO working_memory (id, content, source, timestamp, session_id) VALUES (?, ?, 'test', ?, 'default')",
+		).run("wm-1", "alpha working memory", ts);
+		const options = { embeddings: { model: NEW_MODEL, provider: fakeEmbed() } } as ConstructorParameters<
+			typeof Mnemopi
+		>[0];
+		// First open: enqueues the missing row and stamps the cooldown marker.
+		const first = new Mnemopi({ db, ...options });
+		expect(first.beam.pendingExtractions.size).toBeGreaterThanOrEqual(1);
+		first.close();
+		// Simulate the process dying before any batch landed: embeddings stay missing.
+		// A second open inside the cooldown window must NOT re-enqueue (every
+		// short-lived open used to re-fire the same doomed requests).
+		const second = new Mnemopi({ db, ...options });
+		try {
+			expect(second.beam.pendingExtractions.size).toBe(0);
+			expect(countEmbeddings(second)).toBe(0);
+		} finally {
+			second.close();
+		}
+		// Age the marker past the cooldown: the next open re-enqueues and heals.
+		db.run("INSERT OR REPLACE INTO mnemopi_meta(key, value) VALUES (?, ?)", [
+			"embedding_rebuild_enqueued_at",
+			new Date(Date.now() - 20 * 60_000).toISOString(),
+		]);
+		const third = new Mnemopi({ db, ...options });
+		try {
+			expect(third.beam.pendingExtractions.size).toBeGreaterThanOrEqual(1);
+			await third.flushExtractions();
+			expect(countEmbeddings(third)).toBe(1);
+		} finally {
+			third.close();
+			db.close();
+		}
+	});
+
 	it("recovers an interrupted rebuild: re-enqueues live memories missing an active-model embedding", async () => {
 		// Simulate a wipe that completed but whose async rebuild never finished (a process exit
 		// or transient embed failure): live memories remain but `memory_embeddings` is empty. A

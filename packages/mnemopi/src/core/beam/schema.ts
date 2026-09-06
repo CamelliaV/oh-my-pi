@@ -434,4 +434,13 @@ export function initBeam(db: Database): void {
 		"CREATE INDEX IF NOT EXISTS idx_triples_object ON triples(object)",
 		"CREATE INDEX IF NOT EXISTS idx_triples_valid_from ON triples(valid_from)",
 	]);
+
+	// Cross-open coordination markers (e.g. the embedding rebuild re-enqueue
+	// cooldown written by reconcileEmbeddingModel in store.ts).
+	db.run(`
+		CREATE TABLE IF NOT EXISTS mnemopi_meta (
+			key TEXT PRIMARY KEY,
+			value TEXT NOT NULL
+		)
+	`);
 }

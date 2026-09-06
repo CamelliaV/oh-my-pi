@@ -322,6 +322,27 @@ export function currentEmbeddingModel(): string {
 	return defaultModel();
 }
 
+/**
+ * Whether this runtime can actually produce replacement embeddings under the
+ * active model. The destructive half of `reconcileEmbeddingModel` (wiping every
+ * stored vector whose model stamp differs, then re-embedding) is only safe when
+ * a replacement exists; the active model name being non-empty is NOT enough.
+ * An option-less open (`new Mnemopi({dbPath})` — diagnostics, one-shot CLIs,
+ * ad-hoc tooling) silently falls back to the bundled fastembed default, would
+ * claim that default as "active", and destroy a corpus another configuration
+ * produced (e.g. a configured API model) with a rebuild that runtime never
+ * chose. Explicit means the runtime options carry a model or provider, or
+ * `MNEMOPI_EMBEDDING_MODEL` is set. API models additionally require a
+ * configured key — without the credential nothing can be rebuilt either.
+ */
+export function embeddingReplacementAvailable(): boolean {
+	const active = activeEmbeddingOptions();
+	const explicit =
+		active?.model !== undefined || active?.provider !== undefined || $env.MNEMOPI_EMBEDDING_MODEL !== undefined;
+	if (!explicit) return false;
+	return !isApiModel(currentEmbeddingModel()) || embeddingKeyConfigured();
+}
+
 export function isApiModel(modelName: string): boolean {
 	if (
 		modelName.startsWith("openai/") ||

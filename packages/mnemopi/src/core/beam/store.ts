@@ -3,7 +3,7 @@ import { logger } from "@oh-my-pi/pi-utils";
 import { transaction } from "../../db";
 import { toUtcIso } from "../../util/datetime";
 import { generateId } from "../../util/ids";
-import { currentEmbeddingModel, embeddingsDisabled } from "../embeddings";
+import { currentEmbeddingModel, embeddingReplacementAvailable, embeddingsDisabled } from "../embeddings";
 import { EpisodicGraph } from "../episodic-graph";
 import { countExtractedFactCategories, extractFactCategoriesSafe } from "../extraction";
 import { getMnemopiRuntimeOptions, withMnemopiRuntimeOptions } from "../runtime-options";
@@ -350,6 +350,38 @@ function rowToDict(row: Row): Row {
  *  embedding request instead of embedding the whole corpus in one call. */
 const EMBED_REBUILD_BATCH = 128;
 
+/** Cooldown between cross-open re-enqueues of an interrupted rebuild. Each
+ *  batch takes on the order of a minute at API pacing, and a short-lived
+ *  process (one-shot `-p` turns, probes, tooling) always dies before its first
+ *  batch lands — without a persisted marker every such open would re-fire the
+ *  same doomed requests. One attempt per cooldown window bounds the waste
+ *  while long-lived sessions still heal within themselves. */
+const REBUILD_REENQUEUE_COOLDOWN_MS = 15 * 60_000;
+const REBUILD_ENQUEUED_AT_KEY = "embedding_rebuild_enqueued_at";
+
+function rebuildEnqueuedRecently(db: BeamMemoryState["db"]): boolean {
+	try {
+		const row = db.query("SELECT value FROM mnemopi_meta WHERE key = ?").get(REBUILD_ENQUEUED_AT_KEY) as
+			| { value: string }
+			| undefined;
+		return row !== undefined && Date.now() - Date.parse(row.value) < REBUILD_REENQUEUE_COOLDOWN_MS;
+	} catch {
+		// Foreign connection without the meta table — the throttle is best-effort.
+		return false;
+	}
+}
+
+function markRebuildEnqueued(db: BeamMemoryState["db"]): void {
+	try {
+		db.run("INSERT OR REPLACE INTO mnemopi_meta(key, value) VALUES (?, ?)", [
+			REBUILD_ENQUEUED_AT_KEY,
+			new Date().toISOString(),
+		]);
+	} catch {
+		// Best-effort throttle marker.
+	}
+}
+
 /**
  * Reconcile stored embeddings against the active embedding model at store open.
  *
@@ -364,7 +396,9 @@ const EMBED_REBUILD_BATCH = 128;
  * Runs once per store open; a fresh store (no embeddings) or an already-current
  * store is a no-op. The destructive wipe is skipped whenever it could not be
  * rebuilt — embeddings disabled via the runtime option OR the
- * `MNEMOPI_NO_EMBEDDINGS` env, or an unresolved (empty) active model — so a
+ * `MNEMOPI_NO_EMBEDDINGS` env, an unresolved (empty) active model, or a runtime
+ * whose active model was never explicitly chosen (option-less opens fall back
+ * to the bundled default; see `embeddingReplacementAvailable`) — so a
  * stale-but-valid corpus is never destroyed without a replacement. MUST run
  * inside the active runtime-options scope so `currentEmbeddingModel()` /
  * `embeddingsDisabled()` reflect the per-instance configuration.
@@ -374,9 +408,16 @@ export function reconcileEmbeddingModel(beam: BeamMemoryState): void {
 	const active = currentEmbeddingModel().trim();
 	if (active === "") return;
 
+	// An option-less open must not claim the bank's embedding identity: without
+	// a replacement source, the mismatch wipe (or the missing-row re-embed, which
+	// REPLACEs rows by memory_id) would trade a corpus another configuration
+	// produced for one this runtime cannot even generate.
+	const replacementAvailable = embeddingReplacementAvailable();
+
 	// Re-embed in bounded batches so a corpus-wide rebuild never issues one giant
 	// embedding request; each batch is its own tracked background task.
 	const rebuild = (items: readonly EmbedItem[]): void => {
+		markRebuildEnqueued(beam.db);
 		for (let offset = 0; offset < items.length; offset += EMBED_REBUILD_BATCH) {
 			scheduleEmbedding(beam, items.slice(offset, offset + EMBED_REBUILD_BATCH));
 		}
@@ -385,10 +426,25 @@ export function reconcileEmbeddingModel(beam: BeamMemoryState): void {
 	// Stop at the first row whose stamped model differs from the active one
 	// (NULL/unstamped counts as a mismatch via `IS NOT`).
 	const mismatch = beam.db.query("SELECT 1 FROM memory_embeddings WHERE model IS NOT ? LIMIT 1").get(active);
-	if (mismatch) {
-		const staleModels = beam.db
-			.query("SELECT DISTINCT model FROM memory_embeddings WHERE model IS NOT ?")
-			.all(active) as { model: string | null }[];
+	const staleModels =
+		mismatch !== null
+			? (beam.db.query("SELECT DISTINCT model FROM memory_embeddings WHERE model IS NOT ?").all(active) as {
+					model: string | null;
+				}[])
+			: [];
+	if (mismatch !== null && !replacementAvailable) {
+		logger.info(
+			"mnemopi: embedding model differs but this runtime has no replacement source; preserving stored vectors",
+			{
+				stored: staleModels.map(row => row.model ?? "(unstamped)"),
+				active,
+			},
+		);
+		return;
+	}
+	if (!replacementAvailable) return;
+
+	if (mismatch !== null) {
 		const live = beam.db
 			.query(`
 				SELECT id AS memoryId, COALESCE(embed_text, content) AS content FROM working_memory WHERE superseded_by IS NULL
@@ -421,7 +477,8 @@ export function reconcileEmbeddingModel(beam: BeamMemoryState): void {
 	// No stale embeddings, but a previously-interrupted rebuild (a failed embed or a process
 	// exit after the wipe) can leave live memories with no active-model embedding. Treating an
 	// empty/partial table as "reconciled" would strand them FTS-only, so re-enqueue any live
-	// row still missing an active-model embedding.
+	// row still missing an active-model embedding — unless another open attempted it inside
+	// the cooldown window and died before any batch landed.
 	const missing = beam.db
 		.query(`
 			SELECT id AS memoryId, COALESCE(embed_text, content) AS content FROM working_memory
@@ -432,6 +489,13 @@ export function reconcileEmbeddingModel(beam: BeamMemoryState): void {
 		`)
 		.all(active, active) as EmbedItem[];
 	if (missing.length === 0) return;
+	if (rebuildEnqueuedRecently(beam.db)) {
+		logger.info("mnemopi: interrupted embedding rebuild re-enqueue suppressed (cooldown)", {
+			to: active,
+			count: missing.length,
+		});
+		return;
+	}
 	logger.info("mnemopi: resuming interrupted embedding rebuild", {
 		to: active,
 		count: missing.length,

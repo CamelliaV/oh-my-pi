@@ -1,5 +1,5 @@
 import type { Database } from "bun:sqlite";
-import { rebuildFtsMirrors } from "./fts-sync";
+import { ftsMirrorsOutOfSync, rebuildFtsMirrors } from "./fts-sync";
 
 type PragmaTableInfoRow = {
 	name: string;
@@ -136,11 +136,11 @@ export function initBeam(db: Database): void {
 	// the DELETE triggers (plain SQL, no transform) remain here.
 	// `em_au` (pre-v18.2 raw-index trigger) or `wm_ai` (independent-table insert
 	// trigger) mark a legacy bank whose rows were indexed raw → rebuild.
-	if (
+	const legacyFtsTriggers =
 		db.query("SELECT 1 FROM sqlite_master WHERE type='trigger' AND name='em_au'").get() !== null ||
 		db.query("SELECT 1 FROM sqlite_master WHERE type='trigger' AND name='wm_ai'").get() !== null ||
-		db.query("SELECT 1 FROM sqlite_master WHERE type='trigger' AND name='facts_ai'").get() !== null
-	) {
+		db.query("SELECT 1 FROM sqlite_master WHERE type='trigger' AND name='facts_ai'").get() !== null;
+	if (legacyFtsTriggers) {
 		runAll(db, [
 			"DROP TRIGGER IF EXISTS em_ai",
 			"DROP TRIGGER IF EXISTS em_ad",
@@ -174,7 +174,13 @@ export function initBeam(db: Database): void {
 			DELETE FROM fts_working WHERE id = old.id;
 		END`,
 	]);
-	rebuildFtsMirrors(db);
+	// Mirrors are maintained incrementally by the resync helpers and the DELETE
+	// triggers, so an up-to-date bank only needs the two COUNT scans in
+	// ftsMirrorsOutOfSync here — not a full delete-and-re-embed of every row
+	// (hundreds of ms on CJK-heavy banks, paid on every open, e.g. every coding
+	// agent session start). Rebuild only for legacy raw-indexed banks or when
+	// a crash between a content write and its resync left count drift behind.
+	if (legacyFtsTriggers || ftsMirrorsOutOfSync(db)) rebuildFtsMirrors(db);
 
 	db.run(`
 		CREATE TABLE IF NOT EXISTS memoria_facts (

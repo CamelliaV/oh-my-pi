@@ -144,4 +144,37 @@ describe("CJK FTS recall through the bigram protocol", () => {
 		).toEqual(["legacy1"]);
 		old.close();
 	});
+
+	test("reopening an in-sync bank preserves the mirrors instead of rebuilding", () => {
+		const bank = new Database(":memory:");
+		initBeam(bank);
+		const bankBeam = makeBeam(bank);
+		const id = remember(bankBeam, "状态栏启动延迟归因记录", { importance: 0.9 });
+		// Marker that a rebuild would erase: rewrite the mirror row's content
+		// (counts stay in sync) and reopen. The unconditional rebuild this
+		// replaces wiped + re-derived every mirror row on every open.
+		bank.run("UPDATE fts_working SET content = 'marker-kept' WHERE id = ?", [id]);
+		initBeam(bank);
+		const mirror = bank.query("SELECT content FROM fts_working WHERE id = ?").get(id) as
+			| { content: string }
+			| undefined;
+		expect(mirror?.content).toBe("marker-kept");
+		bank.close();
+	});
+
+	test("reopening after count drift rebuilds the drifted mirror", () => {
+		const bank = new Database(":memory:");
+		initBeam(bank);
+		const bankBeam = makeBeam(bank);
+		const id = remember(bankBeam, "恢复中断的镜像重建记录", { importance: 0.9 });
+		// Simulate a crash between the content INSERT and its resync: the mirror
+		// row never landed, so counts drift and the next open must rebuild.
+		bank.run("DELETE FROM fts_working WHERE id = ?", [id]);
+		initBeam(bank);
+		const mirror = bank.query("SELECT content FROM fts_working WHERE id = ?").get(id) as
+			| { content: string }
+			| undefined;
+		expect(mirror?.content).toBe("恢复 复中 中断 断的 的镜 镜像 像重 重建 建记 记录");
+		bank.close();
+	});
 });

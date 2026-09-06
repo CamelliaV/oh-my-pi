@@ -114,3 +114,29 @@ export function rebuildFtsMirrors(db: Database): void {
 		}
 	}
 }
+
+/**
+ * Open-time mirror sync check: row-count drift between a mirror and its
+ * content table. Mirrors are maintained incrementally — every INSERT/UPDATE
+ * write site calls a `resyncFts*` helper and the DELETE triggers cover
+ * removals — so equal counts mean the only possible residue is a crash
+ * between a content UPDATE and its resync, which leaves equal counts with one
+ * stale mirror row and self-heals on that row's next write. Count drift (a
+ * crash between a content INSERT and its resync) is the footprint worth an
+ * immediate rebuild.
+ */
+export function ftsMirrorsOutOfSync(db: Database): boolean {
+	const pairs: [mirror: string, content: string][] = [
+		["fts_working", "SELECT COUNT(*) AS n FROM working_memory WHERE COALESCE(embed_text, content) IS NOT NULL"],
+		["fts_episodes", "SELECT COUNT(*) AS n FROM episodic_memory WHERE content IS NOT NULL"],
+	];
+	if (tableExists(db, "facts") && tableExists(db, "fts_facts")) {
+		pairs.push(["fts_facts", "SELECT COUNT(*) AS n FROM facts"]);
+	}
+	for (const [mirror, contentSql] of pairs) {
+		const mirrorCount = db.query(`SELECT COUNT(*) AS n FROM ${mirror}`).get() as { n: number };
+		const contentCount = db.query(contentSql).get() as { n: number };
+		if (mirrorCount.n !== contentCount.n) return true;
+	}
+	return false;
+}

@@ -539,6 +539,68 @@ reasoning matters.
    onto allowed_domains) plus 15 grok-channel contract tests and the 31
    migrated xai tests, all green.
 
+24. `fix(mnemopi)` stop rebuilding FTS mirrors on every bank open —
+   `initBeam` called `rebuildFtsMirrors` unconditionally: DELETE all
+   `fts_working/fts_episodes/fts_facts` rows, then re-INSERT every
+   working/episodic/fact row through `cjkBigramize` in JS (~490ms on the
+   24MB oh-my-pi bank, measured 2026-09-06). Paid by EVERY `new Mnemopi()`
+   — and in the coding agent by `createAgentSession`'s awaited memory
+   backend start (autolearn enabled), so the first status bar render sat
+   ~500ms behind schedule. Mirrors are already maintained incrementally
+   (resyncFts* at every write site, DELETE triggers for removals), so an
+   up-to-date bank now only pays the two COUNT scans in
+   `ftsMirrorsOutOfSync`; the rebuild runs only for legacy raw-indexed
+   banks (`em_au`/`wm_ai`/`facts_ai` trigger detection) or count drift
+   from a crash between a content write and its resync. Regression tests
+   pin both sides (in-sync reopen preserves a mirror marker; drift
+   rebuilds). PTY probe: first status frame 1.305s → 0.909s.
+
+25. `feat(cli)` prewarm git status scan so counts paint in the first
+   frame — the status bar's staged/unstaged/untracked counts were fetched
+   lazily at first paint; the cold `statusSummary` (index load + worktree
+   lstat storm, 141ms measured warm-cache on this repo) plus a repaint
+   while `InteractiveMode.init:hooks` still owned the event loop put the
+   `*N` counts ~350ms after the branch label, every startup. Interactive
+   startups now fire `prewarmVcsStatusScan` (main.ts, after settings init,
+   gated on `git.enabled`) — parallel with session construction, on the
+   natives blocking pool — and park the result in a one-shot slot keyed
+   by repository root (`takePrewarmedVcsStatus`, 1.5s TTL, foreign roots
+   rejected). The status line's first `#getStatus` adopts it, so the
+   counts render in the FIRST status frame (measured: counts lag 347ms →
+   0ms, stable across 3 runs). Print/RPC/ACP hosts skip the scan. Note
+   the natives `vcs.repo()` is per-call (no handle memoization), so the
+   prewarm's real value is the result handoff, not cache warming.
+
+26. `fix(mnemopi)` embedding reconcile destroyed corpora and burned quota
+   — two compounding bugs behind the perpetual
+   `resuming interrupted embedding rebuild, count=240` log line (every
+   launch since the 2026-09-05 gemini-embedding-2 switch, zero rows ever
+   landing in `memory_embeddings`):
+   (a) **Destructive wipe without a replacement.** The mismatch branch
+   wiped all stored vectors whenever the active model string was
+   non-empty — but an option-less open (diagnostics, one-shot CLIs, my
+   own throwaway probes) silently falls back to the bundled fastembed
+   default and claims it as active, wiping the gemini corpus and
+   re-embedding under bge-small (wrong dims); the next configured open
+   wipes those again — ping-pong (also triggered historically by
+   bge-base↔bge-small default flips). The missing-row re-embed compounded
+   it via INSERT OR REPLACE by memory_id. `embeddingReplacementAvailable`
+   (explicit model/provider or env, plus key configured for API models)
+   now makes option-less opens fully inert — the documented
+   "never destroyed without a replacement" contract, finally enforced.
+   (b) **Re-enqueue burn.** Rebuild batches are all-or-nothing (128 rows,
+   ~90s at 700ms API pacing), so one-shot sessions always exit before the
+   first batch lands and every launch re-fires the same doomed requests
+   (~28 per invocation). The enqueue timestamp is persisted in a new
+   `mnemopi_meta` table; re-enqueues within a 15-minute cooldown are
+   suppressed. Long sessions heal within themselves; interrupted rebuilds
+   recover on the next window. Verified live: option-less open 242-row
+   gemini corpus preserved (was: wiped + re-embedded as bge-small);
+   cooldown active → 0 pending / expired → re-enqueue; the reference bank
+   drained to 242/242 gemini rows, 0 missing, and fresh probe launches
+   log zero rebuild lines. 3 new regression tests, 484 total green.
+
+
 
 ## Merge adjudications (v18.0.10 → v18.1.6 → v18.1.10, 2026-09-04)
 

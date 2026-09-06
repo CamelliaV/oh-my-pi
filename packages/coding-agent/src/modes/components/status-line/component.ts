@@ -20,7 +20,11 @@ import { settings } from "../../../config/settings";
 import type { AgentSession } from "../../../session/agent-session";
 import type { OAuthAccountIdentity } from "../../../session/auth-storage";
 import { limitMatchesActiveAccount } from "../../../slash-commands/helpers/active-oauth-account";
-import { type ActiveRepoContext, resolveActiveRepoContextSync } from "../../../utils/active-repo-context";
+import {
+	type ActiveRepoContext,
+	resolveActiveRepoContextSync,
+	takePrewarmedVcsStatus,
+} from "../../../utils/active-repo-context";
 import { withTimeoutSignal } from "../../../utils/fetch-timeout";
 import { GH_COMMAND_TIMEOUT_MS, github } from "../../../utils/github";
 import { getSessionAccentAnsi, getSessionAccentHex } from "../../../utils/session-color";
@@ -1170,6 +1174,18 @@ export class StatusLineComponent implements Component {
 				if (JSON.stringify(prev) !== JSON.stringify(next)) this.#onBranchChange?.();
 			})();
 			return this.#cachedJjStatus;
+		}
+
+		// Startup handoff: the pre-startup `prewarmVcsStatusScan` may already
+		// hold this repository's counts (keyed by repo root, one-shot). Adopting
+		// them here puts the counts in the FIRST paint instead of one async
+		// fetch + repaint later, while startup init still owns the event loop.
+		const prewarmed = takePrewarmedVcsStatus(repository.root());
+		if (prewarmed !== undefined) {
+			this.#cachedGitStatus = prewarmed;
+			this.#cachedGitStatusCwd = gitCwd;
+			this.#gitStatusLastFetch = Date.now();
+			return this.#cachedGitStatus;
 		}
 
 		if (this.#gitStatusInFlightCwd !== undefined) {

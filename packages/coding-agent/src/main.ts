@@ -106,6 +106,7 @@ import { createPersistedSubagentReviverFactory } from "./task/persisted-revive";
 import { createTelemetryExportConfig, initTelemetryExport, isTelemetryExportEnabled } from "./telemetry-export";
 import { concreteThinkingLevel, parseConfiguredThinkingLevel } from "./thinking";
 import type { LspStartupServerInfo } from "./tools";
+import { prewarmVcsStatusScan } from "./utils/active-repo-context";
 import { getChangelogPath, resolveStartupChangelogForDisplay, type StartupChangelogSelection } from "./utils/changelog";
 import { EventBus } from "./utils/event-bus";
 
@@ -1525,6 +1526,13 @@ export async function runRootCommand(
 			applyRpcDefaultSettingOverrides(settingsInstance);
 		} else if (parsedArgs.mode === "acp") {
 			applyAcpDefaultSettingOverrides(settingsInstance);
+		}
+
+		// Interactive status bar: warm the git working-tree status scan before the
+		// first render needs it (see prewarmVcsStatusScan). Print/RPC/ACP hosts
+		// never render the status line, so they skip the scan entirely.
+		if (isInteractive && settingsInstance.get("git.enabled")) {
+			void prewarmVcsStatusScan(getProjectDir());
 		}
 
 		// The registry composes policy-dependent metadata synchronously, including

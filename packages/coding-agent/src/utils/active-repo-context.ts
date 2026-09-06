@@ -134,3 +134,61 @@ export function resolveActiveRepoContextSync(cwd: string): ActiveRepoContext | n
 	if (insideRepository(resolvedCwd)) return null;
 	return findSingleDirectChildRepoSync(resolvedCwd);
 }
+
+/**
+ * Fire-and-forget warm-up of the working-tree status scan for the repository
+ * the status line will target (the same `vcs.repo(projectDir)` →
+ * `resolveActiveRepoContextSync` fallback it uses). The interactive status
+ * bar fetches its counts lazily on the first paint; a cold scan (index load +
+ * worktree lstat storm) runs well over 100ms on real repos, so the counts
+ * always landed one repaint late. Paying the cold scan during startup —
+ * parallel with session construction, on the natives blocking pool — leaves
+ * the status line's first paint a warm handoff or, at worst, a warm re-scan.
+ */
+interface PrewarmedVcsStatus {
+	root: string;
+	status: { staged: number; unstaged: number; untracked: number };
+	fetchedAt: number;
+}
+
+/** One-shot slot for the startup prewarm scan, consumed by the status line's
+ * first `#getStatus` via {@link takePrewarmedVcsStatus}. */
+let prewarmedVcsStatus: PrewarmedVcsStatus | undefined;
+
+/** How long a prewarmed scan stays adoptable — generous vs the status line's
+ * 1s cache TTL so slow startups can still hand the value off. */
+const PREWARMED_STATUS_TTL_MS = 1500;
+
+export async function prewarmVcsStatusScan(cwd: string): Promise<void> {
+	try {
+		let repository = vcs.repo(cwd);
+		if (!repository) {
+			const context = resolveActiveRepoContextSync(cwd);
+			if (context) repository = vcs.repo(context.repoRoot);
+		}
+		if (!repository) return;
+		const root = repository.root();
+		const status = await repository.statusSummary();
+		prewarmedVcsStatus = { root, status, fetchedAt: Date.now() };
+	} catch {
+		// Best-effort warm-up only; the status line refetches on its own schedule.
+	}
+}
+
+/**
+ * One-shot handoff of the prewarmed working-tree status, keyed by repository
+ * root so a session that switched projects at startup never adopts another
+ * repo's counts. Adopting the value lets the status line's FIRST paint carry
+ * the staged/unstaged/untracked counts instead of launching its own async
+ * scan and waiting for a repaint while startup initialization monopolizes the
+ * event loop. Expired or foreign-root entries return `undefined`.
+ */
+export function takePrewarmedVcsStatus(
+	root: string,
+): { staged: number; unstaged: number; untracked: number } | undefined {
+	const entry = prewarmedVcsStatus;
+	if (entry === undefined) return undefined;
+	prewarmedVcsStatus = undefined;
+	if (entry.root !== root || Date.now() - entry.fetchedAt > PREWARMED_STATUS_TTL_MS) return undefined;
+	return entry.status;
+}

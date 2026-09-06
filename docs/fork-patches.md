@@ -600,6 +600,24 @@ reasoning matters.
    drained to 242/242 gemini rows, 0 missing, and fresh probe launches
    log zero rebuild lines. 3 new regression tests, 484 total green.
 
+27. `fix(ai)` let provider-pinned codex identity headers reach the wire —
+   `createCodexHeaders` unconditionally overwrote `originator` and
+   `User-Agent` with omp's own Codex identity, so the models.yml
+   `User-Agent: codex_cli_rs/0.45.0` pins used by the codex-wire relay
+   providers (sub2api.zmingu, muyuan, zzzcoding, elysiver, runanytime,
+   abrdns, wzw, anwzw — 8 providers) were merged into requestHeaders and
+   then clobbered before fetch; relays that gate on official-client UA
+   prefixes (sub2api `codex_cli_only`) would 403 the omp/<version> UA the
+   wire actually carried. Both headers are now set-if-absent, matching the
+   caller-wins rule `withInferenceUserAgent` enforces at the transport
+   layer and `applyCodexResidencyHeader` documents in the same function;
+   unpinned providers keep omp's identity exactly as before. Found as an
+   uncommitted leftover from the 2026-09-05 relay-setup session (18:50),
+   verified statically (merge order at openai-codex-responses.ts:1447 →
+   createCodexHeaders → fetchWithRetry, no later clobber; Headers.has
+   case-insensitivity covers the mixed-case yml keys) plus regression
+   tests that fail pre-change and pass post-change.
+
 
 
 ## Merge adjudications (v18.0.10 → v18.1.6 → v18.1.10, 2026-09-04)

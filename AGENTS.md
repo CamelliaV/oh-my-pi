@@ -447,3 +447,6 @@ editing a patched region, or when a patch's reasoning matters.
 21. `fix(ai)` Anthropic user turns always serialize as content blocks — `anthropic.ts, anthropic-cch-cache-stability.test.ts`
 22. `fix(ai)` prompt-inclusive `input_tokens` on anthropic-wire relays — `anthropic.ts, types.ts, resolve.ts, models-config-schema-bundle.ts, anthropic-stream-envelope.test.ts`
 23. `feat(web)` Grok relay web-search channel (declarable endpoint/model/credential + real-search gate) — `grok.ts, grok-responses.ts, xai.ts, provider.ts, types.ts, settings-schema.ts, web-search-grok.test.ts`
+24. `fix(mnemopi)` stop rebuilding FTS mirrors on every bank open (gated on legacy/drift; cut ~500ms off session start) — `schema.ts, fts-sync.ts, fts-cjk-bigram.test.ts`
+25. `feat(cli)` prewarm git status scan so counts paint in the first status frame — `main.ts, active-repo-context.ts, status-line/component.ts`
+26. `fix(mnemopi)` embedding reconcile data-loss gate + persisted re-enqueue cooldown (ends the perpetual rebuild/quota loop) — `store.ts, embeddings.ts, schema.ts, embedding-model-reconcile.test.ts`

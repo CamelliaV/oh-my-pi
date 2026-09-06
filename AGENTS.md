@@ -450,3 +450,4 @@ editing a patched region, or when a patch's reasoning matters.
 24. `fix(mnemopi)` stop rebuilding FTS mirrors on every bank open (gated on legacy/drift; cut ~500ms off session start) — `schema.ts, fts-sync.ts, fts-cjk-bigram.test.ts`
 25. `feat(cli)` prewarm git status scan so counts paint in the first status frame — `main.ts, active-repo-context.ts, status-line/component.ts`
 26. `fix(mnemopi)` embedding reconcile data-loss gate + persisted re-enqueue cooldown (ends the perpetual rebuild/quota loop) — `store.ts, embeddings.ts, schema.ts, embedding-model-reconcile.test.ts`
+27. `fix(ai)` let provider-pinned codex identity headers reach the wire (set-if-absent originator/UA in createCodexHeaders) — `openai-codex-responses.ts, openai-codex-header-pins.test.ts`

@@ -4439,9 +4439,16 @@ function createCodexHeaders(
 	headers.delete(OPENAI_HEADERS.BETA);
 	headers.delete("openai-beta");
 	headers.set(OPENAI_HEADERS.BETA, betaHeader);
-	headers.set(OPENAI_HEADERS.ORIGINATOR, OPENAI_HEADER_VALUES.ORIGINATOR_CODEX);
+	// Codex relays gate on official-client identity (sub2api `codex_cli_only`
+	// 403s any UA outside the official prefix set). A provider-level header pin
+	// from models.yml wins over omp's own identity; unpinned providers keep it.
+	if (!headers.has(OPENAI_HEADERS.ORIGINATOR)) {
+		headers.set(OPENAI_HEADERS.ORIGINATOR, OPENAI_HEADER_VALUES.ORIGINATOR_CODEX);
+	}
 	headers.set(OPENAI_HEADERS.VERSION, codexClientVersion);
-	headers.set("User-Agent", USER_AGENT);
+	if (!headers.has("user-agent")) {
+		headers.set("User-Agent", USER_AGENT);
+	}
 	if (sessionId) {
 		headers.set(OPENAI_HEADERS.CONVERSATION_ID, sessionId);
 		headers.set(OPENAI_HEADERS.SESSION_ID, sessionId);

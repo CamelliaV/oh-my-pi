@@ -20,10 +20,15 @@ export function isTransientStatus(status: number | undefined): boolean {
 }
 
 // Provider-stream transient phrasings not covered by the shared
-// TRANSIENT_TRANSPORT_PATTERN (TLS record corruption, HTTP/2 peer stream
-// errors, upstream code 1302). The shared pattern already covers rate-limit /
-// overloaded / 5xx / timeout / first-event wording.
-const PROVIDER_TRANSIENT_EXTRA_PATTERN = /bad record mac|stream error.*received from peer|1302/i;
+// TRANSIENT_TRANSPORT_PATTERN (TLS record corruption, Bun's mid-handshake
+// certificate verification flakiness, HTTP/2 peer stream errors, upstream
+// code 1302). The shared pattern already covers rate-limit / overloaded /
+// 5xx / timeout / first-event wording. The permanent TLS config failure
+// wording (`tls: failed to verify certificate`) stays non-retryable — the
+// exact `unknown certificate verification error` text Bun emits for relay /
+// MITM-proxy blips is transient on replay, unlike a config-level reject.
+const PROVIDER_TRANSIENT_EXTRA_PATTERN =
+	/bad record mac|unknown certificate verification error|stream error.*received from peer|1302/i;
 
 function isTransientTransportMessage(message: string): boolean {
 	return message.includes("tls: bad record mac") || message.includes("type=server_error");

@@ -23,6 +23,25 @@ describe("isRetryableCodexFailureEvent", () => {
 		expect(isRetryableCodexFailureEvent({ response: { message: "service unavailable" } })).toBe(true);
 	});
 
+	it("retries ChatGPT-backend invalid_prompt moderation false positives", () => {
+		// The Codex backend's prompt moderation flags long code-laden prompts
+		// spuriously; identical replays often clear. A real flagged turn arrives as
+		// response.failed with code=invalid_prompt.
+		expect(
+			isRetryableCodexFailureEvent({
+				type: "response.failed",
+				response: {
+					error: {
+						code: "invalid_prompt",
+						message:
+							"Invalid prompt: your prompt was flagged as potentially violating our usage policy. Please try again with a different prompt: https://platform.openai.com/docs/guides/reasoning#advice-on-prompting",
+					},
+					status: "failed",
+				},
+			}),
+		).toBe(true);
+	});
+
 	it("returns false for non-retryable code and message", () => {
 		expect(isRetryableCodexFailureEvent({ code: "bad_request", message: "invalid input" })).toBe(false);
 		expect(isRetryableCodexFailureEvent({})).toBe(false);

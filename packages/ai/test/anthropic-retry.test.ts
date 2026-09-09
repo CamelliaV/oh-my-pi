@@ -44,6 +44,17 @@ describe("isProviderRetryableError", () => {
 		).toBe(true);
 	});
 
+	it("retries transient certificate verification errors", () => {
+		// Bun surfaces relay/MITM-proxy handshake blips as this exact text;
+		// unlike `tls: failed to verify certificate` it is not a stable
+		// config-level rejection, and identical replays succeed.
+		expect(
+			isProviderRetryableError(
+				new Error('Post "https://relay.example/v1/messages": unknown certificate verification error'),
+			),
+		).toBe(true);
+	});
+
 	it("does not retry permanent TLS configuration failures (no server annotation)", () => {
 		expect(isProviderRetryableError(new Error("tls: failed to verify certificate"))).toBe(false);
 	});

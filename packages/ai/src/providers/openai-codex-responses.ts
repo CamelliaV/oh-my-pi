@@ -275,7 +275,15 @@ const CODEX_WEBSOCKET_FIRST_EVENT_TIMEOUT_MS = Number($env.PI_CODEX_WEBSOCKET_FI
 const CODEX_WEBSOCKET_RETRY_BUDGET = Number($env.PI_CODEX_WEBSOCKET_RETRY_BUDGET || CODEX_MAX_RETRIES);
 const CODEX_WEBSOCKET_RETRY_DELAY_MS = Number($env.PI_CODEX_WEBSOCKET_RETRY_DELAY_MS || CODEX_RETRY_DELAY_MS);
 const CODEX_WEBSOCKET_TRANSPORT_ERROR_PREFIX = "Codex websocket transport error";
-const CODEX_RETRYABLE_EVENT_CODES = new Set(["model_error", "server_error", "internal_error"]);
+// `invalid_prompt` moderation flags from the ChatGPT Codex backend are
+// frequently false positives against long code-laden prompts; an identical
+// replay often clears, so retry instead of killing the turn.
+const CODEX_RETRYABLE_EVENT_CODES: Record<string, true> = {
+	model_error: true,
+	server_error: true,
+	internal_error: true,
+	invalid_prompt: true,
+};
 const CODEX_RETRYABLE_EVENT_MESSAGE =
 	/processing your request|retry your request|temporar(?:y|ily)|overloaded|service.?unavailable|internal error|server error/i;
 const CODEX_PROVIDER_SESSION_STATE_KEY = "openai-codex-responses";
@@ -4837,7 +4845,7 @@ export function isRetryableCodexFailureEvent(rawEvent: Record<string, unknown>):
 	}
 	const error = event.error ?? event.response?.error;
 	const code = error?.code ?? error?.type ?? event.code;
-	if (code && CODEX_RETRYABLE_EVENT_CODES.has(code.toLowerCase())) {
+	if (code && CODEX_RETRYABLE_EVENT_CODES[code.toLowerCase()]) {
 		return true;
 	}
 	const message = error?.message ?? event.message ?? event.response?.message;

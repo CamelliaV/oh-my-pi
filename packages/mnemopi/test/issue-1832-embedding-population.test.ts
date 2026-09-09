@@ -304,4 +304,51 @@ describe("issue #1832 — embedding write/read coverage", () => {
 			beta.close();
 		}
 	});
+
+	it.each(["update", "invalidate", "forget", "forget-summary-source"] as const)(
+		"rejects an obsolete pending embedding after %s",
+		async mutation => {
+			const started = Promise.withResolvers<void>();
+			const release = Promise.withResolvers<void>();
+			const provider = async function* (texts: readonly string[]) {
+				if (texts.some(text => text.includes("Paris"))) {
+					started.resolve();
+					await release.promise;
+				}
+				yield texts.map(text => (text.includes("Berlin") ? [0, 1, 0, 0] : [1, 0, 0, 0]));
+			};
+			const memory = new Mnemopi({ dbPath: ":memory:", embeddings: { provider }, llm: false });
+			try {
+				const root = memory.remember(
+					mutation === "forget-summary-source" ? "Location source" : "Ada lives in Paris",
+				);
+				const target =
+					mutation === "forget-summary-source"
+						? inScope(memory, () => memory.beam.consolidateToEpisodic("Ada lives in Paris", [root]))
+						: root;
+				await started.promise;
+				const originalTasks = new Set(memory.beam.pendingExtractions);
+				if (mutation === "update") expect(memory.update(root, "Ada lives in Berlin")).toBe(true);
+				else if (mutation === "invalidate") expect(memory.beam.invalidate(root)).toBe(true);
+				else expect(memory.forget(root)).toBe(true);
+				// Settle the replacement embedding before releasing the obsolete one.
+				await Promise.all([...memory.beam.pendingExtractions].filter(task => !originalTasks.has(task)));
+				release.resolve();
+				await memory.flushExtractions();
+				if (mutation === "update") {
+					const results = await memory.recall("Berlin", 5, { queryEmbedding: [0, 1, 0, 0] });
+					expect(results.find(row => row.id === target)?.dense_score).toBeCloseTo(1, 5);
+				} else {
+					expect(
+						memory.conn.query("SELECT memory_id FROM memory_embeddings WHERE memory_id = ?").get(target),
+					).toBeNull();
+					expect(await memory.recall("Paris", 5, { queryEmbedding: [1, 0, 0, 0] })).toEqual([]);
+				}
+			} finally {
+				release.resolve();
+				await memory.flushExtractions();
+				memory.close();
+			}
+		},
+	);
 });

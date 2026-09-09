@@ -298,6 +298,58 @@ export class MemoryProtocolHandler implements ProtocolHandler {
 		if (!namespace) {
 			throw new Error("memory:// URL requires a namespace: memory://root or memory://<memory-id>");
 		}
+		if (context?.memory && (namespace !== MEMORY_NAMESPACE || backend === "wiki")) {
+			let id = namespace;
+			let revision: number | undefined;
+			const rawPath = url.rawPathname ?? url.pathname;
+			if (url.searchParams.has("revision")) {
+				const rawRevision = url.searchParams.get("revision");
+				if (!rawRevision || !/^[1-9]\d*$/.test(rawRevision))
+					throw new Error("Wiki revision must be a positive integer.");
+				revision = Number(rawRevision);
+				if (!Number.isSafeInteger(revision)) throw new Error("Wiki revision is too large.");
+			}
+			if (namespace === MEMORY_NAMESPACE && rawPath && rawPath !== "/") {
+				if (rawPath === "/index.md") id = "root";
+				else {
+					const match = /^\/(?:pages|sources)\/([we]-[A-Za-z0-9_-]+)\.md$/.exec(rawPath);
+					if (!match) throw new Error("Use memory://root or a page/source ID returned by recall.");
+					id = match[1]!;
+				}
+			} else if (namespace === "pages" || namespace === "sources") {
+				const match = /^\/([we]-[A-Za-z0-9_-]+)\/r(0*[1-9]\d*)\.md$/.exec(rawPath);
+				if (
+					!match ||
+					(namespace === "pages" && !match[1]!.startsWith("w-")) ||
+					(namespace === "sources" && !match[1]!.startsWith("e-"))
+				)
+					throw new Error("Use memory://pages/<page-id>/rN.md or memory://sources/<source-id>/rN.md.");
+				id = match[1]!;
+				const pathRevision = Number(match[2]);
+				if (!Number.isSafeInteger(pathRevision)) throw new Error("Wiki revision is too large.");
+				if (revision !== undefined && revision !== pathRevision) throw new Error("Wiki URL revisions disagree.");
+				revision = pathRevision;
+			} else if (namespace !== MEMORY_NAMESPACE && rawPath && rawPath !== "/") {
+				throw new Error("Memory IDs do not have child paths.");
+			}
+			const result = await context.memory.read(id, revision === undefined ? undefined : { revision });
+			if (result.error) throw new Error(result.error);
+			if (result.status !== "found")
+				throw new Error(result.message ?? `Memory ${id} was not found in this session's scope.`);
+			const references = result.sources
+				?.map(source => `memory://${source.id} (revision ${source.revision})`)
+				.join(", ");
+			const content = [
+				result.content ?? "",
+				result.revision === undefined ? "" : `Revision: ${result.revision}`,
+				references ? `Sources: ${references}` : "",
+				result.conflicted ? "Status: conflicting evidence" : "",
+			]
+				.filter(Boolean)
+				.join("\n\n");
+			return { url: url.href, content, contentType: "text/markdown", size: Buffer.byteLength(content) };
+		}
+		if (backend === "wiki") throw new Error("Wiki memory reads require the calling session's memory context.");
 
 		// Mnemopi rows live in SQLite banks per session, keyed by memory id.
 		// Any host other than the file-backed `root` namespace is treated as a
@@ -365,6 +417,12 @@ export class MemoryProtocolHandler implements ProtocolHandler {
 	}
 
 	async complete(_query?: string, context?: ResolveContext): Promise<UrlCompletion[]> {
+		if (memoryBackendFromContext(context) === "wiki")
+			return [
+				{ value: "root", description: "Scoped Wiki page catalog" },
+				{ value: "pages/<page-id>/rN.md", description: "Historical Wiki page revision" },
+				{ value: "sources/<source-id>/rN.md", description: "Historical Wiki source revision" },
+			];
 		const completions: UrlCompletion[] = [];
 		if (memoryRootsForContext(context).length > 0) {
 			completions.push({ value: MEMORY_NAMESPACE, description: "Project memory summary" });

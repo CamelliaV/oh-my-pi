@@ -1,5 +1,6 @@
 import * as fs from "node:fs/promises";
 import * as os from "node:os";
+import * as path from "node:path";
 import { getProjectDir, prompt } from "@oh-my-pi/pi-utils";
 import {
 	isValidManagedSkillName,
@@ -349,6 +350,9 @@ export async function loadSkills(options: LoadSkillsOptions = {}): Promise<LoadS
 	const managedCandidates = result.all.filter(
 		capSkill =>
 			capSkill._source.provider === MANAGED_SKILLS_PROVIDER_ID &&
+			(capSkill.frontmatter?.project === undefined ||
+				(typeof capSkill.frontmatter.project === "string" &&
+					path.resolve(capSkill.frontmatter.project) === path.resolve(cwd))) &&
 			isValidManagedSkillName(capSkill.name) &&
 			!disabledSkillNames.has(capSkill.name) &&
 			!matchesIgnorePatterns(capSkill.name) &&

@@ -1,4 +1,4 @@
-import type { MemoryBackend } from "./types";
+import { type MemoryBackend, memoryBackendCapabilities } from "./types";
 
 /**
  * No-op memory backend.
@@ -7,6 +7,7 @@ import type { MemoryBackend } from "./types";
  */
 export const offBackend: MemoryBackend = {
 	id: "off",
+	capabilities: memoryBackendCapabilities.off,
 	async start() {},
 	async buildDeveloperInstructions() {
 		return undefined;

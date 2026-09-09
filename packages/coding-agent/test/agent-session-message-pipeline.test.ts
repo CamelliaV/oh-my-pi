@@ -24,7 +24,7 @@ import { buildModel } from "@oh-my-pi/pi-catalog/build";
 import { ModelRegistry } from "@oh-my-pi/pi-coding-agent/config/model-registry";
 import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import * as memoryBackend from "@oh-my-pi/pi-coding-agent/memory-backend";
-import type { MemoryBackend } from "@oh-my-pi/pi-coding-agent/memory-backend/types";
+import { memoryBackendCapabilities, type MemoryBackend } from "@oh-my-pi/pi-coding-agent/memory-backend/types";
 import { type MnemopiSessionState, setMnemopiSessionState } from "@oh-my-pi/pi-coding-agent/mnemopi/state";
 import { createAgentSession, type ExtensionContext, type ExtensionFactory } from "@oh-my-pi/pi-coding-agent/sdk";
 import { obfuscateProviderContext, SecretObfuscator } from "@oh-my-pi/pi-coding-agent/secrets";
@@ -859,6 +859,7 @@ describe("AgentSession message pipeline", () => {
 		const injected = "<memories>remember blue</memories>";
 		const fakeBackend: MemoryBackend = {
 			id: "mnemopi",
+			capabilities: memoryBackendCapabilities.mnemopi,
 			async start() {},
 			async buildDeveloperInstructions() {
 				return remembered ? `static memory instructions\n\n${injected}` : "static memory instructions";
@@ -1337,6 +1338,7 @@ describe("AgentSession message pipeline", () => {
 		const injected = "<memories>session A only</memories>";
 		const fakeBackend: MemoryBackend = {
 			id: "mnemopi",
+			capabilities: memoryBackendCapabilities.mnemopi,
 			async start() {},
 			async buildDeveloperInstructions() {
 				return remembered ? `static memory instructions\n\n${injected}` : "static memory instructions";
@@ -1426,6 +1428,7 @@ describe("AgentSession message pipeline", () => {
 		const injected = "<memories>previous session only</memories>";
 		const fakeBackend: MemoryBackend = {
 			id: "mnemopi",
+			capabilities: memoryBackendCapabilities.mnemopi,
 			async start() {},
 			async buildDeveloperInstructions() {
 				return remembered ? `static memory instructions\n\n${injected}` : "static memory instructions";
@@ -1519,6 +1522,7 @@ describe("AgentSession message pipeline", () => {
 		const injected = "<memories>forked recall</memories>";
 		const fakeBackend: MemoryBackend = {
 			id: "mnemopi",
+			capabilities: memoryBackendCapabilities.mnemopi,
 			async start() {},
 			async buildDeveloperInstructions() {
 				return remembered ? `static memory instructions\n\n${injected}` : "static memory instructions";

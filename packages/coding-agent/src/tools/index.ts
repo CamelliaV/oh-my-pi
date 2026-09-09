@@ -20,6 +20,7 @@ import type { LocalProtocolOptions } from "../internal-urls";
 import type { DaemonCompletionNotification } from "../launch/protocol";
 import { LspTool } from "../lsp";
 import type { MCPManager } from "../mcp";
+import type { MemoryBackendOperationContext } from "../memory-backend/types";
 import type { MnemopiSessionState } from "../mnemopi/state";
 import type { PlanModeState } from "../plan-mode/state";
 import type { AgentLifecycleManager } from "../registry/agent-lifecycle";
@@ -273,6 +274,8 @@ export interface ToolSession {
 	trackEvalExecution?<T>(execution: Promise<T>, abortController: AbortController): Promise<T>;
 	/** Get session ID */
 	getSessionId?: () => string | null;
+	/** Exact owner and scope for backend-independent memory operations. */
+	getMemoryContext?: () => MemoryBackendOperationContext;
 	/** Get Hindsight runtime state for this agent session. */
 	getHindsightSessionState?: () => HindsightSessionState | undefined;
 	/** Get Mnemopi runtime state for this agent session. */

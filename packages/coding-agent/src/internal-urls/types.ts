@@ -7,6 +7,7 @@
 
 import type { Rule } from "../capability/rule";
 import type { Skill } from "../extensibility/skills";
+import type { MemoryRuntimeContext } from "../memory-backend/types";
 import type { LocalProtocolOptions } from "./local-protocol";
 
 /**
@@ -103,6 +104,8 @@ export interface ResolveContext {
 	settings?: unknown;
 	/** Caller's abort signal. */
 	signal?: AbortSignal;
+	/** Exact caller-owned memory runtime; never select another session's bank. */
+	memory?: MemoryRuntimeContext;
 	/**
 	 * Calling session's `local://` root mapping. When present, the local-protocol
 	 * handler resolves the URL against THIS session's artifacts dir instead of

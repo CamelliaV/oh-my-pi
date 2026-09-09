@@ -1836,6 +1836,7 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 			isDisposed: () => session?.isDisposed ?? false,
 			getHindsightSessionState: () => session?.getHindsightSessionState(),
 			getMnemopiSessionState: () => session?.getMnemopiSessionState(),
+			getMemoryContext: () => ({ agentDir, cwd: sessionManager.getCwd(), session }),
 			getAgentId: () => resolvedAgentId,
 			getToolByName: name => session?.getToolByName(name),
 			getToolForEvalBridge: name => session?.getToolForEvalBridge(name),
@@ -4130,6 +4131,7 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 				parentHindsightSessionState: options.parentHindsightSessionState,
 				parentMnemopiSessionState: options.parentMnemopiSessionState,
 			});
+			if (memoryBackend.id === "wiki") await session.refreshBaseSystemPrompt();
 		};
 
 		const runAutoLearnCapture = createAutoLearnCaptureRunner({
@@ -4212,6 +4214,10 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 					settings,
 					capture: content => session.runAutolearnCapture(signal => runAutoLearnCapture(content, signal)),
 				});
+			} else if (settings.get("memory.backend") === "wiki") {
+				// Install scoped files before the first tool; any queued model
+				// maintenance remains a separately owned background operation.
+				await logger.time("startMemoryStartupTask", startMemoryBackend);
 			} else {
 				void logger.time("startMemoryStartupTask", startMemoryBackend);
 			}

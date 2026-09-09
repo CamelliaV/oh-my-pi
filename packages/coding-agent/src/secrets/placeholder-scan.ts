@@ -418,15 +418,19 @@ export function replaceRange(text: string, start: number, end: number, replaceme
 	return text.slice(0, start) + replacement + text.slice(end);
 }
 
-/** Deep-walk an object, transforming all string values. */
-export function deepWalkStrings<T>(obj: T, transform: (s: string) => string): T {
+/** Deep-walk plain records, preserving other objects and exposing property names to the transform. */
+export function deepWalkStrings<T>(obj: T, transform: (s: string, key?: string) => string): T {
+	return walkStrings(obj, transform);
+}
+
+function walkStrings<T>(obj: T, transform: (s: string, key?: string) => string, property?: string): T {
 	if (typeof obj === "string") {
-		return transform(obj) as unknown as T;
+		return transform(obj, property) as unknown as T;
 	}
 	if (Array.isArray(obj)) {
 		let changed = false;
 		const result = obj.map(item => {
-			const transformed = deepWalkStrings(item, transform);
+			const transformed = walkStrings(item, transform, property);
 			if (transformed !== item) changed = true;
 			return transformed;
 		});
@@ -437,7 +441,7 @@ export function deepWalkStrings<T>(obj: T, transform: (s: string) => string): T 
 		const result: Record<string, unknown> = {};
 		for (const key of Object.keys(obj)) {
 			const value = (obj as Record<string, unknown>)[key];
-			const transformed = deepWalkStrings(value, transform);
+			const transformed = walkStrings(value, transform, key);
 			if (transformed !== value) changed = true;
 			result[key] = transformed;
 		}

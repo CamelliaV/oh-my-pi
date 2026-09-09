@@ -4,6 +4,7 @@ export interface CompleteOptions {
 	maxTokens?: number;
 	temperature?: number;
 	timeout?: number;
+	signal?: AbortSignal;
 	provider?: string | null;
 	model?: string | null;
 	fetch?: FetchImpl;

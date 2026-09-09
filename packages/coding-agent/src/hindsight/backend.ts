@@ -10,12 +10,12 @@
 import type { AgentMessage } from "@oh-my-pi/pi-agent-core";
 import { logger } from "@oh-my-pi/pi-utils";
 import { onHindsightScopeChanged, type Settings } from "../config/settings";
-import type { MemoryBackend, MemoryBackendStartOptions } from "../memory-backend/types";
+import { type MemoryBackend, memoryBackendCapabilities, type MemoryBackendStartOptions } from "../memory-backend/types";
 import type { AgentSession } from "../session/agent-session";
-import { type BankScope, computeBankScope } from "./bank";
+import { type BankScope, computeBankScope, ensureBankExists } from "./bank";
 import { createHindsightClient } from "./client";
 import { isHindsightConfigured, loadHindsightConfig } from "./config";
-import { type HindsightMessage, hasSubstantiveContent } from "./content";
+import { formatCurrentTime, formatMemories, type HindsightMessage, hasSubstantiveContent } from "./content";
 import { HindsightSessionState } from "./state";
 
 const STATIC_INSTRUCTIONS = [
@@ -37,6 +37,7 @@ export async function reloadMentalModelsForSession(session: AgentSession): Promi
 }
 export const hindsightBackend: MemoryBackend = {
 	id: "hindsight",
+	capabilities: memoryBackendCapabilities.hindsight,
 
 	async start(options: MemoryBackendStartOptions): Promise<void> {
 		const { session, settings } = options;
@@ -129,6 +130,96 @@ export const hindsightBackend: MemoryBackend = {
 		if (!primary) return;
 		await primary.flushRetainQueue();
 		await primary.forceRetainCurrentSession();
+	},
+
+	async status({ session }) {
+		const state = session?.getHindsightSessionState();
+		return {
+			backend: "hindsight",
+			active: !!state,
+			writable: !!state,
+			searchable: !!state,
+			retainBank: state?.bankId,
+			recallBanks: state ? [state.bankId] : [],
+			lastRecall: !!state?.lastRecallSnippet,
+			message: state ? undefined : "Hindsight backend is not initialised for this session.",
+		};
+	},
+
+	async save({ session }, input) {
+		if (input.scope !== undefined)
+			throw new Error("Hindsight does not support per-save scope; its configured bank scope is unchanged.");
+		const state = session?.getHindsightSessionState();
+		if (!state) throw new Error("Hindsight backend is not initialised for this session.");
+		if (!input.content.trim()) return { backend: "hindsight", stored: 0, message: "Memory content is empty." };
+		// Queue ownership, redaction, batching, and eventual UI-only failure notices remain in the state.
+		state.enqueueRetain(input.content, input.context);
+		return { backend: "hindsight", stored: 0, queued: true };
+	},
+
+	async search({ session }, query, options) {
+		const state = session?.getHindsightSessionState();
+		if (!state) throw new Error("Hindsight backend is not initialised for this session.");
+		options?.signal?.throwIfAborted();
+		try {
+			const response = await state.client.recall(state.bankId, query, {
+				budget: state.config.recallBudget,
+				maxTokens: state.config.recallMaxTokens,
+				types: state.config.recallTypes.length > 0 ? state.config.recallTypes : undefined,
+				tags: state.recallTags,
+				tagsMatch: state.recallTagsMatch,
+				signal: options?.signal,
+			});
+			options?.signal?.throwIfAborted();
+			const recalled = response.results ?? [];
+			const results =
+				options?.limit === undefined ? recalled : recalled.slice(0, Math.max(0, Math.trunc(options.limit)));
+			const items = results.map(result => ({
+				id: result.id,
+				content: result.text,
+				source: result.type ?? undefined,
+				timestamp: result.mentioned_at ?? undefined,
+			}));
+			return {
+				backend: "hindsight",
+				query,
+				count: items.length,
+				items,
+				text:
+					items.length === 0
+						? "No relevant memories found."
+						: `Found ${items.length} relevant ${items.length === 1 ? "memory" : "memories"} (as of ${formatCurrentTime()} UTC):\n\n${formatMemories(results)}`,
+			};
+		} catch (error) {
+			logger.warn("recall failed", { bankId: state.bankId, error: String(error) });
+			throw error instanceof Error ? error : new Error(String(error));
+		}
+	},
+
+	async reflect({ session }, query, options) {
+		const state = session?.getHindsightSessionState();
+		if (!state) throw new Error("Hindsight backend is not initialised for this session.");
+		options?.signal?.throwIfAborted();
+		try {
+			await ensureBankExists(state.client, state.bankId, state.config, state.banksSet);
+			options?.signal?.throwIfAborted();
+			const response = await state.client.reflect(state.bankId, query, {
+				context: options?.context,
+				budget: state.config.recallBudget,
+				tags: state.recallTags,
+				tagsMatch: state.recallTagsMatch,
+				signal: options?.signal,
+			});
+			options?.signal?.throwIfAborted();
+			return {
+				backend: "hindsight",
+				query,
+				text: response.text?.trim() || "No relevant information found to reflect on.",
+			};
+		} catch (error) {
+			logger.warn("reflect failed", { bankId: state.bankId, error: String(error) });
+			throw error instanceof Error ? error : new Error(String(error));
+		}
 	},
 
 	async preCompactionContext(

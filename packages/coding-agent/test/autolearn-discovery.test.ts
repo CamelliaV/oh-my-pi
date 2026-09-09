@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, spyOn } from "bun:test";
 import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
-import { getManagedSkillsDir } from "@oh-my-pi/pi-coding-agent/autolearn/managed-skills";
+import { getManagedSkillsDir, writeManagedSkill } from "@oh-my-pi/pi-coding-agent/autolearn/managed-skills";
 import { disableUserSource, enableUserSource } from "@oh-my-pi/pi-coding-agent/capability";
 import "@oh-my-pi/pi-coding-agent/discovery";
 import { loadSkills } from "@oh-my-pi/pi-coding-agent/extensibility/skills";
@@ -55,6 +55,23 @@ describe("managed-skills discovery", () => {
 		const foo = skills.find(s => s.name === "foo");
 		expect(foo).toBeDefined();
 		expect(foo?.source).toBe("omp-managed:user");
+	});
+
+	it("hides project-scoped Wiki skills from unrelated projects without hiding global skills", async () => {
+		await writeManagedSkill({
+			action: "create",
+			name: "project-knowledge",
+			description: "Private project procedure",
+			body: "Use the project's verified procedure.",
+			project: tempCwd,
+		});
+		await writeSkill(managedDir, "global-knowledge", "Global procedure");
+		expect((await loadSkills({ cwd: tempCwd })).skills.map(skill => skill.name)).toContain("project-knowledge");
+		const other = path.join(tempHome, "other");
+		await fs.mkdir(other);
+		const names = (await loadSkills({ cwd: other })).skills.map(skill => skill.name);
+		expect(names).not.toContain("project-knowledge");
+		expect(names).toContain("global-knowledge");
 	});
 
 	it("lets an authored skill win a name collision and drops the managed one", async () => {

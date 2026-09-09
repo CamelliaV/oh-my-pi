@@ -175,6 +175,8 @@ describe("managed-skills primitives", () => {
 		});
 
 		it("serializes a concurrent create+update of the same name in submission order", async () => {
+			await removeWithRetries(getManagedSkillsDir());
+			await fs.mkdir(getManagedSkillsDir(), { recursive: true });
 			const [createRes, updateRes] = await Promise.allSettled([
 				writeManagedSkill({ action: "create", name: "seq", description: "d", body: "v1" }),
 				writeManagedSkill({ action: "update", name: "seq", description: "d", body: "v2" }),

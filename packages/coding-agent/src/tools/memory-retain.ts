@@ -1,5 +1,7 @@
 import { type } from "@oh-my-pi/omptype";
 import type { AgentTool, AgentToolResult } from "@oh-my-pi/pi-agent-core";
+import { createToolMemoryRuntimeContext } from "../memory-backend/runtime";
+import { memoryBackendCapabilities } from "../memory-backend/types";
 import retainDescription from "../prompts/tools/retain.md" with { type: "text" };
 import type { ToolSession } from ".";
 
@@ -7,6 +9,7 @@ const memoryRetainSchema = type({
 	items: type({
 		content: type("string").describe("information to remember"),
 		"context?": type("string").describe("source context"),
+		"scope?": type("'project' | 'global'").describe("explicit storage scope; unsupported backends reject it"),
 	})
 		.array()
 		.atLeastLength(1)
@@ -27,63 +30,39 @@ export class MemoryRetainTool implements AgentTool<typeof memoryRetainSchema> {
 	constructor(private readonly session: ToolSession) {}
 
 	static createIf(session: ToolSession): MemoryRetainTool | null {
-		const backend = session.settings.get("memory.backend");
-		if (backend !== "hindsight" && backend !== "mnemopi") return null;
+		if (!memoryBackendCapabilities[session.settings.get("memory.backend")].retainable) return null;
 		return new MemoryRetainTool(session);
 	}
 
 	async execute(_id: string, params: MemoryRetainParams): Promise<AgentToolResult> {
-		const backend = this.session.settings.get("memory.backend");
-		if (backend === "mnemopi") {
-			const state = this.session.getMnemopiSessionState?.();
-			if (!state) {
-				throw new Error("Mnemopi backend is not initialised for this session.");
-			}
-
+		const memory = createToolMemoryRuntimeContext(this.session);
+		let stored = 0;
+		let queued = 0;
+		try {
 			for (const item of params.items) {
-				state.rememberScoped(item.content, {
+				const result = await memory.save({
+					...item,
 					source: "coding-agent-retain",
 					importance: 0.75,
-					metadata: {
-						session_id: state.sessionId,
-						cwd: state.session.sessionManager.getCwd(),
-						context: item.context ?? null,
-						tool: "retain",
-					},
-					scope: "bank",
-					extract: true,
-					extractEntities: true,
-					veracity: "tool",
-					memoryType: "fact",
+					tool: "retain",
 				});
+				if (result.error || (!result.queued && result.stored < 1)) {
+					throw new Error(result.error ?? result.message ?? "The memory backend did not store this item.");
+				}
+				if (result.queued) queued++;
+				else stored += result.stored;
 			}
-
-			const count = params.items.length;
-			const noun = count === 1 ? "memory" : "memories";
-			return {
-				content: [{ type: "text", text: `${count} ${noun} stored.` }],
-				details: { count },
-			};
+		} catch (error) {
+			const reason = error instanceof Error ? error.message : String(error);
+			if (stored || queued)
+				throw new Error(`Retention failed after ${stored} stored and ${queued} queued: ${reason}`, {
+					cause: error,
+				});
+			throw error instanceof Error ? error : new Error(reason);
 		}
-
-		const state = this.session.getHindsightSessionState?.();
-		if (!state) {
-			throw new Error("Hindsight backend is not initialised for this session.");
-		}
-
-		// Push every item onto the session-owned queue and return immediately.
-		// The queue flushes either when it reaches its batch threshold or when
-		// its debounce timer fires. If the eventual batch fails, the queue
-		// surfaces a UI-only warning notice — the LLM is not informed.
-		for (const item of params.items) {
-			state.enqueueRetain(item.content, item.context);
-		}
-
-		const count = params.items.length;
-		const noun = count === 1 ? "memory" : "memories";
-		return {
-			content: [{ type: "text", text: `${count} ${noun} queued.` }],
-			details: { count },
-		};
+		const messages: string[] = [];
+		if (stored) messages.push(`${stored} ${stored === 1 ? "memory" : "memories"} stored.`);
+		if (queued) messages.push(`${queued} ${queued === 1 ? "memory" : "memories"} queued.`);
+		return { content: [{ type: "text", text: messages.join(" ") }], details: { count: stored + queued } };
 	}
 }

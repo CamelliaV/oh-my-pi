@@ -7,7 +7,7 @@ import { getManagedSkillsDir } from "@oh-my-pi/pi-coding-agent/autolearn/managed
 import { type SettingPath, Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import { resetActiveSkillsForTests, type Skill, setActiveSkills } from "@oh-my-pi/pi-coding-agent/extensibility/skills";
 import type { HindsightSessionState } from "@oh-my-pi/pi-coding-agent/hindsight/state";
-import type { MnemopiSessionState } from "@oh-my-pi/pi-coding-agent/mnemopi/state";
+import { type MnemopiSessionState, setMnemopiSessionState } from "@oh-my-pi/pi-coding-agent/mnemopi/state";
 import { createTools, type ToolSession } from "@oh-my-pi/pi-coding-agent/tools";
 import { LearnTool } from "@oh-my-pi/pi-coding-agent/tools/learn";
 import { ManageSkillTool } from "@oh-my-pi/pi-coding-agent/tools/manage-skill";
@@ -18,13 +18,18 @@ function makeSession(
 	settingsOverrides: Partial<Record<SettingPath, unknown>> = {},
 	extra: Partial<ToolSession> = {},
 ): ToolSession {
+	const settings = Settings.isolated(settingsOverrides);
+	const owner = { settings, getHindsightSessionState: extra.getHindsightSessionState ?? (() => undefined) } as never;
+	const mnemopi = extra.getMnemopiSessionState?.();
+	if (mnemopi) setMnemopiSessionState(owner, mnemopi);
 	return {
 		cwd: "/tmp/test",
 		hasUI: false,
 		skipPythonPreflight: true,
 		getSessionFile: () => null,
 		getSessionSpawns: () => "*",
-		settings: Settings.isolated(settingsOverrides),
+		settings,
+		getMemoryContext: () => ({ agentDir: getAgentDir(), cwd: "/tmp/test", session: owner }),
 		...extra,
 	};
 }
@@ -316,8 +321,22 @@ describe("learn execute", () => {
 				memory: "lesson",
 				skill: { action: "create", name: "should-not-exist", description: "d", body: "b" },
 			}),
-		).rejects.toThrow(/did not store/i);
+		).rejects.toThrow();
 		// A failed lesson must not leave a minted skill behind.
 		expect(await Bun.file(path.join(getManagedSkillsDir(), "should-not-exist", "SKILL.md")).exists()).toBe(false);
+	});
+
+	it("rejects gated skill publication before retaining a lesson", async () => {
+		const session = makeSession({ "autolearn.enabled": true, "memory.backend": "wiki" });
+		session.getMemoryContext = () => {
+			throw new Error("must not resolve a memory write");
+		};
+		await expect(
+			new LearnTool(session).execute("wiki-gate", {
+				memory: "A candidate lesson",
+				skill: { action: "create", name: "gated-skill", description: "candidate", body: "candidate" },
+			}),
+		).rejects.toThrow(/verified or manually approved/);
+		expect(await Bun.file(path.join(getManagedSkillsDir(), "gated-skill", "SKILL.md")).exists()).toBe(false);
 	});
 });

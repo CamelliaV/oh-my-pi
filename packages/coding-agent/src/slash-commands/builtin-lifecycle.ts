@@ -12,6 +12,7 @@ import { COMPACT_MODES, parseCompactArgs } from "../session/compact-modes";
 import { USER_INTERRUPT_LABEL } from "../session/messages";
 import { resolveResumableSession } from "../session/session-listing";
 import { toggleSessionPin } from "../session/session-pins";
+import { runWikiHistoryCommand, runWikiSkillCommand } from "../wiki/commands";
 import {
 	cleanSourceCheckoutIfConfigured,
 	createSessionWorktree,
@@ -552,6 +553,18 @@ export const BUILTIN_LIFECYCLE_SLASH_COMMANDS: ReadonlyArray<SlashCommandSpec> =
 			{ name: "reset", description: "Alias for clear" },
 			{ name: "enqueue", description: "Enqueue memory consolidation maintenance" },
 			{ name: "rebuild", description: "Alias for enqueue" },
+			{ name: "skill list", description: "List Wiki skill candidates and their validation state" },
+			{ name: "skill propose", description: "Propose skills from supported Wiki patterns" },
+			{ name: "skill show", description: "Inspect one Wiki skill candidate" },
+			{ name: "skill validate", description: "Run the configured trusted skill evaluator and gate publication" },
+			{
+				name: "skill approve",
+				description: "Explicitly publish a candidate without claiming behavioral validation",
+			},
+			{ name: "skill reject", description: "Reject a candidate with a recorded reason" },
+			{ name: "history", description: "List immutable Wiki revisions for a record" },
+			{ name: "diff", description: "Compare two immutable Wiki revisions" },
+			{ name: "restore", description: "Restore a Wiki revision as a new current revision" },
 			{ name: "mm list", description: "List mental models on the active bank" },
 			{ name: "mm show", description: "Show one mental model (id required)" },
 			{
@@ -568,6 +581,18 @@ export const BUILTIN_LIFECYCLE_SLASH_COMMANDS: ReadonlyArray<SlashCommandSpec> =
 			const verb = (command.args.trim().split(/\s+/)[0] ?? "").toLowerCase() || "view";
 			const backend = await resolveMemoryBackend(runtime.settings);
 			switch (verb) {
+				case "skill":
+					await runtime.output(
+						await runWikiSkillCommand(runtime.session, command.args.trim().slice(verb.length).trim()),
+					);
+					return commandConsumed();
+				case "history":
+				case "diff":
+				case "restore":
+					await runtime.output(
+						await runWikiHistoryCommand(runtime.session, verb, command.args.trim().slice(verb.length).trim()),
+					);
+					return commandConsumed();
 				case "view": {
 					const payload = await backend.buildDeveloperInstructions(
 						runtime.settings.getAgentDir(),
@@ -617,7 +642,10 @@ export const BUILTIN_LIFECYCLE_SLASH_COMMANDS: ReadonlyArray<SlashCommandSpec> =
 						runtime,
 					);
 				default:
-					return usage("Usage: /memory <view|stats|diagnose|clear|reset|enqueue|rebuild|queue|sync>", runtime);
+					return usage(
+						"Usage: /memory <view|stats|diagnose|clear|reset|enqueue|rebuild|queue|sync|skill ...>",
+						runtime,
+					);
 			}
 		},
 		handleTui: async (command, runtime) => {

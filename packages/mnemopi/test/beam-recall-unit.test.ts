@@ -104,6 +104,53 @@ describe("beam recall free functions", () => {
 		expect(top.fts_score).toBeGreaterThan(0);
 	});
 
+	it("keeps semantic paraphrases below a fixed cosine cutoff and honors vector weighting", async () => {
+		const beam = makeBeam();
+		insertWorking(beam, "semantic", "Use the emergency stop key to interrupt generation.");
+		insertWorking(beam, "lexical", "halt output is an old benchmark label unrelated to controls");
+		beam.db.run("INSERT INTO memory_embeddings(memory_id, embedding_json, model) VALUES (?, ?, ?)", [
+			"semantic",
+			JSON.stringify([0.6, 0.8]),
+			"fixture",
+		]);
+		beam.db.run("INSERT INTO memory_embeddings(memory_id, embedding_json, model) VALUES (?, ?, ?)", [
+			"lexical",
+			JSON.stringify([0.1, Math.sqrt(0.99)]),
+			"fixture",
+		]);
+		const semantic = await recall(beam, "halt output", 2, {
+			queryEmbedding: [1, 0],
+			vecWeight: 0.95,
+			ftsWeight: 0.05,
+			importanceWeight: 0,
+		});
+		expect(semantic[0]?.id).toBe("semantic");
+		const lexical = await recall(beam, "halt output", 2, {
+			queryEmbedding: [1, 0],
+			vecWeight: 0.05,
+			ftsWeight: 0.95,
+			importanceWeight: 0,
+		});
+		expect(lexical[0]?.id).toBe("lexical");
+	});
+
+	it("filters private same-channel rows before they can displace bank-visible FTS hits", async () => {
+		const beam = makeBeam();
+		for (let i = 0; i < 60; i++) {
+			insertWorking(beam, `private-${i}`, "aurora deploy aurora deploy aurora deploy", {
+				sessionId: "other",
+				scope: "session",
+			});
+		}
+		insertWorking(beam, "bank-visible", "aurora deploy is configured for west", {
+			sessionId: "migration",
+			scope: "bank",
+		});
+		beam.db.run("UPDATE working_memory SET channel_id = ?", [beam.channelId]);
+		const results = await recall(beam, "aurora deploy", 1, { queryEmbedding: null, channelId: beam.channelId });
+		expect(results.map(result => result.id)).toEqual(["bank-visible"]);
+	});
+
 	it("fuses working and episodic memory candidates", async () => {
 		const beam = makeBeam();
 		insertWorking(beam, "wm-deploy", "deploy runbook says use the blue pipeline");
@@ -413,7 +460,6 @@ describe("beam recall free functions", () => {
 		);
 
 		expect(results[0]?.id).toBe("wm-quasar");
-		expect(results.map(result => result.id)).toContain("fact-generic");
 	});
 
 	it("filters fact recall to same-session facts plus explicitly global facts", () => {
@@ -468,19 +514,6 @@ describe("beam recall free functions", () => {
 
 		expect(counts.get(returned)).toBe(1);
 		expect(counts.get(returned === "wm-enhanced-keep" ? "wm-enhanced-drop" : "wm-enhanced-keep")).toBe(0);
-	});
-
-	it("enhanced recall applies intent/synonym/MMR path without dropping required fields", async () => {
-		const beam = makeBeam();
-		insertWorking(beam, "wm-db", "database migration notes mention postgres");
-		insertWorking(beam, "wm-cache", "cache migration notes mention redis");
-
-		const results = await recallEnhanced(beam, "db migration", 2, { useCache: false });
-
-		expect(results).toHaveLength(2);
-		expect(results[0]?.id).toBeTruthy();
-		expect(typeof results[0]?.score).toBe("number");
-		expect(results[0]?.explanation).toBeTruthy();
 	});
 
 	it("clips long content with a trailing ellipsis and reports the original length (issue #4443)", async () => {

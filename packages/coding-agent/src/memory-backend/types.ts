@@ -13,7 +13,84 @@ import type { HindsightSessionState } from "../hindsight/state";
 import type { MnemopiSessionState } from "../mnemopi/state";
 import type { AgentSession } from "../session/agent-session";
 
-export type MemoryBackendId = "off" | "local" | "hindsight" | "mnemopi" | "sharpshooter";
+export type MemoryBackendId = "off" | "local" | "hindsight" | "mnemopi" | "sharpshooter" | "wiki";
+
+export interface MemoryBackendCapabilities {
+	writable: boolean;
+	searchable: boolean;
+	readable: boolean;
+	editable: boolean;
+	reflective: boolean;
+	/** Whether the standalone retain tool is available (local lessons use learn). */
+	retainable: boolean;
+	/** Whether learn may write managed skills without the backend's candidate gate. */
+	directSkills: boolean;
+	saveApproval: "read" | "write";
+}
+
+/** Shared synchronous factory gates; importing this table never loads a backend. */
+export const memoryBackendCapabilities = {
+	off: {
+		writable: false,
+		searchable: false,
+		readable: false,
+		editable: false,
+		reflective: false,
+		retainable: false,
+		directSkills: false,
+		saveApproval: "read",
+	},
+	local: {
+		writable: true,
+		searchable: false,
+		readable: false,
+		editable: false,
+		reflective: false,
+		retainable: false,
+		directSkills: true,
+		saveApproval: "write",
+	},
+	hindsight: {
+		writable: true,
+		searchable: true,
+		readable: false,
+		editable: false,
+		reflective: true,
+		retainable: true,
+		directSkills: true,
+		saveApproval: "read",
+	},
+	mnemopi: {
+		writable: true,
+		searchable: true,
+		readable: true,
+		editable: true,
+		reflective: true,
+		retainable: true,
+		directSkills: true,
+		saveApproval: "read",
+	},
+	sharpshooter: {
+		writable: false,
+		searchable: true,
+		readable: false,
+		editable: false,
+		reflective: false,
+		retainable: false,
+		directSkills: false,
+		saveApproval: "read",
+	},
+	wiki: {
+		writable: true,
+		searchable: true,
+		readable: true,
+		editable: true,
+		reflective: true,
+		retainable: true,
+		directSkills: false,
+		saveApproval: "read",
+	},
+} as const satisfies Record<MemoryBackendId, MemoryBackendCapabilities>;
 
 export interface MemoryBackendStatus {
 	backend: MemoryBackendId;
@@ -35,8 +112,13 @@ export interface MemoryBackendStatus {
 
 export interface MemoryBackendSearchOptions {
 	limit?: number;
+	maxChars?: number;
 	/** Best-effort abort signal. Backends may only observe it before/after an underlying recall call. */
 	signal?: AbortSignal;
+}
+
+export interface MemoryBackendReadOptions {
+	revision?: number;
 }
 
 export interface MemoryBackendSearchItem {
@@ -45,6 +127,10 @@ export interface MemoryBackendSearchItem {
 	source?: string;
 	timestamp?: string;
 	score?: number;
+	revision?: number;
+	sources?: { id: string; revision: number }[];
+	conflicted?: boolean;
+	metadata?: Record<string, unknown>;
 }
 
 export interface MemoryBackendSearchResult {
@@ -53,6 +139,10 @@ export interface MemoryBackendSearchResult {
 	count: number;
 	items: MemoryBackendSearchItem[];
 	message?: string;
+	/** Backend-rendered evidence, including its full-content read references. */
+	text?: string;
+	/** A failed/unavailable search is not a successful empty search. */
+	error?: string;
 }
 
 export interface MemoryBackendSaveInput {
@@ -60,6 +150,10 @@ export interface MemoryBackendSaveInput {
 	context?: string;
 	source?: string;
 	importance?: number;
+	/** Explicit scope is never silently ignored by a backend. */
+	scope?: "project" | "global";
+	/** Native tool provenance; other callers retain their existing user-save semantics. */
+	tool?: "retain" | "learn";
 }
 
 export interface MemoryBackendSaveResult {
@@ -68,6 +162,53 @@ export interface MemoryBackendSaveResult {
 	ids?: string[];
 	queued?: boolean;
 	message?: string;
+	error?: string;
+}
+
+export interface MemoryBackendReadResult {
+	backend: MemoryBackendId;
+	id: string;
+	status: "found" | "not_found" | "unavailable";
+	content?: string;
+	source?: string;
+	timestamp?: string;
+	revision?: number;
+	sources?: { id: string; revision: number }[];
+	conflicted?: boolean;
+	metadata?: Record<string, unknown>;
+	message?: string;
+	error?: string;
+}
+
+export interface MemoryBackendEditInput {
+	op: "update" | "forget" | "invalidate";
+	id: string;
+	content?: string;
+	importance?: number;
+	replacementId?: string;
+}
+
+export interface MemoryBackendEditResult {
+	backend: MemoryBackendId;
+	id: string;
+	status: "updated" | "deleted" | "invalidated" | "not_found" | "not_editable" | "unavailable";
+	bank?: string;
+	store?: string;
+	affectedPages?: string[];
+	message?: string;
+	error?: string;
+}
+
+export interface MemoryBackendReflectOptions extends MemoryBackendSearchOptions {
+	context?: string;
+}
+
+export interface MemoryBackendReflectResult {
+	backend: MemoryBackendId;
+	query: string;
+	text: string;
+	items?: MemoryBackendSearchItem[];
+	error?: string;
 }
 
 export interface MemoryBackendOperationContext {
@@ -80,6 +221,9 @@ export interface MemoryRuntimeContext {
 	status(): Promise<MemoryBackendStatus>;
 	search(query: string, options?: MemoryBackendSearchOptions): Promise<MemoryBackendSearchResult>;
 	save(input: string | MemoryBackendSaveInput): Promise<MemoryBackendSaveResult>;
+	read(id: string, options?: MemoryBackendReadOptions): Promise<MemoryBackendReadResult>;
+	edit(input: MemoryBackendEditInput): Promise<MemoryBackendEditResult>;
+	reflect(query: string, options?: MemoryBackendReflectOptions): Promise<MemoryBackendReflectResult>;
 }
 
 export interface MemoryBackendStartOptions {
@@ -94,6 +238,7 @@ export interface MemoryBackendStartOptions {
 
 export interface MemoryBackend {
 	readonly id: MemoryBackendId;
+	readonly capabilities: MemoryBackendCapabilities;
 
 	/**
 	 * Wire any background work or session subscriptions for this backend.
@@ -103,6 +248,12 @@ export interface MemoryBackend {
 	 * memory backend cannot break the agent loop.
 	 */
 	start(options: MemoryBackendStartOptions): void | Promise<void>;
+
+	/** Drain session-owned work and release resources on shutdown or backend transition. */
+	dispose?(context: MemoryBackendOperationContext): Promise<void>;
+
+	/** Reset transcript cursors and prompt caches without clearing persisted memory. */
+	reset?(session: AgentSession): void;
 
 	/**
 	 * Markdown injected as the system-prompt append section.
@@ -132,6 +283,23 @@ export interface MemoryBackend {
 
 	/** Explicit user-facing save operation. */
 	save?(context: MemoryBackendOperationContext, input: MemoryBackendSaveInput): Promise<MemoryBackendSaveResult>;
+
+	/** Read the full stored content behind a recall preview. */
+	read?(
+		context: MemoryBackendOperationContext,
+		id: string,
+		options?: MemoryBackendReadOptions,
+	): Promise<MemoryBackendReadResult>;
+
+	/** Correct, forget, or supersede a memory within this session's allowed scope. */
+	edit?(context: MemoryBackendOperationContext, input: MemoryBackendEditInput): Promise<MemoryBackendEditResult>;
+
+	/** Backend-owned reflection; evidence-only backends MUST NOT fabricate a synthesized answer. */
+	reflect?(
+		context: MemoryBackendOperationContext,
+		query: string,
+		options?: MemoryBackendReflectOptions,
+	): Promise<MemoryBackendReflectResult>;
 
 	/** Render backend-specific memory statistics as markdown (`/memory stats`). */
 	stats?(agentDir: string, cwd: string, session?: AgentSession): Promise<string | undefined>;

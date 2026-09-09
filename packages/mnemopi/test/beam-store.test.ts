@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, it } from "bun:test";
+import { consolidateToEpisodic, sleep, storeFactStrings } from "@oh-my-pi/pi-mnemopi/core/beam/consolidate";
 import { recallEnhanced } from "@oh-my-pi/pi-mnemopi/core/beam/recall";
 import { initBeam } from "@oh-my-pi/pi-mnemopi/core/beam/schema";
 import {
@@ -19,6 +20,7 @@ import {
 } from "@oh-my-pi/pi-mnemopi/core/beam/store";
 import type { BeamEvent, BeamMemoryState } from "@oh-my-pi/pi-mnemopi/core/beam/types";
 import { EpisodicGraph } from "@oh-my-pi/pi-mnemopi/core/episodic-graph";
+import { withMnemopiRuntimeOptions } from "@oh-my-pi/pi-mnemopi/core/runtime-options";
 import { openDatabase } from "@oh-my-pi/pi-mnemopi/db";
 
 const states: BeamMemoryState[] = [];
@@ -61,6 +63,10 @@ function makeState(sessionId = "session-a", events: BeamEvent[] = []): BeamMemor
 	};
 	states.push(state);
 	return state;
+}
+
+function offline<T>(fn: () => T): T {
+	return withMnemopiRuntimeOptions({ embeddings: { disabled: true }, llm: { enabled: false } }, fn);
 }
 
 afterEach(() => {
@@ -122,7 +128,6 @@ describe("beam store free functions", () => {
 			],
 			{ veracity: "imported" },
 		);
-		expect(rememberBatch).toBe(rememberBatch);
 
 		expect(ids).toHaveLength(3);
 		expect(getContext(beam, 3).map(row => row.content)).toEqual([
@@ -214,7 +219,8 @@ describe("beam store free functions", () => {
 			working_memory: { inserted: 0, skipped: 0, overwritten: 1 },
 			episodic_memory: { inserted: 0, skipped: 0, overwritten: 1 },
 		});
-		expect(get(dest, id)?.content).toBe("Exported working memory");
+		expect(get(dest, id)).toBeNull();
+		expect(get({ ...dest, sessionId: "source-session" }, id)?.content).toBe("Exported working memory");
 		expect(dest.db.prepare("SELECT COUNT(*) AS count FROM scratchpad").get()).toEqual({ count: 1 });
 		expect(scratchpadRead(dest).map(row => row.content)).toEqual([]);
 	});
@@ -379,6 +385,167 @@ describe("beam store free functions", () => {
 				}
 			).count;
 		expect(staleArtifacts).toBe(0);
+	});
+});
+
+describe("memory mutation provenance", () => {
+	it("replaces Paris with Berlin without recalling old facts or summaries", async () => {
+		await offline(async () => {
+			const beam = makeState();
+			const id = remember(beam, "Ada lives in Paris");
+			storeFactStrings(beam, ["Ada lives in Paris"], 0, id);
+			const episode = consolidateToEpisodic(beam, "Ada lives in Paris", [id]);
+			const descendant = consolidateToEpisodic(beam, "Paris is Ada's home", [episode]);
+			expect(
+				(await recallEnhanced(beam, "Paris", 10, { includeFacts: true, queryEmbedding: null })).some(
+					row => row.source === "facts",
+				),
+			).toBe(true);
+
+			expect(updateWorking(beam, id, "Ada lives in Berlin")).toBe(true);
+			expect(await recallEnhanced(beam, "Paris", 10, { includeFacts: true, queryEmbedding: null })).toEqual([]);
+			expect(
+				(await recallEnhanced(beam, "Berlin", 10, { includeFacts: true, queryEmbedding: null })).some(
+					row => row.id === id,
+				),
+			).toBe(true);
+			expect(get(beam, episode)).toBeNull();
+			expect(get(beam, descendant)).toBeNull();
+		});
+	});
+
+	it.each(["working", "episodic"] as const)("invalidating %s revokes its derived facts and summaries", async tier => {
+		await offline(async () => {
+			const beam = makeState();
+			const working = remember(beam, "Ada lives in Paris");
+			const episode = consolidateToEpisodic(beam, "Ada works in Berlin", [working]);
+			const root = tier === "working" ? working : episode;
+			const revoked = tier === "working" ? "Paris" : "Berlin";
+			storeFactStrings(beam, [`Ada prefers ${revoked}`], 0, root);
+			const descendant = consolidateToEpisodic(beam, `Ada travels to ${revoked}`, [root]);
+			expect(
+				(await recallEnhanced(beam, revoked, 10, { includeFacts: true, queryEmbedding: null })).some(row =>
+					row.content.includes(revoked),
+				),
+			).toBe(true);
+
+			expect(invalidate(beam, root)).toBe(true);
+			expect(await recallEnhanced(beam, revoked, 10, { includeFacts: true, queryEmbedding: null })).toEqual([]);
+			expect(get(beam, root)?.memory_store).toBe(tier);
+			expect(get(beam, descendant)).toBeNull();
+			beam.db.run("UPDATE working_memory SET timestamp = ?", [new Date(Date.now() - 20 * 3_600_000).toISOString()]);
+			sleep(beam);
+			expect(await recallEnhanced(beam, revoked, 10, { includeFacts: true, queryEmbedding: null })).toEqual([]);
+		});
+	});
+
+	it("forgetting one source removes shared descendant summaries but regenerates surviving raw sources", async () => {
+		await offline(async () => {
+			const beam = makeState();
+			const revoked = remember(beam, "Ada lives in Paris");
+			const guitar = remember(beam, "Bea plays guitar");
+			const cats = remember(beam, "Cora keeps cats");
+			const episode = consolidateToEpisodic(beam, "Ada lives in Paris; Bea plays guitar", [revoked, guitar]);
+			const descendant = consolidateToEpisodic(beam, "Paris household has guitar and cats", [episode, cats]);
+			storeFactStrings(beam, ["Ada lives in Paris"], 0, descendant);
+			const age = new Date(Date.now() - 20 * 3_600_000).toISOString();
+			beam.db.run("UPDATE working_memory SET timestamp = ?, consolidated_at = ?", [age, age]);
+			beam.db.run("CREATE TABLE vec_episodes (rowid INTEGER PRIMARY KEY, embedding TEXT)");
+			beam.db.run("INSERT INTO vec_episodes SELECT rowid, '[1,0]' FROM episodic_memory");
+			expect(
+				(await recallEnhanced(beam, "Paris", 10, { includeFacts: true, queryEmbedding: null })).some(row =>
+					row.content.includes("Paris"),
+				),
+			).toBe(true);
+
+			expect(forgetWorking(beam, revoked)).toBe(true);
+			expect(get(beam, revoked)).toBeNull();
+			expect(get(beam, episode)).toBeNull();
+			expect(get(beam, descendant)).toBeNull();
+			expect(get(beam, guitar)?.content).toBe("Bea plays guitar");
+			expect(get(beam, cats)?.content).toBe("Cora keeps cats");
+			expect(beam.db.query("SELECT rowid FROM vec_episodes").all()).toEqual([]);
+			expect(await recallEnhanced(beam, "Paris", 10, { includeFacts: true, queryEmbedding: null })).toEqual([]);
+
+			expect(sleep(beam)).toMatchObject({ items_consolidated: 2 });
+			expect(
+				(await recallEnhanced(beam, "guitar", 10, { includeFacts: true, queryEmbedding: null, includeWorking: false })).some(
+					row => row.content.includes("guitar") && !row.content.includes("Paris"),
+				),
+			).toBe(true);
+			expect(await recallEnhanced(beam, "Paris", 10, { includeFacts: true, queryEmbedding: null })).toEqual([]);
+		});
+	});
+
+	it("allows legacy matching-bank edits without exposing another bank or private session", () => {
+		offline(() => {
+			const beam = makeState("bank-default-session");
+			importFromDict(beam, {
+				working_memory: [
+					{
+						id: "legacy",
+						content: "Legacy deployment",
+						session_id: "local-migration",
+						scope: "bank",
+						channel_id: beam.channelId,
+					},
+					{
+						id: "other-bank",
+						content: "Foreign deployment",
+						session_id: "foreign-session",
+						scope: "bank",
+						channel_id: "another-bank",
+					},
+					{
+						id: "private",
+						content: "Private deployment",
+						session_id: "private-session",
+						scope: "session",
+						channel_id: beam.channelId,
+					},
+					{
+						id: "global",
+						content: "Global deployment",
+						session_id: "foreign-session",
+						scope: "global",
+						channel_id: "another-bank",
+					},
+				],
+				episodic_memory: [
+					{
+						id: "legacy-episode",
+						content: "Legacy summary",
+						session_id: "local-migration",
+						scope: "bank",
+						channel_id: beam.channelId,
+					},
+					{
+						id: "private-episode",
+						content: "Private summary",
+						session_id: "private-session",
+						scope: "session",
+						channel_id: beam.channelId,
+					},
+				],
+			});
+			for (const id of ["other-bank", "private", "private-episode"]) {
+				expect(get(beam, id)).toBeNull();
+				expect(updateWorking(beam, id, "Unauthorized overwrite")).toBe(false);
+				expect(invalidate(beam, id)).toBe(false);
+				expect(forgetWorking(beam, id)).toBe(false);
+			}
+			for (const id of ["legacy", "global"]) {
+				expect(get(beam, id)?.memory_store).toBe("working");
+				expect(updateWorking(beam, id, "Updated deployment")).toBe(true);
+				expect(get(beam, id)?.content).toBe("Updated deployment");
+				expect(invalidate(beam, id)).toBe(true);
+				expect(forgetWorking(beam, id)).toBe(true);
+			}
+			expect(get(beam, "legacy-episode")?.memory_store).toBe("episodic");
+			expect(invalidate(beam, "legacy-episode")).toBe(true);
+			expect(get({ ...beam, sessionId: "private-session" }, "private")?.content).toBe("Private deployment");
+			expect(get({ ...beam, sessionId: "foreign-session" }, "other-bank")?.content).toBe("Foreign deployment");
+		});
 	});
 });
 

@@ -16,6 +16,7 @@ function makeMemory(llm: false | { complete: MnemopiLlmCompletion }): Mnemopi {
 	const memory = new Mnemopi({
 		sessionId: "extract-wiring",
 		dbPath: ":memory:",
+		embeddings: false,
 		llm: llm === false ? false : { enabled: true, complete: llm.complete },
 	});
 	instances.push(memory);
@@ -204,4 +205,49 @@ describe("remember(extract) wires the LLM fact extractor", () => {
 		const recalled = await memory.recall("opaque payload", 5);
 		expect(recalled.some(row => row.id === id)).toBe(true);
 	});
+
+	it.each(["update", "invalidate", "forget", "replace-id", "update-aba"] as const)(
+		"does not publish a pending extraction after %s",
+		async mutation => {
+			const started = Promise.withResolvers<void>();
+			const completion = Promise.withResolvers<string | null>();
+			const memory = makeMemory({
+				complete: () => {
+					started.resolve();
+					return completion.promise;
+				},
+			});
+			const original = "Ada lives in Paris";
+			const id = memory.remember(original, { extract: true, extractText: "Ada's previous address was Paris" });
+			try {
+				await started.promise;
+				if (mutation === "update" || mutation === "update-aba") {
+					expect(memory.update(id, "Ada lives in Berlin")).toBe(true);
+					if (mutation === "update-aba") expect(memory.update(id, original)).toBe(true);
+				} else if (mutation === "invalidate") {
+					expect(memory.beam.invalidate(id)).toBe(true);
+				} else {
+					expect(memory.forget(id)).toBe(true);
+					if (mutation === "replace-id") {
+						memory.beam.importFromDict({
+							working_memory: [{ id, content: original, session_id: memory.sessionId }],
+						});
+					}
+				}
+			} finally {
+				completion.resolve(
+					JSON.stringify({
+						facts: ["Ada lives in Paris"],
+						kg: [{ subject: "Ada", predicate: "lives_in", object: "Paris" }],
+					}),
+				);
+			}
+			await memory.flushExtractions();
+			expect(memory.beam.factRecall("Paris", 10)).toEqual([]);
+			expect(memory.beam.memoriaRetrieve("Paris", "MR").results).toEqual([]);
+			if (mutation === "update") {
+				expect((await memory.recall("Berlin", 5)).some(row => row.id === id)).toBe(true);
+			}
+		},
+	);
 });

@@ -26,6 +26,7 @@ type ConsolidateOptions = {
 	metadata?: Metadata | null;
 	validUntil?: string | null;
 	scope?: string;
+	channelId?: string;
 	veracity?: string | null;
 };
 
@@ -422,7 +423,7 @@ export function consolidateToEpisodic(
 			scope,
 			beam.authorId,
 			beam.authorType,
-			beam.channelId,
+			options.channelId ?? beam.channelId,
 			"unknown",
 			veracity,
 			timestamp,
@@ -983,12 +984,13 @@ function eligibleWorkingRows(beam: BeamMemoryState, sessionId: string): Row[] {
 	return asRows(
 		beam.db
 			.query(
-				`SELECT id, COALESCE(embed_text, content) AS content, source, timestamp, importance, metadata_json, scope, valid_until, veracity
+				`SELECT id, COALESCE(embed_text, content) AS content, source, timestamp, importance, metadata_json, scope, channel_id, valid_until, veracity
 		 FROM working_memory
 		 WHERE COALESCE(session_id, 'default') = ? AND timestamp < ? AND consolidated_at IS NULL
+			AND superseded_by IS NULL AND (valid_until IS NULL OR valid_until > ?)
 		 ORDER BY timestamp ASC LIMIT ?`,
 			)
-			.all(sessionId, cutoff, SLEEP_BATCH_SIZE),
+			.all(sessionId, cutoff, isoNow(), SLEEP_BATCH_SIZE),
 	);
 }
 
@@ -1005,8 +1007,9 @@ export function sleep(beam: BeamMemoryState, dryRun = false): SleepResult {
 		const ids = rows.map(row => rowValue(row, "id")).filter((id): id is string => id !== null);
 		const placeholders = ids.map(() => "?").join(",");
 		beam.db.run(
-			`UPDATE working_memory SET consolidated_at = ? WHERE id IN (${placeholders}) AND consolidated_at IS NULL`,
-			[claimTs, ...ids],
+			`UPDATE working_memory SET consolidated_at = ? WHERE id IN (${placeholders}) AND consolidated_at IS NULL
+				AND superseded_by IS NULL AND (valid_until IS NULL OR valid_until > ?)`,
+			[claimTs, ...ids, claimTs],
 		);
 		const claimed = new Set(
 			asRows(
@@ -1027,20 +1030,21 @@ export function sleep(beam: BeamMemoryState, dryRun = false): SleepResult {
 	const grouped = new Map<string, Row[]>();
 	for (const row of rows) {
 		const source = rowValue(row, "source") ?? "unknown";
-		const group = grouped.get(source);
+		const key = JSON.stringify([source, rowValue(row, "scope") ?? "session", rowValue(row, "channel_id")]);
+		const group = grouped.get(key);
 		if (group) group.push(row);
-		else grouped.set(source, [row]);
+		else grouped.set(key, [row]);
 	}
 
 	const consolidatedIds: string[] = [];
 	let summariesCreated = 0;
-	for (const [source, items] of grouped) {
+	for (const items of grouped.values()) {
+		const source = rowValue(items[0]!, "source") ?? "unknown";
 		for (const chunk of splitSleepItems(beam, source, items)) {
 			const ids = chunk.items.map(item => rowValue(item, "id")).filter((id): id is string => id !== null);
-			let scope = "session";
+			const scope = rowValue(chunk.items[0]!, "scope") ?? "session";
 			let validUntil: string | null = null;
 			for (const item of chunk.items) {
-				if (rowValue(item, "scope") === "global") scope = "global";
 				const itemValidUntil = rowValue(item, "valid_until");
 				if (itemValidUntil && (validUntil === null || itemValidUntil < validUntil)) validUntil = itemValidUntil;
 			}
@@ -1059,6 +1063,7 @@ export function sleep(beam: BeamMemoryState, dryRun = false): SleepResult {
 			if (!dryRun) {
 				consolidateToEpisodic(beam, summary, ids, "sleep_consolidation", 0.6, {
 					scope,
+					channelId: rowValue(chunk.items[0]!, "channel_id") ?? beam.channelId,
 					validUntil,
 					veracity: aggregateEpisodicVeracity(chunk.items.map(item => rowValue(item, "veracity") ?? "unknown")),
 					metadata,
@@ -1100,9 +1105,11 @@ export function sleepAllSessions(beam: BeamMemoryState, dryRun = false): SleepRe
 		beam.db
 			.query(
 				`SELECT session_id, COUNT(*) AS eligible FROM working_memory
-		 WHERE timestamp < ? AND consolidated_at IS NULL GROUP BY session_id ORDER BY MIN(timestamp) ASC`,
+		 WHERE timestamp < ? AND consolidated_at IS NULL
+			AND superseded_by IS NULL AND (valid_until IS NULL OR valid_until > ?)
+		 GROUP BY session_id ORDER BY MIN(timestamp) ASC`,
 			)
-			.all(cutoff),
+			.all(cutoff, isoNow()),
 	);
 	if (sessions.length === 0) {
 		return {

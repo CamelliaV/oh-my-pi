@@ -29,6 +29,7 @@ import {
 	summarizeMentalModel,
 } from "../../hindsight";
 import { memoryStatsUnavailableMessage, resolveMemoryBackend } from "../../memory-backend";
+import { runWikiHistoryCommand, runWikiSkillCommand } from "../../wiki/commands";
 import { BashExecutionComponent, bashPtyViewport } from "../../modes/components/bash-execution";
 import { BorderedLoader } from "../../modes/components/bordered-loader";
 import { DynamicBorder } from "../../modes/components/dynamic-border";
@@ -691,6 +692,30 @@ export class CommandController {
 		const action = argumentText.split(/\s+/, 1)[0]?.toLowerCase() || "view";
 		const agentDir = this.ctx.settings.getAgentDir();
 		const backend = await resolveMemoryBackend(this.ctx.settings);
+		if (action === "skill") {
+			try {
+				showMarkdownPanel(
+					this.ctx,
+					"Wiki Skills",
+					await runWikiSkillCommand(this.ctx.session, argumentText.slice(action.length).trim()),
+				);
+			} catch (error) {
+				this.ctx.showError(sanitizeText(error instanceof Error ? error.message : String(error)));
+			}
+			return;
+		}
+		if (action === "history" || action === "diff" || action === "restore") {
+			try {
+				showMarkdownPanel(
+					this.ctx,
+					`Wiki ${action}`,
+					await runWikiHistoryCommand(this.ctx.session, action, argumentText.slice(action.length).trim()),
+				);
+			} catch (error) {
+				this.ctx.showError(sanitizeText(error instanceof Error ? error.message : String(error)));
+			}
+			return;
+		}
 
 		if (action === "view") {
 			const payload = await backend.buildDeveloperInstructions(agentDir, this.ctx.settings, this.ctx.session);
@@ -776,7 +801,9 @@ export class CommandController {
 			return;
 		}
 
-		this.ctx.showError("Usage: /memory <view|stats|diagnose|clear|reset|enqueue|rebuild|queue|sync|mm ...>");
+		this.ctx.showError(
+			"Usage: /memory <view|stats|diagnose|clear|reset|enqueue|rebuild|queue|sync|skill ...|mm ...>",
+		);
 	}
 
 	async #handleMentalModelsSubcommand(argumentText: string): Promise<void> {

@@ -10,6 +10,7 @@ export interface MnemopiLlmCompleteOptions {
 	maxTokens?: number;
 	temperature?: number;
 	timeout?: number;
+	signal?: AbortSignal;
 	provider?: string | null;
 	model?: string | null;
 	task?: MnemopiLlmCompletionTask;

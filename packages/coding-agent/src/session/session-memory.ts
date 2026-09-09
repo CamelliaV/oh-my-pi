@@ -6,7 +6,7 @@ import type { ModelRegistry } from "../config/model-registry";
 import type { Settings } from "../config/settings";
 import type { HindsightSessionState } from "../hindsight/state";
 import { resolveMemoryBackend } from "../memory-backend/resolve";
-import type { MemoryBackendStartOptions } from "../memory-backend/types";
+import type { MemoryBackendId, MemoryBackendStartOptions } from "../memory-backend/types";
 import type { MnemopiSessionState } from "../mnemopi/state";
 import { releaseSharpshooterSession } from "../sharpshooter/backend";
 
@@ -35,6 +35,7 @@ export class SessionMemory {
 	#memoryBackendTransition: Promise<void> = Promise.resolve();
 	#localMemoryStartupAbort: AbortController | undefined;
 	#baseSystemPromptBeforeMemoryPromotion: string[] | undefined;
+	#activeBackendId: MemoryBackendId;
 
 	constructor(
 		host: SessionMemoryHost,
@@ -48,6 +49,7 @@ export class SessionMemory {
 		this.#memoryAgentDir = options.memoryAgentDir;
 		this.#memoryTaskDepth = options.memoryTaskDepth ?? 0;
 		this.#createMemoryTools = options.createMemoryTools;
+		this.#activeBackendId = host.settings.get("memory.backend");
 	}
 
 	/** Current serialized backend transition, used by prompt and disposal drains. */
@@ -116,11 +118,13 @@ export class SessionMemory {
 		const hadPromotedMemoryPrompt = this.#baseSystemPromptBeforeMemoryPromotion !== undefined;
 		const resetHindsight = this.#resetHindsightConversationTrackingIfHindsight();
 		const resetMnemopi = this.#resetMnemopiConversationTrackingIfMnemopi();
+		const backend = await resolveMemoryBackend(this.#host.settings);
+		backend.reset?.(this.#host.memoryBackendSession());
 		if (hadPromotedMemoryPrompt) {
 			this.#host.setBaseSystemPrompt(this.#baseSystemPromptBeforeMemoryPromotion!);
 			this.#baseSystemPromptBeforeMemoryPromotion = undefined;
 		}
-		if (resetHindsight || resetMnemopi || hadPromotedMemoryPrompt) {
+		if (resetHindsight || resetMnemopi || backend.reset || hadPromotedMemoryPrompt) {
 			await this.#host.refreshBaseSystemPrompt();
 		}
 	}
@@ -144,8 +148,20 @@ export class SessionMemory {
 		if (this.#localMemoryStartupAbort?.signal === signal) this.#localMemoryStartupAbort = undefined;
 	}
 
+	/** Dispose the active backend's generic hook, including after selector changes. */
+	async disposeBackendHook(): Promise<void> {
+		const session = this.#host.memoryBackendSession();
+		const backend = await resolveMemoryBackend(this.#host.settings, this.#activeBackendId);
+		await backend.dispose?.({
+			agentDir: this.#memoryAgentDir ?? this.#host.settings.getAgentDir(),
+			cwd: session.sessionManager.getCwd(),
+			session,
+		});
+	}
+
 	async #disposeMemoryBackendState(consolidateMnemopi = true): Promise<void> {
 		this.cancelLocalMemoryStartup();
+		await this.disposeBackendHook();
 		try {
 			releaseSharpshooterSession(this.#host.memoryBackendSession());
 		} catch (error) {
@@ -192,6 +208,7 @@ export class SessionMemory {
 			await this.#disposeMemoryBackendState();
 			if (this.#memoryAgentDir && this.#memoryTaskDepth === 0 && !this.#host.isDisposed()) {
 				const backend = await resolveMemoryBackend(this.#host.settings);
+				this.#activeBackendId = backend.id;
 				await backend.start({
 					session: this.#host.memoryBackendSession(),
 					settings: this.#host.settings,

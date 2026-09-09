@@ -1,6 +1,11 @@
 import { rm } from "node:fs/promises";
 import { logger } from "@oh-my-pi/pi-utils";
-import type { MemoryBackend, MemoryBackendSearchItem, MemoryBackendStatus } from "../memory-backend/types";
+import {
+	type MemoryBackend,
+	memoryBackendCapabilities,
+	type MemoryBackendSearchItem,
+	type MemoryBackendStatus,
+} from "../memory-backend/types";
 import { truncateApproxTokens } from "../mnemopi/config";
 import type { AgentSession } from "../session/agent-session";
 import { runSharpshooterConsolidation } from "./consolidate";
@@ -74,6 +79,7 @@ function formatTimestamp(timestamp: number | undefined): string {
 
 export const sharpshooterBackend: MemoryBackend = {
 	id: "sharpshooter",
+	capabilities: memoryBackendCapabilities.sharpshooter,
 
 	start(options): void {
 		if (options.taskDepth > 0) return;
@@ -223,12 +229,11 @@ export const sharpshooterBackend: MemoryBackend = {
 	},
 
 	async search({ agentDir, cwd }, query, options) {
-		if (options?.signal?.aborted) {
-			return { backend: "sharpshooter", query, count: 0, items: [], message: "Search aborted." };
-		}
+		options?.signal?.throwIfAborted();
 		const needle = query.toLowerCase();
 		if (!needle) return { backend: "sharpshooter", query, count: 0, items: [] };
 		const files = await readMemoryFiles(agentDir, cwd);
+		options?.signal?.throwIfAborted();
 		const items: MemoryBackendSearchItem[] = [];
 		for (const file of files) {
 			for (const line of file.content.split(/\r?\n/)) {

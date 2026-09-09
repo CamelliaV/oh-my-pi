@@ -26,6 +26,7 @@ import { InternalUrlRouter, resolveLocalUrlToFile, resolveLocalUrlToPath } from 
 import { type ResolvedArtifactFile, resolveArtifactFile } from "../internal-urls/artifact-protocol";
 import { parseInternalUrl } from "../internal-urls/parse";
 import type { InternalUrl } from "../internal-urls/types";
+import { createToolMemoryRuntimeContext } from "../memory-backend/runtime";
 import readDescription from "../prompts/tools/read.md" with { type: "text" };
 import type { ToolSession } from "../sdk";
 import {
@@ -2373,6 +2374,7 @@ export class ReadTool implements AgentTool<typeof readSchema, ReadToolDetails> {
 			sessionFile: this.session.getSessionFile() ?? undefined,
 			localProtocolOptions: this.session.localProtocolOptions,
 			skills: this.session.skills,
+			memory: this.session.getMemoryContext ? createToolMemoryRuntimeContext(this.session) : undefined,
 			rules: this.session.activeRules,
 			xd: {
 				read: async name => {

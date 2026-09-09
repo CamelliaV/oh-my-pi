@@ -13,8 +13,10 @@ import {
 	sleep,
 	sleepAllSessions,
 } from "@oh-my-pi/pi-mnemopi/core/beam/consolidate";
+import { get } from "@oh-my-pi/pi-mnemopi/core/beam/store";
 import type { BeamMemoryState } from "@oh-my-pi/pi-mnemopi/core/beam/types";
 import { REGEX_EXTRACTION_MAX_INPUT_CHARS } from "@oh-my-pi/pi-mnemopi/core/entities";
+import { withMnemopiRuntimeOptions } from "@oh-my-pi/pi-mnemopi/core/runtime-options";
 import { closeQuietly, openDatabase } from "@oh-my-pi/pi-mnemopi/db";
 
 function state(sessionId = "s1"): BeamMemoryState {
@@ -250,6 +252,30 @@ describe("beam consolidation free functions", () => {
 		expect(result.items_consolidated).toBe(2);
 		expect(beam.db.query("SELECT COUNT(*) AS count FROM episodic_memory").get()).toEqual({
 			count: 2,
+		});
+	});
+
+	it("sleep preserves bank channels without publishing private text in shared summaries", () => {
+		withMnemopiRuntimeOptions({ embeddings: { disabled: true }, llm: { enabled: false } }, () => {
+			const beam = trackedState("migration");
+			insertWorking(beam.db, "bank-a", beam.sessionId, "Aurora bank release checklist");
+			insertWorking(beam.db, "bank-b", beam.sessionId, "Borealis bank release checklist");
+			insertWorking(beam.db, "private", beam.sessionId, "Private customer dossier");
+			insertWorking(beam.db, "global", beam.sessionId, "Global shared release checklist");
+			beam.db.run("UPDATE working_memory SET scope = 'bank', channel_id = id WHERE id IN ('bank-a', 'bank-b')");
+			beam.db.run("UPDATE working_memory SET channel_id = 'bank-a' WHERE id = 'private'");
+			beam.db.run("UPDATE working_memory SET scope = 'global' WHERE id = 'global'");
+
+			sleepAllSessions(beam);
+			const summaries = beam.db.query("SELECT id FROM episodic_memory").all() as { id: string }[];
+			const reader = { ...beam, sessionId: "bank-session", channelId: "bank-a" };
+			const readable = summaries.flatMap(row => {
+				const memory = get(reader, row.id);
+				return memory === null ? [] : [String(memory.content)];
+			});
+			expect(readable.some(content => content.includes("Aurora"))).toBe(true);
+			expect(readable.some(content => content.includes("Global"))).toBe(true);
+			expect(readable.some(content => content.includes("Borealis") || content.includes("Private"))).toBe(false);
 		});
 	});
 

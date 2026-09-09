@@ -2970,18 +2970,18 @@ export const SETTINGS_SCHEMA = {
 	"memories.summaryInjectionTokenLimit": { type: "number", default: 5000 },
 
 	// Memory backend selector — picks between local memories pipeline,
-	// Mnemopi local SQLite, Hindsight remote memory, Sharpshooter project
+	// Mnemopi local SQLite, Hindsight remote memory, native Wiki, Sharpshooter
 	// decisions, or off. The legacy
 	// `memories.enabled` flag is migration input only; see config/settings.ts.
 	"memory.backend": {
 		type: "enum",
-		values: ["off", "local", "hindsight", "mnemopi", "sharpshooter"] as const,
+		values: ["off", "local", "hindsight", "mnemopi", "wiki", "sharpshooter"] as const,
 		default: "off",
 		ui: {
 			tab: "memory",
 			group: "General",
 			label: "Memory Backend",
-			description: "Off, local summary pipeline, Mnemopi SQLite, Hindsight remote memory, or Sharpshooter",
+			description: "Off, local summary pipeline, Mnemopi, Hindsight, Wiki knowledge, or Sharpshooter",
 			options: [
 				{ value: "off", label: "Off", description: "No memory subsystem runs" },
 				{ value: "local", label: "Local", description: "Local rollout summarisation pipeline (memory_summary.md)" },
@@ -2992,6 +2992,11 @@ export const SETTINGS_SCHEMA = {
 					description: "Local SQLite recall/retain backend with optional embeddings",
 				},
 				{
+					value: "wiki",
+					label: "Wiki",
+					description: "Source-backed topic pages maintained and searched by a small model",
+				},
+				{
 					value: "sharpshooter",
 					label: "Sharpshooter",
 					description:
@@ -3000,6 +3005,47 @@ export const SETTINGS_SCHEMA = {
 			],
 		},
 	},
+	"wiki.root": { type: "string", default: undefined },
+	"wiki.scope": {
+		type: "enum",
+		values: ["project", "global"] as const,
+		default: "project",
+		ui: {
+			tab: "memory",
+			group: "Wiki",
+			label: "Write Scope",
+			description: "Project-local knowledge or explicitly shared user knowledge",
+		},
+	},
+	"wiki.includeGlobal": { type: "boolean", default: true },
+	"wiki.model": {
+		type: "string",
+		default: "@smol",
+		ui: {
+			tab: "memory",
+			group: "Wiki",
+			label: "Knowledge Model",
+			description: "Model for incremental maintenance and skill proposals",
+		},
+	},
+	"wiki.recallModel": {
+		type: "string",
+		default: undefined,
+		ui: {
+			tab: "memory",
+			group: "Wiki",
+			label: "Recall Model",
+			description: "Optional faster model for read-only evidence selection; empty uses Knowledge Model",
+		},
+	},
+	"wiki.autoRetain": { type: "boolean", default: true },
+	"wiki.autoMaintain": { type: "boolean", default: true },
+	"wiki.autoRecall": { type: "boolean", default: false },
+	"wiki.timeoutSeconds": { type: "number", default: 30 },
+	"wiki.maintenanceBatchSize": { type: "number", default: 8 },
+	"wiki.recallLimit": { type: "number", default: 4 },
+	"wiki.contextTokenLimit": { type: "number", default: 1500 },
+	"wiki.skillValidationCommand": { type: "array", default: EMPTY_STRING_ARRAY },
 	"sharpshooter.model": {
 		type: "string",
 		default: undefined,

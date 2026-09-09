@@ -56,6 +56,28 @@ afterEach(() => {
 registerMockApi();
 
 describe("local LLM TypeScript port", () => {
+	it("cancels a configured completion instead of leaving utility work pending", async () => {
+		const controller = new AbortController();
+		const started = Promise.withResolvers<void>();
+		const pending = Promise.withResolvers<string | null>();
+		const memory = new Mnemopi({
+			dbPath: tempDbPath(), noEmbeddings: true,
+			llm: async (_prompt, options) => {
+				options?.signal?.addEventListener("abort", () => pending.resolve(null), { once: true });
+				started.resolve();
+				return pending.promise;
+			},
+		});
+		try {
+			const response = withMnemopiRuntimeOptions(memory.runtimeOptions, () => complete("choose context", 0, { signal: controller.signal }));
+			await started.promise;
+			controller.abort();
+			expect(await response).toBeNull();
+		} finally {
+			pending.resolve(null);
+			memory.close();
+		}
+	});
 	it("reports remote availability and calls OpenAI-compatible HTTP", async () => {
 		process.env.MNEMOPI_LLM_BASE_URL = "http://local-llm/v1";
 		process.env.MNEMOPI_LLM_API_KEY = "sk-test";

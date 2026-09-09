@@ -9,6 +9,8 @@ import type { DiagnosticSummary } from "@oh-my-pi/pi-mnemopi/diagnose";
 import { logger } from "@oh-my-pi/pi-utils";
 import type { ModelRegistry } from "../config/model-registry";
 import { resolveRoleSelection } from "../config/model-resolver";
+import { formatCurrentTime } from "../hindsight/content";
+import { memoryBackendCapabilities } from "../memory-backend/types";
 import type {
 	MemoryBackend,
 	MemoryBackendSaveInput,
@@ -103,6 +105,7 @@ async function installMnemopiState(session: AgentSession, config: MnemopiBackend
 
 export const mnemopiBackend: MemoryBackend = {
 	id: "mnemopi",
+	capabilities: memoryBackendCapabilities.mnemopi,
 
 	async start(options: MemoryBackendStartOptions): Promise<void> {
 		const { session, settings, agentDir, modelRegistry } = options;
@@ -119,7 +122,6 @@ export const mnemopiBackend: MemoryBackend = {
 					config: parent.config,
 					session,
 					aliasOf: parent,
-					hasRecalledForFirstTurn: true,
 				}),
 			);
 			await previous?.dispose();
@@ -250,59 +252,62 @@ export const mnemopiBackend: MemoryBackend = {
 
 	async search({ session }, query, options) {
 		const state = getMnemopiSessionState(session);
-		const primary = state?.aliasOf ?? state;
-		if (!primary) {
+		if (!state) throw new Error("Mnemopi backend is not initialised for this session.");
+		options?.signal?.throwIfAborted();
+		try {
+			const recalled = await state.recallResultsScoped(query);
+			options?.signal?.throwIfAborted();
+			const results = options?.limit === undefined ? recalled : recalled.slice(0, clampLimit(options.limit));
+			const items: MemoryBackendSearchItem[] = results.map(result => ({
+				id: result.id,
+				content: result.content,
+				source: result.source ?? undefined,
+				timestamp: result.timestamp ?? undefined,
+				score: result.score,
+				metadata: { truncated: result.truncated, full_length: result.full_length },
+			}));
 			return {
 				backend: "mnemopi",
 				query,
-				count: 0,
-				items: [],
-				message: "Mnemopi backend is not initialised for this session.",
+				count: items.length,
+				items,
+				text:
+					items.length === 0
+						? "No relevant memories found."
+						: `Found ${items.length} relevant ${items.length === 1 ? "memory" : "memories"} (as of ${formatCurrentTime()} UTC):\n\n${state.formatScopedRecallWithIds(results)}`,
 			};
+		} catch (error) {
+			logger.warn("recall failed", { backend: "mnemopi", bank: state.config.bank, error: String(error) });
+			throw error instanceof Error ? error : new Error(String(error));
 		}
-		if (options?.signal?.aborted) {
-			return { backend: "mnemopi", query, count: 0, items: [], message: "Search aborted." };
-		}
-		const limit = clampLimit(options?.limit);
-		const results = (await primary.recallResultsScoped(query)).slice(0, limit);
-		if (options?.signal?.aborted) {
-			return { backend: "mnemopi", query, count: 0, items: [], message: "Search aborted." };
-		}
-		const items: MemoryBackendSearchItem[] = results.map(result => ({
-			id: result.id,
-			content: result.content,
-			source: result.source ?? undefined,
-			timestamp: result.timestamp ?? undefined,
-			score: result.score,
-		}));
-		return { backend: "mnemopi", query, count: items.length, items };
 	},
 
 	async save({ cwd, session }, input: MemoryBackendSaveInput) {
+		if (input.scope !== undefined)
+			throw new Error("Mnemopi does not support per-save scope; its configured bank scope is unchanged.");
 		const state = getMnemopiSessionState(session);
-		const primary = state?.aliasOf ?? state;
-		if (!primary) {
+		if (!state) {
 			return {
 				backend: "mnemopi",
 				stored: 0,
 				message: "Mnemopi backend is not initialised for this session.",
 			};
 		}
-		const content = input.content.trim();
-		if (!content) return { backend: "mnemopi", stored: 0, message: "Memory content is empty." };
-		const id = primary.rememberScoped(content, {
+		const content = input.tool ? input.content : input.content.trim();
+		if (!content.trim()) return { backend: "mnemopi", stored: 0, message: "Memory content is empty." };
+		const id = state.rememberScoped(content, {
 			source: input.source || "coding-agent-memory-command",
 			importance: normalizeImportance(input.importance),
 			metadata: {
-				session_id: primary.sessionId,
-				cwd,
+				session_id: state.sessionId,
+				cwd: input.tool ? state.session.sessionManager.getCwd() : cwd,
 				context: input.context ?? null,
-				operation: "memory.save",
+				...(input.tool ? { tool: input.tool } : { operation: "memory.save" }),
 			},
 			scope: "bank",
 			extract: true,
 			extractEntities: true,
-			veracity: "user",
+			veracity: input.tool ? "tool" : "user",
 			memoryType: "fact",
 		});
 		return {
@@ -311,6 +316,82 @@ export const mnemopiBackend: MemoryBackend = {
 			ids: id ? [id] : [],
 			message: id ? undefined : "Mnemopi did not return a stored memory id.",
 		};
+	},
+
+	async read({ session }, id) {
+		const state = getMnemopiSessionState(session);
+		if (!state) throw new Error("Mnemopi backend is not initialised for this session.");
+		const hit = state.getScopedMemory(id);
+		if (!hit) return { backend: "mnemopi", id, status: "not_found" };
+		const { row, bank, store } = hit;
+		return {
+			backend: "mnemopi",
+			id,
+			status: "found",
+			content: row.content,
+			source: row.source ?? undefined,
+			timestamp: row.timestamp ?? undefined,
+			metadata: {
+				bank,
+				store,
+				importance: row.importance,
+				veracity: row.veracity,
+				created_at: row.created_at,
+				session_id: row.session_id,
+				memory_type: row.memory_type,
+				metadata: row.metadata,
+			},
+		};
+	},
+
+	async edit({ session }, input) {
+		const state = getMnemopiSessionState(session);
+		if (!state) throw new Error("Mnemopi backend is not initialised for this session.");
+		if (input.op === "update" && input.content === undefined && input.importance === undefined) {
+			throw new Error("memory_edit update requires content or importance.");
+		}
+		const result = state.editScopedMemory(input.op, input.id, {
+			content: input.content,
+			importance: input.importance === undefined ? undefined : normalizeImportance(input.importance),
+			replacementId: input.replacementId,
+		});
+		const location = result.bank ? ` in bank ${result.bank}${result.store ? ` (${result.store})` : ""}` : "";
+		return {
+			backend: "mnemopi",
+			id: input.id,
+			...result,
+			message:
+				result.status === "not_found"
+					? `Memory ${input.id} was not found${location}.`
+					: result.status === "not_editable"
+						? `Memory ${input.id} is a read-only fact${location}; it cannot be edited. Read it with memory://${input.id}.`
+						: `Memory ${input.id} ${result.status}${location}.`,
+		};
+	},
+
+	async reflect({ session }, query, options) {
+		const state = getMnemopiSessionState(session);
+		if (!state) throw new Error("Mnemopi backend is not initialised for this session.");
+		options?.signal?.throwIfAborted();
+		try {
+			const recallQuery = options?.context?.trim()
+				? `${query.trim()}\n\nAdditional context:\n${options.context.trim()}`
+				: query;
+			const recalled = await state.recallResultsScoped(recallQuery);
+			options?.signal?.throwIfAborted();
+			const results = options?.limit === undefined ? recalled : recalled.slice(0, clampLimit(options.limit));
+			return {
+				backend: "mnemopi",
+				query,
+				text:
+					results.length === 0
+						? "No relevant information found to reflect on."
+						: `Based on recalled memories:\n\n${state.formatContextScoped(results)}`,
+			};
+		} catch (error) {
+			logger.warn("reflect failed", { backend: "mnemopi", bank: state.config.bank, error: String(error) });
+			throw error instanceof Error ? error : new Error(String(error));
+		}
 	},
 
 	async preCompactionContext(messages, _settings, session): Promise<string | undefined> {
@@ -536,6 +617,7 @@ async function resolveMnemopiProviderOptions(
 					return tinyModelClient.complete(memoryModel, request.prompt, {
 						maxTokens: opts?.maxTokens,
 						systemPrompt: request.systemPrompt,
+						signal: opts?.signal,
 					});
 				},
 				// No `extractionPrompt`: resolveMemoryCompletionInput supplies the
@@ -591,6 +673,7 @@ async function resolveMnemopiProviderOptions(
 							sessionId,
 							maxTokens: opts?.maxTokens,
 							temperature: opts?.temperature,
+							signal: opts?.signal,
 						},
 					),
 				);

@@ -6,6 +6,7 @@ import { getSynonyms, normalizeQuery, STOP_WORDS as QUERY_STOP_WORDS } from "../
 import { extractTemporal } from "../temporal-parser";
 import { cosineSimilarity } from "../vector-math";
 import { cjkBigramize } from "../../util/regex";
+import { memoryVisibilityWhere } from "./helpers";
 import type { BeamMemoryState, RecallEnhancedOptions, RecallOptions, RecallResult } from "./types";
 
 type DbValue = string | number | null | Uint8Array;
@@ -36,6 +37,7 @@ type CandidateSignals = {
 	fts: number;
 	ftsMatched: boolean;
 	dense: number;
+	denseRank: number;
 	keyword: number;
 	candidateSource: "fts" | "vec" | "fallback";
 };
@@ -495,13 +497,15 @@ function buildWhere(
 	if (options.ignoreSessionScope === true) {
 		clauses.push("1=1");
 	} else if (channelId !== null && channelId !== "") {
-		clauses.push(`(${prefix}session_id = ? OR ${prefix}scope = 'global' OR ${prefix}channel_id = ?)`);
-		params.push(beam.sessionId, channelId);
+		const visibility = memoryVisibilityWhere(beam, tableAlias, channelId);
+		clauses.push(visibility.where);
+		params.push(...visibility.params);
 	} else if (authorId !== null || authorType !== null) {
 		clauses.push("1=1");
 	} else {
-		clauses.push(`(${prefix}session_id = ? OR ${prefix}scope = 'global')`);
-		params.push(beam.sessionId);
+		const visibility = memoryVisibilityWhere(beam, tableAlias);
+		clauses.push(visibility.where);
+		params.push(...visibility.params);
 	}
 	if (options.fromDate !== undefined && options.fromDate !== null) {
 		clauses.push(`${prefix}timestamp >= ?`);
@@ -550,12 +554,14 @@ function ftsRows(
 	query: string,
 	limit: number,
 	useSynonyms = true,
+	options: RecallOptionsInternal = {},
 ): Row[] {
 	if (!tableExists(beam, table)) return [];
 	try {
 		// Superseded rows stay in the FTS mirrors (their content never changed) but must not
 		// occupy LIMIT slots — visibility filtering would drop them AFTER they displaced live rows.
 		if (table === "fts_working") {
+			const visibility = buildWhere(beam, "w", options);
 			return queryAll(
 				beam,
 				// Correlated EXISTS, never `id IN (SELECT ...)`: the IN form makes SQLite build a
@@ -564,20 +570,19 @@ function ftsRows(
 				// 0.042ms. EXISTS probes the primary key only for rows MATCH actually produced.
 				`SELECT f.id, f.rank FROM fts_working f
 				 WHERE f.fts_working MATCH ?
-				   AND EXISTS (SELECT 1 FROM working_memory w WHERE w.id = f.id AND w.superseded_by IS NULL
-				       AND (w.valid_until IS NULL OR w.valid_until > ?))
+				   AND EXISTS (SELECT 1 FROM working_memory w WHERE w.id = f.id AND ${visibility.where})
 				 ORDER BY f.rank, f.id LIMIT ?`,
-				[ftsQuery(query, useSynonyms), nowIso(), limit],
+				[ftsQuery(query, useSynonyms), ...visibility.params, limit],
 			);
 		}
+		const visibility = buildWhere(beam, "e", options);
 		return queryAll(
 			beam,
 			`SELECT f.rowid, f.rank FROM fts_episodes f
 			 WHERE f.fts_episodes MATCH ?
-			   AND EXISTS (SELECT 1 FROM episodic_memory e WHERE e.rowid = f.rowid AND e.superseded_by IS NULL
-			       AND (e.valid_until IS NULL OR e.valid_until > ?))
+			   AND EXISTS (SELECT 1 FROM episodic_memory e WHERE e.rowid = f.rowid AND ${visibility.where})
 			 ORDER BY f.rank, f.rowid LIMIT ?`,
-			[ftsQuery(query, useSynonyms), nowIso(), limit],
+			[ftsQuery(query, useSynonyms), ...visibility.params, limit],
 		);
 	} catch {
 		return [];
@@ -699,6 +704,7 @@ function fetchCandidates(
 				fts,
 				ftsMatched,
 				dense,
+				denseRank: 0,
 				keyword: 0,
 				candidateSource: ftsMatched ? "fts" : dense > 0 ? "vec" : "fallback",
 			},
@@ -722,7 +728,7 @@ function fallbackCandidates(
 	return rows.map(row => ({
 		row,
 		tierLabel,
-		signals: { fts: 0, ftsMatched: false, dense: 0, keyword: 0, candidateSource: "fallback" },
+		signals: { fts: 0, ftsMatched: false, dense: 0, denseRank: 0, keyword: 0, candidateSource: "fallback" },
 	}));
 }
 
@@ -741,7 +747,9 @@ function scoreCandidate(
 			? lexicalGroupRelevance(queryGroups, searchableContent, normalizedQueryLower)
 			: lexicalRelevance(queryTokens, searchableContent, normalizedQueryLower);
 	const minRel = minimumRelevance(queryTokens);
-	if (lexical < minRel && candidate.signals.dense < 0.65) return null;
+	// Dense candidates are already selected by rank. A universal cosine cutoff
+	// rejects valid paraphrases when the embedding model's score scale changes.
+	if (lexical < minRel && candidate.signals.dense <= 0) return null;
 	const [vecWeight, ftsWeight, importanceWeight] = weights;
 	const importance = asNumber(candidate.row.importance, 0.5);
 	const decay =
@@ -749,18 +757,18 @@ function scoreCandidate(
 			? recencyDecay(candidate.row.timestamp, 72)
 			: temporalBoost(candidate.row.timestamp, parseQueryTime(options.queryTime), 72);
 	const keyword = Math.max(lexical, candidate.signals.fts * 0.6);
-	let baseScore: number;
-	if (candidate.tierLabel === "episodic") {
-		baseScore = Math.max(
-			candidate.signals.dense * vecWeight + candidate.signals.fts * ftsWeight + importance * importanceWeight,
-			lexical * 0.8,
-		);
-	} else {
-		const kwShare = (1 - importanceWeight) * 0.6;
-		baseScore = keyword * kwShare + importance * importanceWeight + keyword * keyword * 0.08;
-		if (candidate.signals.dense > 0) baseScore = baseScore * 0.8 + candidate.signals.dense * 0.2;
-	}
-	let score = baseScore * (0.7 + 0.3 * decay);
+	const relevanceWeight = vecWeight + ftsWeight;
+	const relevance =
+		candidate.signals.dense > 0 && relevanceWeight > 0
+			? (candidate.signals.denseRank * vecWeight + keyword * ftsWeight) / relevanceWeight
+			: keyword;
+	const baseScore =
+		candidate.signals.dense > 0
+			? relevance * (1 - importanceWeight + importance * importanceWeight)
+			: candidate.tierLabel === "episodic"
+				? Math.max(candidate.signals.fts * ftsWeight + importance * importanceWeight, lexical * 0.8)
+				: keyword * (1 - importanceWeight) * 0.6 + importance * importanceWeight + keyword * keyword * 0.08;
+	let score = baseScore * (candidate.signals.dense > 0 ? 0.95 + 0.05 * decay : 0.7 + 0.3 * decay);
 	const temporalWeight = options.temporalWeight ?? 0;
 	let temporalScore = 0;
 	if (temporalWeight > 0) {
@@ -919,8 +927,9 @@ function collectMemoryCandidates(
 ): MemoryCandidate[] {
 	const limit = Math.max(topK * 3, 50);
 	const useSynonyms = options.useSynonyms !== false;
-	const wmFtsRows = options.includeWorking === false ? [] : ftsRows(beam, "fts_working", query, limit, useSynonyms);
-	const emFtsRows = ftsRows(beam, "fts_episodes", query, limit, useSynonyms);
+	const wmFtsRows =
+		options.includeWorking === false ? [] : ftsRows(beam, "fts_working", query, limit, useSynonyms, options);
+	const emFtsRows = ftsRows(beam, "fts_episodes", query, limit, useSynonyms, options);
 	const wmFts = normalizeRanks(wmFtsRows, "id");
 	const emFts = normalizeRanks(emFtsRows, "rowid");
 
@@ -962,8 +971,19 @@ function collectMemoryCandidates(
 	else if (options.includeWorking !== false) candidates.push(...fallbackCandidates(beam, "working", options));
 	if (emRowids.length > 0) candidates.push(...fetchCandidates(beam, "episodic", emRowids, emFts, emVec, options));
 	else candidates.push(...fallbackCandidates(beam, "episodic", options));
-	if (candidates.length === 0) return candidates;
-	void useSynonyms;
+	if (wmVec.size + emVec.size > 0) {
+		// Fuse ranks rather than model-specific cosine magnitudes. The strongest
+		// semantic match must not lose to many weak word overlaps in long notes.
+		const ordered = [...wmVec, ...emVec].sort((left, right) => right[1] - left[1]);
+		const ranks = new Map<string, number>();
+		let rank = 0;
+		for (let index = 0; index < ordered.length; index++) {
+			const [id, similarity] = ordered[index]!;
+			if (index > 0 && similarity < ordered[index - 1]![1] - 1e-6) rank = index;
+			ranks.set(id, 1 / (rank + 1));
+		}
+		for (const candidate of candidates) candidate.signals.denseRank = ranks.get(asString(candidate.row.id)) ?? 0;
+	}
 	return candidates;
 }
 
@@ -1009,8 +1029,9 @@ export async function recall(
 	}
 	scored.sort((left, right) => (right.score ?? 0) - (left.score ?? 0));
 	let finalResults = dedupCrossTierSummaryLinks(beam, dedupeResults(scored));
-	if (query.length > 0 && tokens.length >= 4 && finalResults.length > topK)
+	if (temporalOptions.queryEmbedding == null && tokens.length >= 4 && finalResults.length > topK) {
 		finalResults = diversifyByCoverage(finalResults, tokens, topK);
+	}
 	if (options.useMmr === true && finalResults.length > 1) {
 		finalResults = rerankRecallResults(finalResults, options.mmrLambda ?? 0.7, topK);
 	} else {
@@ -1020,11 +1041,7 @@ export async function recall(
 	return finalResults;
 }
 
-function diversifyByCoverage(
-	results: readonly RecallResult[],
-	tokens: readonly string[],
-	topK: number,
-): RecallResult[] {
+function diversifyByCoverage(results: readonly RecallResult[], tokens: readonly string[], topK: number): RecallResult[] {
 	const selected: RecallResult[] = [];
 	const covered = new Set<string>();
 	const pool = [...results];
@@ -1032,12 +1049,11 @@ function diversifyByCoverage(
 	while (pool.length > 0 && selected.length < topK) {
 		let bestIdx = 0;
 		let bestScore = Number.NEGATIVE_INFINITY;
-		for (let i = 0; i < pool.length; i += 1) {
-			const row = pool[i];
-			if (row === undefined) continue;
+		for (let i = 0; i < pool.length; i++) {
+			const row = pool[i]!;
 			let additions = 0;
 			for (const token of tokenize(row.content)) {
-				if (querySet.has(token) && !covered.has(token)) additions += 1;
+				if (querySet.has(token) && !covered.has(token)) additions++;
 			}
 			const score = (row.score ?? 0) + 0.06 * additions;
 			if (score > bestScore) {
@@ -1045,8 +1061,7 @@ function diversifyByCoverage(
 				bestIdx = i;
 			}
 		}
-		const picked = pool.splice(bestIdx, 1)[0];
-		if (picked === undefined) break;
+		const picked = pool.splice(bestIdx, 1)[0]!;
 		selected.push(picked);
 		for (const token of tokenize(picked.content)) if (querySet.has(token)) covered.add(token);
 	}
@@ -1068,6 +1083,7 @@ export async function recallEnhanced(
 	};
 	const results = await recall(beam, query, Math.max(topK * 2, topK), {
 		...enhancedOptions,
+		useMmr: false,
 		updateRecallCounts: false,
 	});
 	if (options.includeFacts === true) {
@@ -1075,7 +1091,8 @@ export async function recallEnhanced(
 		results.push(...facts);
 	}
 	results.sort((left, right) => (right.score ?? 0) - (left.score ?? 0));
-	const finalResults = rerankRecallResults(results, options.mmrLambda ?? 0.7, topK);
+	const finalResults =
+		options.useMmr === false ? results.slice(0, topK) : rerankRecallResults(results, options.mmrLambda ?? 0.7, topK);
 	if (enhancedOptions.updateRecallCounts !== false) updateRecallCounts(beam, finalResults, enhancedOptions);
 	return finalResults;
 }
@@ -1201,6 +1218,7 @@ export function factRecall(beam: BeamMemoryState, query: string, topK = 30): Fac
 		 LIMIT ?`,
 		[...rowids, ...visibility.params, rowids.length],
 	);
+	const minRel = minimumRelevance(expandedTokens(query));
 	return rows
 		.map(row => {
 			const subject = asString(row.subject);
@@ -1239,7 +1257,7 @@ export function factRecall(beam: BeamMemoryState, query: string, topK = 30): Fac
 			};
 			return result;
 		})
-		.filter(result => (result.score ?? 0) > 0)
+		.filter(result => (result.keyword_score ?? 0) >= minRel && (result.score ?? 0) > 0)
 		.sort((left, right) => (right.score ?? 0) - (left.score ?? 0))
 		.slice(0, topK);
 }

@@ -1,4 +1,5 @@
 import { logger } from "@oh-my-pi/pi-utils";
+import { redactSecretFields, redactSecrets } from "../secrets/redact";
 import type { AgentSession } from "../session/agent-session";
 import { type BankScope, ensureBankExists } from "./bank";
 import type { HindsightApi, MemoryItemInput } from "./client";
@@ -157,7 +158,9 @@ export class HindsightRetainQueue {
 				tags: state.retainTags,
 				timestamp: item.timestamp,
 			}));
-			await state.client.retainBatch(state.bankId, batch, { async: true });
+			await state.client.retainBatch(state.bankId, redactSecretFields(batch, state.session.obfuscator), {
+				async: true,
+			});
 			if (state.config.debug) {
 				logger.debug("Hindsight retain queue: batch flushed", {
 					sessionId,
@@ -283,7 +286,10 @@ export class HindsightSessionState {
 	}
 
 	enqueueRetain(content: string, context?: string): void {
-		this.retainQueue.enqueue(content, context);
+		this.retainQueue.enqueue(
+			redactSecrets(content, this.session.obfuscator),
+			context === undefined ? undefined : redactSecrets(context, this.session.obfuscator),
+		);
 	}
 
 	async flushRetainQueue(): Promise<void> {
@@ -357,14 +363,21 @@ export class HindsightSessionState {
 		}
 
 		await ensureBankExists(this.client, this.bankId, this.config, this.banksSet);
-		await this.client.retain(this.bankId, transcript, {
-			documentId,
-			context: this.config.retainContext,
-			metadata: { session_id: this.sessionId },
-			tags: this.retainTags,
-			timestamp: sourceTimestamp,
-			async: true,
-		});
+		await this.client.retain(
+			this.bankId,
+			redactSecrets(transcript, this.session.obfuscator),
+			redactSecretFields(
+				{
+					documentId,
+					context: this.config.retainContext,
+					metadata: { session_id: this.sessionId },
+					tags: this.retainTags,
+					timestamp: sourceTimestamp,
+					async: true,
+				},
+				this.session.obfuscator,
+			),
+		);
 		if (nextCachedTranscript !== undefined) {
 			this.#cachedTranscript = nextCachedTranscript;
 			this.#lastRetainedMessageIndex = messages.length;

@@ -9,7 +9,15 @@ import { countExtractedFactCategories, extractFactCategoriesSafe } from "../extr
 import { getMnemopiRuntimeOptions, withMnemopiRuntimeOptions } from "../runtime-options";
 import { storeExtractedFactCategories } from "./consolidate";
 import { resyncFtsEpisodes, resyncFtsWorking } from "./fts-sync";
-import { type EmbedItem, scheduleEmbedding, vecAvailable, vecInsert } from "./helpers";
+import {
+	captureMemorySource,
+	type EmbedItem,
+	memorySourceUnchanged,
+	memoryVisibilityWhere,
+	scheduleEmbedding,
+	vecAvailable,
+	vecInsert,
+} from "./helpers";
 import type {
 	BeamEvent,
 	BeamMemoryState,
@@ -170,7 +178,7 @@ function tableExists(db: BeamMemoryState["db"], table: string): boolean {
 	return statement.get(table) !== null;
 }
 
-/** Tables whose rows point back to a `working_memory` id via `source_memory_id`. */
+/** Projections whose provenance is a working or episodic memory id. */
 const MEMORIA_SOURCE_TABLES = [
 	"memoria_facts",
 	"memoria_instructions",
@@ -180,38 +188,78 @@ const MEMORIA_SOURCE_TABLES = [
 ] as const;
 
 /**
- * Remove every artifact linked to the given `working_memory` ids so no deletion
- * path leaves orphans behind. Covers annotations, embeddings, extracted facts
- * (`facts.source_msg_id`), memoria projections (`*.source_memory_id`), episodic
- * gists, and the graph edges tied to those memory / gist / fact node ids.
- *
- * Idempotent and schema-tolerant: `gists` / `graph_edges` only exist once an
- * `EpisodicGraph` has initialised, so they are guarded. Callers own the
- * transaction and the base `working_memory` delete.
+ * Revoke complete derived summaries, never partially redact a shared summary.
+ * Unrelated raw sources survive and can be consolidated again. Callers own the
+ * transaction and any root-row deletion; root rows themselves remain readable
+ * after soft invalidation, but none of their derived content does.
  */
-function purgeWorkingMemoryArtifacts(db: BeamMemoryState["db"], ids: readonly string[]): void {
-	if (ids.length === 0) return;
+function purgeMemoryArtifacts(db: BeamMemoryState["db"], rootIds: readonly string[]): void {
+	if (rootIds.length === 0) return;
+	const affected = new Set(rootIds);
+	const summaries = db.query("SELECT id, rowid, summary_of FROM episodic_memory").all() as {
+		id: string;
+		rowid: number;
+		summary_of: string | null;
+	}[];
+	const dependents = new Map<string, string[]>();
+	const summarySources = new Map<string, string[]>();
+	for (const summary of summaries) {
+		const sources = (summary.summary_of ?? "")
+			.split(",")
+			.map(id => id.trim())
+			.filter(Boolean);
+		summarySources.set(summary.id, sources);
+		for (const source of sources) {
+			const ids = dependents.get(source);
+			if (ids === undefined) dependents.set(source, [summary.id]);
+			else ids.push(summary.id);
+		}
+	}
+	// Set iteration visits additions, so this also reaches summaries of summaries.
+	for (const id of affected) {
+		for (const dependent of dependents.get(id) ?? []) affected.add(dependent);
+	}
+	const rawSources = new Set<string>();
+	for (const id of affected) {
+		for (const source of summarySources.get(id) ?? []) {
+			if (!affected.has(source)) rawSources.add(source);
+		}
+	}
+	if (rawSources.size > 0) {
+		const placeholders = [...rawSources].map(() => "?").join(", ");
+		db.run(
+			`UPDATE working_memory SET consolidated_at = NULL WHERE id IN (${placeholders})
+			AND superseded_by IS NULL AND (valid_until IS NULL OR valid_until > ?)`,
+			[...rawSources, toUtcIso()],
+		);
+	}
+	if (vecAvailable(db)) {
+		using deleteVector = db.prepare("DELETE FROM vec_episodes WHERE rowid = ?");
+		for (const summary of summaries) {
+			if (affected.has(summary.id)) deleteVector.run(summary.rowid);
+		}
+	}
+	const ids = [...affected];
 	const placeholders = ids.map(() => "?").join(", ");
-
-	const graphRefs = new Set<string>(ids);
+	const graphRefs = new Set(ids);
 	for (const id of ids) graphRefs.add(`gist_${id}`);
 	if (tableExists(db, "facts")) {
 		using factStatement = db.prepare(`SELECT fact_id FROM facts WHERE source_msg_id IN (${placeholders})`);
-		const factRows = factStatement.all(...ids) as {
-			fact_id: string;
-		}[];
+		const factRows = factStatement.all(...ids) as { fact_id: string }[];
 		for (const row of factRows) graphRefs.add(row.fact_id);
-		db.run(`DELETE FROM facts WHERE source_msg_id IN (${placeholders})`, [...ids]);
+		db.run(`DELETE FROM facts WHERE source_msg_id IN (${placeholders})`, ids);
 	}
-
-	db.run(`DELETE FROM annotations WHERE memory_id IN (${placeholders})`, [...ids]);
-	db.run(`DELETE FROM memory_embeddings WHERE memory_id IN (${placeholders})`, [...ids]);
+	for (const table of ["annotations", "memory_embeddings", "memory_validations"]) {
+		db.run(`DELETE FROM ${table} WHERE memory_id IN (${placeholders})`, ids);
+	}
 	for (const table of MEMORIA_SOURCE_TABLES) {
-		db.run(`DELETE FROM ${table} WHERE source_memory_id IN (${placeholders})`, [...ids]);
+		db.run(`DELETE FROM ${table} WHERE source_memory_id IN (${placeholders})`, ids);
 	}
-
+	db.run(`DELETE FROM triples WHERE source IN (${placeholders})`, ids);
 	if (tableExists(db, "gists")) {
-		db.run(`DELETE FROM gists WHERE memory_id IN (${placeholders})`, [...ids]);
+		using gistStatement = db.prepare(`SELECT id FROM gists WHERE memory_id IN (${placeholders})`);
+		for (const row of gistStatement.all(...ids) as { id: string }[]) graphRefs.add(row.id);
+		db.run(`DELETE FROM gists WHERE memory_id IN (${placeholders})`, ids);
 	}
 	if (tableExists(db, "graph_edges")) {
 		const refs = [...graphRefs];
@@ -221,6 +269,12 @@ function purgeWorkingMemoryArtifacts(db: BeamMemoryState["db"], ids: readonly st
 			...refs,
 		]);
 	}
+	db.run(`UPDATE episodic_memory SET binary_vector = NULL WHERE id IN (${placeholders})`, ids);
+	const roots = new Set(rootIds);
+	using deleteSummary = db.prepare("DELETE FROM episodic_memory WHERE id = ?");
+	for (const id of affected) {
+		if (!roots.has(id)) deleteSummary.run(id);
+	}
 }
 
 /**
@@ -229,7 +283,7 @@ function purgeWorkingMemoryArtifacts(db: BeamMemoryState["db"], ids: readonly st
  * restored or imported durable rows legitimately carry a NULL consolidation
  * marker with an old event timestamp (issue #4819). Rows flagged `IMPORTED`
  * are treated as durable and never trimmed, and trimmed rows cascade all linked
- * artifacts via `purgeWorkingMemoryArtifacts`.
+ * artifacts via `purgeMemoryArtifacts`.
  */
 function trimWorkingMemory(beam: BeamMemoryState): void {
 	const limit = beam.config.workingMemoryLimit;
@@ -263,7 +317,7 @@ function trimWorkingMemory(beam: BeamMemoryState): void {
 			...ids,
 			beam.sessionId,
 		]);
-		purgeWorkingMemoryArtifacts(beam.db, ids);
+		purgeMemoryArtifacts(beam.db, ids);
 	});
 }
 
@@ -313,10 +367,15 @@ function proactiveLinkIfEnabled(
  */
 async function runFactExtraction(beam: BeamMemoryState, memoryId: string, content: string): Promise<void> {
 	try {
+		const source = captureMemorySource(beam, memoryId);
+		if (source === null) return;
 		const extracted = await extractFactCategoriesSafe(content);
 		if (countExtractedFactCategories(extracted) === 0) return;
-		storeExtractedFactCategories(beam, extracted, 0, memoryId);
-		invalidateCaches(beam);
+		transaction(beam.db, () => {
+			if (!memorySourceUnchanged(beam, source)) return;
+			storeExtractedFactCategories(beam, extracted, 0, memoryId);
+			invalidateCaches(beam);
+		});
 	} catch {
 		// Background fact extraction is best-effort and never surfaces to the caller.
 	}
@@ -609,6 +668,8 @@ export function remember(beam: BeamMemoryState, content: string, options: StoreR
 		Boolean(options.extractEntities ?? options.extract_entities),
 	);
 	trimWorkingMemory(beam);
+	scheduleEmbedding(beam, [{ memoryId, content: embedText }]);
+	if (options.extract === true) scheduleFactExtraction(beam, memoryId, extractionSource);
 	emitEvent(beam, "MEMORY_ADDED", {
 		memoryId,
 		content,
@@ -616,8 +677,6 @@ export function remember(beam: BeamMemoryState, content: string, options: StoreR
 		importance,
 		metadata: metadata ?? undefined,
 	});
-	scheduleEmbedding(beam, [{ memoryId, content: embedText }]);
-	if (options.extract === true) scheduleFactExtraction(beam, memoryId, extractionSource);
 	invalidateCaches(beam);
 	return memoryId;
 }
@@ -672,6 +731,9 @@ export function rememberBatch(
 			);
 			resyncFtsWorking(beam.db, memoryId);
 			addTemporalAnnotations(beam, memoryId, itemTimestamp, source);
+			if (item.extract === true || options.extract === true) {
+				scheduleFactExtraction(beam, memoryId, item.extractText ?? storeItem.extract_text ?? item.content);
+			}
 			emitEvent(beam, "MEMORY_ADDED", {
 				memoryId,
 				content: item.content,
@@ -693,12 +755,6 @@ export function rememberBatch(
 		});
 	});
 	scheduleEmbedding(beam, embeddingItems);
-	items.forEach((item, index) => {
-		const id = ids[index];
-		if (id !== undefined && (item.extract === true || options.extract === true)) {
-			scheduleFactExtraction(beam, id, item.content);
-		}
-	});
 	return ids;
 }
 
@@ -721,24 +777,21 @@ export function getContext(beam: BeamMemoryState, limit = 10): Row[] {
 
 export function invalidate(beam: BeamMemoryState, memoryId: string, replacementId: string | null = null): boolean {
 	const now = toUtcIso();
-	const working = beam.db.run(
-		`
-			UPDATE working_memory
-			SET valid_until = ?, superseded_by = ?
-			WHERE id = ? AND (session_id = ? OR scope = 'global')
-		`,
-		[now, replacementId, memoryId, beam.sessionId],
-	);
-	if (working.changes > 0) return true;
-	const episodic = beam.db.run(
-		`
-			UPDATE episodic_memory
-			SET valid_until = ?, superseded_by = ?
-			WHERE id = ? AND (session_id = ? OR scope = 'global')
-		`,
-		[now, replacementId, memoryId, beam.sessionId],
-	);
-	return episodic.changes > 0;
+	const visibility = memoryVisibilityWhere(beam);
+	const changed = transaction(beam.db, () => {
+		for (const table of ["working_memory", "episodic_memory"]) {
+			const result = beam.db.run(
+				`UPDATE ${table} SET valid_until = ?, superseded_by = ? WHERE id = ? AND ${visibility.where}`,
+				[now, replacementId, memoryId, ...visibility.params],
+			);
+			if (result.changes === 0) continue;
+			purgeMemoryArtifacts(beam.db, [memoryId]);
+			return true;
+		}
+		return false;
+	});
+	if (changed) invalidateCaches(beam);
+	return changed;
 }
 
 export function getWorkingStats(
@@ -792,7 +845,7 @@ export function updateWorking(
 	const assignments: string[] = [];
 	const params: SQLQueryBindings[] = [];
 	if (content !== null) {
-		assignments.push("content = ?", "embed_text = NULL");
+		assignments.push("content = ?", "embed_text = NULL", "consolidated_at = NULL");
 		params.push(content);
 	}
 	if (importance !== null) {
@@ -800,27 +853,36 @@ export function updateWorking(
 		params.push(importance);
 	}
 	if (assignments.length === 0) return false;
-	params.push(memoryId, beam.sessionId);
-	const result = beam.db.run(
-		`UPDATE working_memory SET ${assignments.join(", ")} WHERE id = ? AND session_id = ?`,
-		params,
-	);
-	if (result.changes > 0) {
-		if (content !== null) resyncFtsWorking(beam.db, memoryId);
+	const visibility = memoryVisibilityWhere(beam);
+	params.push(memoryId, ...visibility.params);
+	const changed = transaction(beam.db, () => {
+		const result = beam.db.run(
+			`UPDATE working_memory SET ${assignments.join(", ")} WHERE id = ? AND ${visibility.where}`,
+			params,
+		);
+		if (result.changes === 0) return false;
+		if (content !== null) {
+			purgeMemoryArtifacts(beam.db, [memoryId]);
+			resyncFtsWorking(beam.db, memoryId);
+		}
+		return true;
+	});
+	if (changed) {
 		invalidateCaches(beam);
 		if (content !== null) scheduleEmbedding(beam, [{ memoryId, content }]);
 	}
-	return result.changes > 0;
+	return changed;
 }
 
 export function get(beam: BeamMemoryState, memoryId: string): Row | null {
+	const visibility = memoryVisibilityWhere(beam);
 	using workingStatement = beam.db.prepare(`
 		SELECT id, content, source, timestamp, session_id,
 			   importance, metadata_json, veracity, created_at
 		FROM working_memory
-		WHERE id = ?
+		WHERE id = ? AND ${visibility.where}
 	`);
-	const working = workingStatement.get(memoryId) as Row | null | undefined;
+	const working = workingStatement.get(memoryId, ...visibility.params) as Row | null | undefined;
 	if (working != null)
 		return {
 			...working,
@@ -832,9 +894,9 @@ export function get(beam: BeamMemoryState, memoryId: string): Row | null {
 		SELECT id, content, source, timestamp, session_id,
 			   importance, metadata_json, veracity, created_at
 		FROM episodic_memory
-		WHERE id = ? AND (session_id = ? OR scope = 'global')
+		WHERE id = ? AND ${visibility.where}
 	`);
-	const episodic = episodicStatement.get(memoryId, beam.sessionId) as Row | null | undefined;
+	const episodic = episodicStatement.get(memoryId, ...visibility.params) as Row | null | undefined;
 	if (episodic != null)
 		return {
 			...episodic,
@@ -885,14 +947,15 @@ function getFact(beam: BeamMemoryState, memoryId: string): Row | null {
 
 export function forgetWorking(beam: BeamMemoryState, memoryId: string): boolean {
 	let deleted = 0;
+	const visibility = memoryVisibilityWhere(beam);
 	transaction(beam.db, () => {
-		const result = beam.db.run("DELETE FROM working_memory WHERE id = ? AND session_id = ?", [
+		const result = beam.db.run(`DELETE FROM working_memory WHERE id = ? AND ${visibility.where}`, [
 			memoryId,
-			beam.sessionId,
+			...visibility.params,
 		]);
 		deleted = result.changes;
 		if (deleted > 0) {
-			purgeWorkingMemoryArtifacts(beam.db, [memoryId]);
+			purgeMemoryArtifacts(beam.db, [memoryId]);
 		}
 	});
 	if (deleted > 0) invalidateCaches(beam);
@@ -996,6 +1059,16 @@ export function importFromDict(beam: BeamMemoryState, data: Record<string, unkno
 	const oldToNewRowid = new Map<number, number>();
 
 	transaction(db, () => {
+		// Cascading a replaced source can remove an episode before its own import
+		// pass. Report that as replacement, not a newly inserted logical record.
+		const replacedEpisodes = new Set<string>();
+		if (force) {
+			using existingEpisode = db.prepare("SELECT 1 FROM episodic_memory WHERE id = ?");
+			for (const raw of Array.isArray(data.episodic_memory) ? data.episodic_memory : []) {
+				const id = String(jsonObject(raw).id ?? "");
+				if (id && existingEpisode.get(id) !== null) replacedEpisodes.add(id);
+			}
+		}
 		for (const raw of Array.isArray(data.working_memory) ? data.working_memory : []) {
 			const item = jsonObject(raw);
 			const id = String(item.id ?? "");
@@ -1008,7 +1081,7 @@ export function importFromDict(beam: BeamMemoryState, data: Record<string, unkno
 			}
 			if (exists) {
 				db.run("DELETE FROM working_memory WHERE id = ?", [id]);
-				purgeWorkingMemoryArtifacts(db, [id]);
+				purgeMemoryArtifacts(db, [id]);
 				stats.working_memory.overwritten++;
 			} else {
 				stats.working_memory.inserted++;
@@ -1064,18 +1137,11 @@ export function importFromDict(beam: BeamMemoryState, data: Record<string, unkno
 			}
 			using rowidStatement = db.prepare("SELECT rowid FROM episodic_memory WHERE id = ?");
 			if (exists) {
-				const existingRow = rowidStatement.get(id) as {
-					rowid: number;
-				} | null;
-				if (existingRow !== null && vecAvailable(db)) {
-					try {
-						db.run("DELETE FROM vec_episodes WHERE rowid = ?", [existingRow.rowid]);
-					} catch {
-						// sqlite-vec cleanup is best-effort; import correctness takes precedence.
-					}
-				}
+				purgeMemoryArtifacts(db, [id]);
 				db.run("DELETE FROM episodic_memory WHERE id = ?", [id]);
-				stats.episodic_memory.overwritten++;
+		}
+		if (exists || replacedEpisodes.has(id)) {
+			stats.episodic_memory.overwritten++;
 			} else {
 				stats.episodic_memory.inserted++;
 			}

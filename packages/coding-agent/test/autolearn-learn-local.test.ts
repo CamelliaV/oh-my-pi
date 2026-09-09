@@ -341,6 +341,7 @@ describe("learn tool (local backend)", () => {
 			getSessionFile: () => null,
 			getSessionSpawns: () => "*",
 			settings,
+			getMemoryContext: () => ({ agentDir, cwd: projCwd, session: { settings } as AgentSession }),
 		};
 	}
 

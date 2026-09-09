@@ -392,6 +392,17 @@ export function initBeam(db: Database): void {
 		addColumnIfMissing(db, table, "event_date_precision", "TEXT DEFAULT 'unknown'");
 		addColumnIfMissing(db, table, "temporal_tags", "TEXT DEFAULT '[]'");
 		addColumnIfMissing(db, table, "corrected_by", "INTEGER DEFAULT NULL");
+		// An opaque generation rejects late async writes even after content ABA or an id's reuse.
+		addColumnIfMissing(db, table, "content_revision", "TEXT NOT NULL DEFAULT ''");
+		const contentColumns = table === "working_memory" ? "content, embed_text" : "content";
+		runAll(db, [
+			`CREATE TRIGGER IF NOT EXISTS ${table}_revision_insert AFTER INSERT ON ${table} BEGIN
+				UPDATE ${table} SET content_revision = lower(hex(randomblob(16))) WHERE id = NEW.id;
+			END`,
+			`CREATE TRIGGER IF NOT EXISTS ${table}_revision_update AFTER UPDATE OF ${contentColumns}, valid_until, superseded_by ON ${table} BEGIN
+				UPDATE ${table} SET content_revision = lower(hex(randomblob(16))) WHERE id = NEW.id;
+			END`,
+		]);
 	}
 	runAll(db, [
 		"CREATE INDEX IF NOT EXISTS idx_wm_event_date ON working_memory(event_date)",

@@ -6,7 +6,7 @@ import {
 	saveLearnedLesson,
 	startMemoryStartupTask,
 } from "../memories";
-import type { MemoryBackend } from "./types";
+import { type MemoryBackend, memoryBackendCapabilities } from "./types";
 
 /**
  * Wraps the existing `memories/` module as a `MemoryBackend`.
@@ -18,6 +18,7 @@ import type { MemoryBackend } from "./types";
  */
 export const localBackend: MemoryBackend = {
 	id: "local",
+	capabilities: memoryBackendCapabilities.local,
 	start(options) {
 		startMemoryStartupTask(options);
 	},
@@ -32,6 +33,10 @@ export const localBackend: MemoryBackend = {
 		enqueueMemoryConsolidation(agentDir, cwd);
 	},
 	async save(context, input) {
+		if (input.scope !== undefined)
+			throw new Error(
+				"The local backend does not support per-save scope; its configured project scope is unchanged.",
+			);
 		return saveLearnedLesson(context.agentDir, context.cwd, input);
 	},
 	async status() {

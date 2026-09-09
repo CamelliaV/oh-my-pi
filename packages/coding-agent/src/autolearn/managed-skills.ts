@@ -7,10 +7,12 @@
  * surfaced like normal skills, but every write here is confined to
  * `getManagedSkillsDir()` — auto-management can never touch authored skills.
  */
+import { createHash } from "node:crypto";
 import { constants as fsConstants, type Stats } from "node:fs";
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
 import { getAgentDir, isEnoent } from "@oh-my-pi/pi-utils";
+import { withFileLock } from "@oh-my-pi/pi-utils/file-lock";
 import { YAML } from "bun";
 
 /** Provider id stamped on discovered managed skills (distinguishes them from authored). */
@@ -72,20 +74,33 @@ export function sanitizeManagedDescription(raw: string): string {
  * Serialize the minimal `name`/`description` frontmatter block via the repo's
  * YAML helper (round-trips through `parseFrontmatter`).
  */
-export function toSkillFrontmatter(name: string, description: string): string {
+export function toSkillFrontmatter(name: string, description: string, project?: string): string {
 	const frontmatter = YAML.stringify(
-		{ name, description: sanitizeManagedDescription(description) },
+		{
+			name,
+			description: sanitizeManagedDescription(description),
+			...(project ? { project: path.resolve(project) } : {}),
+		},
 		null,
 		2,
 	).trimEnd();
 	return `---\n${frontmatter}\n---\n`;
 }
 
-export interface WriteManagedSkillInput {
+export interface ManagedSkillMutationOptions {
+	/** Explicit root for isolated callers; omitted by the normal session tools. */
+	agentDir?: string;
+	/** SHA-256 of the published file; a mismatch refuses update or deletion. */
+	expectedHash?: string;
+}
+
+export interface WriteManagedSkillInput extends ManagedSkillMutationOptions {
 	action: "create" | "update";
 	name: string;
 	description: string;
 	body: string;
+	/** Omit for global skills; project-scoped skills are hidden outside this cwd. */
+	project?: string;
 }
 
 /**
@@ -99,7 +114,10 @@ export interface WriteManagedSkillInput {
 const skillMutationChains = new Map<string, Promise<unknown>>();
 function serializeSkillMutation<T>(name: string, op: () => Promise<T>): Promise<T> {
 	const prev = skillMutationChains.get(name) ?? Promise.resolve();
-	const run = prev.then(op, op);
+	const run = prev.then(
+		() => withFileLock(name, op),
+		() => withFileLock(name, op),
+	);
 	const guarded = run.catch(() => {});
 	skillMutationChains.set(name, guarded);
 	void guarded.finally(() => {
@@ -114,8 +132,8 @@ function serializeSkillMutation<T>(name: string, op: () => Promise<T>): Promise<
  * valid name write/delete outside the isolated directory (e.g. onto authored
  * skills). Checked before composing any child path.
  */
-async function assertManagedRootSafe(): Promise<void> {
-	const rootStat = await fs.lstat(getManagedSkillsDir()).catch(err => {
+async function assertManagedRootSafe(root: string): Promise<void> {
+	const rootStat = await fs.lstat(root).catch(err => {
 		if (isEnoent(err)) return null;
 		throw err;
 	});
@@ -124,7 +142,7 @@ async function assertManagedRootSafe(): Promise<void> {
 	}
 }
 
-const UPDATE_FILE_OPEN_FLAGS = fsConstants.O_WRONLY | fsConstants.O_NOFOLLOW;
+const UPDATE_FILE_OPEN_FLAGS = fsConstants.O_RDWR | fsConstants.O_NOFOLLOW;
 
 function assertManagedSkillFileSafeForUpdate(name: string, fileStat: Stats): void {
 	if (!fileStat.isFile()) {
@@ -162,7 +180,10 @@ export async function writeManagedSkill(input: WriteManagedSkillInput): Promise<
 	if (!body) {
 		throw new Error(`Managed skill "${name}" needs a non-empty body.`);
 	}
-	const content = `${toSkillFrontmatter(name, description)}\n${body}\n`;
+	if (input.action === "create" && input.expectedHash !== undefined) {
+		throw new Error("expectedHash requires action update.");
+	}
+	const content = `${toSkillFrontmatter(name, description, input.project)}\n${body}\n`;
 	// Cap the UTF-8 byte size of the FINAL file (body + description + frontmatter),
 	// not the UTF-16 code-unit length of the body alone.
 	const bytes = Buffer.byteLength(content, "utf8");
@@ -171,9 +192,12 @@ export async function writeManagedSkill(input: WriteManagedSkillInput): Promise<
 			`Managed skill is ${bytes} bytes; the limit is ${MAX_MANAGED_SKILL_BYTES}. Trim the body or description.`,
 		);
 	}
-	return serializeSkillMutation(name, async () => {
-		await assertManagedRootSafe();
-		const dir = path.join(getManagedSkillsDir(), name);
+	const root = getManagedSkillsDir(input.agentDir);
+	await assertManagedRootSafe(root);
+	await fs.mkdir(root, { recursive: true });
+	const dir = path.join(root, name);
+	return serializeSkillMutation(dir, async () => {
+		await assertManagedRootSafe(root);
 		const file = path.join(dir, "SKILL.md");
 		// Reject a symlinked skill directory: an intermediate symlink would let the
 		// write escape the isolated managed root. lstat does not follow the final
@@ -220,8 +244,22 @@ export async function writeManagedSkill(input: WriteManagedSkillInput): Promise<
 		try {
 			const openStat = await handle.stat();
 			assertManagedSkillFileSafeForUpdate(name, openStat);
+			if (input.expectedHash !== undefined) {
+				const currentHash = createHash("sha256")
+					.update(await handle.readFile())
+					.digest("hex");
+				if (currentHash !== input.expectedHash) {
+					throw new Error(`Managed skill "${name}" changed since publication; refusing to overwrite it.`);
+				}
+			}
 			await handle.truncate(0);
-			await handle.writeFile(content);
+			const bytes = Buffer.from(content);
+			let offset = 0;
+			while (offset < bytes.length) {
+				const { bytesWritten } = await handle.write(bytes, offset, bytes.length - offset, offset);
+				if (bytesWritten === 0) throw new Error(`Unable to finish writing managed skill "${name}".`);
+				offset += bytesWritten;
+			}
 		} finally {
 			await handle.close();
 		}
@@ -230,11 +268,14 @@ export async function writeManagedSkill(input: WriteManagedSkillInput): Promise<
 }
 
 /** Delete a managed skill directory. Throws when it does not exist. */
-export async function deleteManagedSkill(name: string): Promise<void> {
+export async function deleteManagedSkill(name: string, options: ManagedSkillMutationOptions = {}): Promise<void> {
 	const safe = sanitizeSkillName(name);
-	await serializeSkillMutation(safe, async () => {
-		await assertManagedRootSafe();
-		const dir = path.join(getManagedSkillsDir(), safe);
+	const root = getManagedSkillsDir(options.agentDir);
+	await assertManagedRootSafe(root);
+	await fs.mkdir(root, { recursive: true });
+	const dir = path.join(root, safe);
+	await serializeSkillMutation(dir, async () => {
+		await assertManagedRootSafe(root);
 		// Refuse to follow a symlinked skill directory (rm would delete the target).
 		const dirStat = await fs.lstat(dir).catch(err => {
 			if (isEnoent(err)) return null;
@@ -242,6 +283,28 @@ export async function deleteManagedSkill(name: string): Promise<void> {
 		});
 		if (dirStat?.isSymbolicLink()) {
 			throw new Error(`Managed skill "${safe}" is a symlink; refusing to delete outside the managed directory.`);
+		}
+		if (options.expectedHash !== undefined) {
+			const file = path.join(dir, "SKILL.md");
+			const handle = await fs.open(file, fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW);
+			try {
+				assertManagedSkillFileSafeForUpdate(safe, await handle.stat());
+				const currentHash = createHash("sha256")
+					.update(await handle.readFile())
+					.digest("hex");
+				if (currentHash !== options.expectedHash) {
+					throw new Error(`Managed skill "${safe}" changed since publication; refusing to delete it.`);
+				}
+			} finally {
+				await handle.close();
+			}
+			// A hash owns SKILL.md, not additional files the user may have added.
+			await fs.unlink(file);
+			await fs.rmdir(dir).catch(error => {
+				const code = (error as NodeJS.ErrnoException).code;
+				if (code !== "ENOTEMPTY" && code !== "EEXIST") throw error;
+			});
+			return;
 		}
 		try {
 			await fs.rm(dir, { recursive: true });

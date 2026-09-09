@@ -41,6 +41,58 @@ export interface WorkingFtsRankResult {
 	rank: number;
 }
 
+/** Owner access plus explicitly shared rows in the active bank channel. */
+export function memoryVisibilityWhere(
+	beam: Pick<BeamMemoryState, "sessionId" | "channelId">,
+	tableAlias = "",
+	channelId = beam.channelId,
+): { where: string; params: string[] } {
+	const prefix = tableAlias.length === 0 ? "" : `${tableAlias}.`;
+	const owner = `${prefix}session_id = ? OR ${prefix}scope = 'global'`;
+	return channelId.length > 0
+		? {
+				where: `(${owner} OR (${prefix}scope IN ('bank', 'channel') AND ${prefix}channel_id = ?))`,
+				params: [beam.sessionId, channelId],
+			}
+		: { where: `(${owner})`, params: [beam.sessionId] };
+}
+
+/** Capture persisted provenance, not extractText (which may be a projection). */
+export interface MemorySourceSnapshot {
+	readonly memoryId: string;
+	readonly store: "working_memory" | "episodic_memory";
+	readonly embedText: string;
+	readonly contentRevision: string;
+}
+
+export function captureMemorySource(beam: BeamMemoryState, memoryId: string): MemorySourceSnapshot | null {
+	const now = new Date().toISOString();
+	return beam.db
+		.query(`
+		SELECT id AS memoryId, 'working_memory' AS store,
+			COALESCE(embed_text, content) AS embedText, content_revision AS contentRevision
+		FROM working_memory WHERE id = ? AND superseded_by IS NULL AND (valid_until IS NULL OR valid_until > ?)
+		UNION ALL
+		SELECT id AS memoryId, 'episodic_memory' AS store,
+			content AS embedText, content_revision AS contentRevision
+		FROM episodic_memory WHERE id = ? AND superseded_by IS NULL AND (valid_until IS NULL OR valid_until > ?)
+		LIMIT 1
+	`)
+		.get(memoryId, now, memoryId, now) as MemorySourceSnapshot | null;
+}
+
+export function memorySourceUnchanged(beam: BeamMemoryState, source: MemorySourceSnapshot): boolean {
+	return (
+		beam.db
+			.query(`
+		SELECT 1 FROM ${source.store}
+		WHERE id = ? AND content_revision = ?
+			AND superseded_by IS NULL AND (valid_until IS NULL OR valid_until > ?)
+	`)
+			.get(source.memoryId, source.contentRevision, new Date().toISOString()) !== null
+	);
+}
+
 const DEFAULT_RECENCY_HALFLIFE_HOURS = 72;
 const DEFAULT_WEIGHTS: HybridWeights = [0.5, 0.3, 0.2];
 const TS_CACHE_MAX = 2000;
@@ -786,7 +838,11 @@ export interface EmbedItem {
 	readonly content: string;
 }
 
-async function runEmbedding(beam: BeamMemoryState, items: readonly EmbedItem[]): Promise<void> {
+interface PendingEmbedItem extends EmbedItem {
+	readonly source: MemorySourceSnapshot;
+}
+
+async function runEmbedding(beam: BeamMemoryState, items: readonly PendingEmbedItem[]): Promise<void> {
 	try {
 		const matrix = await embed(items.map(item => item.content));
 		if (matrix === null) return;
@@ -794,11 +850,11 @@ async function runEmbedding(beam: BeamMemoryState, items: readonly EmbedItem[]):
 		using insertEmbedding = beam.db.prepare(
 			"INSERT OR REPLACE INTO memory_embeddings(memory_id, embedding_json, model) VALUES (?, ?, ?)",
 		);
-		const insertMany = beam.db.transaction((rows: readonly EmbedItem[]) => {
+		const insertMany = beam.db.transaction((rows: readonly PendingEmbedItem[]) => {
 			for (let i = 0; i < rows.length; i += 1) {
 				const vector = matrix[i];
 				const item = rows[i];
-				if (vector === undefined || item === undefined) continue;
+				if (vector === undefined || item === undefined || !memorySourceUnchanged(beam, item.source)) continue;
 				insertEmbedding.run(item.memoryId, JSON.stringify(Array.from(vector)), model);
 			}
 		});
@@ -828,7 +884,12 @@ async function runEmbedding(beam: BeamMemoryState, items: readonly EmbedItem[]):
  * set by `Mnemopi.#withRuntimeOptions` has already exited by the time the task runs.
  */
 export function scheduleEmbedding(beam: BeamMemoryState, items: readonly EmbedItem[]): void {
-	const cleaned = items.filter(item => item.content.trim() !== "");
+	const cleaned: PendingEmbedItem[] = [];
+	for (const item of items) {
+		if (item.content.trim() === "") continue;
+		const source = captureMemorySource(beam, item.memoryId);
+		if (source !== null && source.embedText === item.content) cleaned.push({ ...item, source });
+	}
 	if (cleaned.length === 0) return;
 	const runtimeOptions = getMnemopiRuntimeOptions();
 	const task = withMnemopiRuntimeOptions(runtimeOptions, () => runEmbedding(beam, cleaned));

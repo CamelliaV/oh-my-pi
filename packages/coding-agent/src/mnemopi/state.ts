@@ -15,9 +15,11 @@ import {
 	truncateRecallQuery,
 } from "../hindsight/content";
 import { extractMessages } from "../hindsight/transcript";
+import { redactSecretFields, redactSecrets } from "../secrets/redact";
 import type { AgentSession, AgentSessionEvent } from "../session/agent-session";
 import type { MnemopiBackendConfig, MnemopiScoping } from "./config";
 import { mnemopiEmbedClient } from "./embed-client";
+import { selectRecallContext } from "./recall-context";
 
 // The mnemopi package pulls the embeddings stack; keep it off the CLI startup
 // module graph by loading it lazily at the async boundaries that need it.
@@ -226,7 +228,6 @@ export interface MnemopiSessionStateOptions {
 	session: AgentSession;
 	aliasOf?: MnemopiSessionState;
 	lastRetainedTurn?: number;
-	hasRecalledForFirstTurn?: boolean;
 }
 
 export class MnemopiSessionState {
@@ -238,10 +239,11 @@ export class MnemopiSessionState {
 	readonly aliasOf?: MnemopiSessionState;
 	private readonly scoped: MnemopiScopedResources;
 	lastRetainedTurn: number;
-	hasRecalledForFirstTurn: boolean;
 	lastRecallSnippet?: string;
 	unsubscribe?: () => void;
 	#retentionCursorLoaded = false;
+	#lastAutoRecallPrompt?: string;
+	#recallGeneration = 0;
 
 	constructor(options: MnemopiSessionStateOptions) {
 		this.sessionId = options.sessionId;
@@ -249,7 +251,6 @@ export class MnemopiSessionState {
 		this.session = options.session;
 		this.aliasOf = options.aliasOf;
 		this.lastRetainedTurn = options.lastRetainedTurn ?? 0;
-		this.hasRecalledForFirstTurn = options.hasRecalledForFirstTurn ?? false;
 		this.scoped = options.aliasOf?.scoped ?? createScopedResources(options.config);
 		this.memory = this.scoped.retain.memory;
 		this.globalMemory = this.scoped.global?.memory;
@@ -258,14 +259,14 @@ export class MnemopiSessionState {
 	setSessionId(sessionId: string): void {
 		if (this.sessionId === sessionId) return;
 		this.sessionId = sessionId;
-		this.lastRetainedTurn = 0;
-		this.#retentionCursorLoaded = false;
+		this.resetConversationTracking();
 	}
 
 	resetConversationTracking(): void {
 		this.lastRetainedTurn = 0;
 		this.#retentionCursorLoaded = false;
-		this.hasRecalledForFirstTurn = false;
+		this.#lastAutoRecallPrompt = undefined;
+		this.#recallGeneration++;
 		this.lastRecallSnippet = undefined;
 	}
 
@@ -350,7 +351,8 @@ export class MnemopiSessionState {
 				continue;
 			}
 			if (op === "update") {
-				if (target.memory.update(id, options.content ?? null, options.importance ?? null)) {
+				const content = options.content == null ? null : redactSecrets(options.content, this.session.obfuscator);
+				if (target.memory.update(id, content, options.importance ?? null)) {
 					return { status: "updated", ...resultContext };
 				}
 				ineligible ??= { status: "not_found", ...resultContext };
@@ -383,6 +385,7 @@ export class MnemopiSessionState {
 	}
 
 	async collectScopedRecallResults(query: string): Promise<RecallResult[]> {
+		query = redactSecrets(query, this.session.obfuscator);
 		const merged: RecallResult[] = [];
 		const byId = new Map<string, number>();
 		const byContent = new Map<string, number>();
@@ -405,7 +408,7 @@ export class MnemopiSessionState {
 					});
 					targetSucceeded = true;
 					for (const result of results) {
-						mergeRecallResult(merged, byId, byContent, result);
+						mergeRecallResult(merged, byId, byContent, redactSecretFields(result, this.session.obfuscator));
 					}
 				}
 			} catch (error) {
@@ -413,7 +416,7 @@ export class MnemopiSessionState {
 				failures.push({ bank: target.bank, error: failure });
 				logger.warn("Mnemopi: scoped recall target failed", {
 					bank: target.bank,
-					error: failure.message,
+					error: redactSecrets(failure.message, this.session.obfuscator),
 				});
 			}
 			if (targetSucceeded) successfulTargets++;
@@ -449,11 +452,12 @@ export class MnemopiSessionState {
 
 	rememberInScope(memory: MnemopiRememberInput, options: MnemopiRememberOptions = {}): string | undefined {
 		try {
-			return this.scoped.retain.memory.remember(memory, options);
+			const safe = redactSecretFields({ memory, options }, this.session.obfuscator);
+			return this.scoped.retain.memory.remember(safe.memory, safe.options);
 		} catch (error) {
 			logger.warn("Mnemopi: retain failed", {
 				bank: this.scoped.retain.bank,
-				error: String(error),
+				error: redactSecrets(String(error), this.session.obfuscator),
 			});
 			return undefined;
 		}
@@ -463,24 +467,44 @@ export class MnemopiSessionState {
 		return this.rememberInScope(memory, options);
 	}
 
-	async recallForContext(query: string): Promise<string | undefined> {
+	async recallForContext(query: string, question = query): Promise<string | undefined> {
 		const results = await this.collectScopedRecallResults(query);
-		if (results.length === 0) return undefined;
-		return formatRecallBlock(results);
+		const selected = await selectRecallContext(
+			question,
+			results,
+			this.memory.runtimeOptions,
+			this.session.obfuscator,
+		);
+		if (selected.length === 0) return undefined;
+		return formatRecallBlock(selected);
 	}
 
 	async beforeAgentStartPrompt(promptText: string): Promise<string | undefined> {
-		if (!this.config.autoRecall || this.hasRecalledForFirstTurn) return undefined;
+		if (!this.config.autoRecall || this.aliasOf) return undefined;
 		const latestPrompt = promptText.trim();
 		if (!latestPrompt) return undefined;
+		const generation = ++this.#recallGeneration;
+		this.#lastAutoRecallPrompt = latestPrompt;
+		const previous = this.lastRecallSnippet;
 		const history = extractMessages(this.session.sessionManager);
 		const queryMessages = [...history, { role: "user" as const, content: latestPrompt }];
 		const query = composeRecallQuery(latestPrompt, queryMessages, this.config.recallContextTurns);
 		const truncated = truncateRecallQuery(query, latestPrompt, this.config.recallMaxQueryChars);
-		const context = await this.recallForContext(truncated);
-		this.hasRecalledForFirstTurn = true;
-		if (!context) return undefined;
-		this.lastRecallSnippet = context;
+		let context: string | undefined;
+		try {
+			context = await this.recallForContext(truncated, latestPrompt);
+		} catch (error) {
+			if (generation === this.#recallGeneration) this.#lastAutoRecallPrompt = undefined;
+			throw error;
+		} finally {
+			if (generation === this.#recallGeneration) {
+				this.lastRecallSnippet = context;
+				// An empty result must remove the previous turn's promoted snippet;
+				// the caller only refreshes the base prompt for nonempty injections.
+				if (previous && !context) await this.session.refreshBaseSystemPrompt();
+			}
+		}
+		if (generation !== this.#recallGeneration || context === previous) return undefined;
 		return context;
 	}
 
@@ -490,7 +514,7 @@ export class MnemopiSessionState {
 		if (!lastUser) return undefined;
 		const query = composeRecallQuery(lastUser.content, flat, this.config.recallContextTurns);
 		const truncated = truncateRecallQuery(query, lastUser.content, this.config.recallMaxQueryChars);
-		return await this.recallForContext(truncated);
+		return await this.recallForContext(truncated, lastUser.content);
 	}
 
 	async maybeRetainOnAgentEnd(_messages: AgentMessage[]): Promise<void> {
@@ -597,29 +621,18 @@ export class MnemopiSessionState {
 	}
 
 	async maybeRecallOnAgentStart(): Promise<void> {
-		if (!this.config.autoRecall || this.hasRecalledForFirstTurn) return;
+		if (!this.config.autoRecall || this.aliasOf) return;
 		const messages = extractMessages(this.session.sessionManager);
 		const lastUser = messages.findLast(message => message.role === "user");
-		if (!lastUser) return;
-		const query = composeRecallQuery(lastUser.content, messages, this.config.recallContextTurns);
-		const truncated = truncateRecallQuery(query, lastUser.content, this.config.recallMaxQueryChars);
-		let context: string | undefined;
+		if (!lastUser || this.#lastAutoRecallPrompt === lastUser.content.trim()) return;
 		try {
-			context = await this.recallForContext(truncated);
+			const context = await this.beforeAgentStartPrompt(lastUser.content);
+			if (context) await this.session.refreshBaseSystemPrompt();
 		} catch (error) {
 			logger.warn("Mnemopi: auto-recall failed", {
 				bank: this.config.bank,
-				error: toError(error).message,
+				error: redactSecrets(toError(error).message, this.session.obfuscator),
 			});
-			return;
-		}
-		this.hasRecalledForFirstTurn = true;
-		if (!context) return;
-		this.lastRecallSnippet = context;
-		try {
-			await this.session.refreshBaseSystemPrompt();
-		} catch (error) {
-			if (this.config.debug) logger.debug("Mnemopi: prompt refresh after recall failed", { error: String(error) });
 		}
 	}
 

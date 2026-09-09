@@ -4529,6 +4529,7 @@ export class AgentSession {
 		}
 		const advisorRecorderClosed = this.#advisors.recorderClosed();
 		const results = await Promise.allSettled([
+			this.#memory.disposeBackendHook(),
 			this.#disposeOwnedAsyncJobs(),
 			this.#eval.disposeKernels(),
 			this.#releaseOwnedBrowserTabs(this.sessionManager.getSessionId()),

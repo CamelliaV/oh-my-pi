@@ -1,10 +1,6 @@
 /**
- * Contract tests for the three shared memory tool factories.
- *
- * These exercise the public tool surface (factory gating + execute path) by
- * spying on `HindsightApi.prototype.{retain, recall, reflect}` and stubbing
- * Hindsight state on the fake ToolSession. We deliberately do not boot a real
- * session — these tools only need a populated state accessor and Settings.
+ * Native memory routing contracts. ToolSession supplies the owning agent context;
+ * Hindsight uses isolated client spies and Mnemopi uses temporary SQLite banks.
  */
 
 import { Database } from "bun:sqlite";
@@ -15,6 +11,7 @@ import { resetSettingsForTest, Settings } from "@oh-my-pi/pi-coding-agent/config
 import { HindsightApi } from "@oh-my-pi/pi-coding-agent/hindsight/client";
 import type { HindsightConfig } from "@oh-my-pi/pi-coding-agent/hindsight/config";
 import { HindsightSessionState } from "@oh-my-pi/pi-coding-agent/hindsight/state";
+import { createToolMemoryRuntimeContext } from "@oh-my-pi/pi-coding-agent/memory-backend/runtime";
 import { mnemopiBackend } from "@oh-my-pi/pi-coding-agent/mnemopi/backend";
 import { loadMnemopiConfig, type MnemopiBackendConfig } from "@oh-my-pi/pi-coding-agent/mnemopi/config";
 import {
@@ -25,6 +22,7 @@ import {
 	MnemopiSessionState,
 	setMnemopiSessionState,
 } from "@oh-my-pi/pi-coding-agent/mnemopi/state";
+import { SecretObfuscator } from "@oh-my-pi/pi-coding-agent/secrets/obfuscator";
 import type { AgentSessionEventListener } from "@oh-my-pi/pi-coding-agent/session/agent-session";
 import type { ToolSession } from "@oh-my-pi/pi-coding-agent/tools/index";
 import { MemoryEditTool } from "@oh-my-pi/pi-coding-agent/tools/memory-edit";
@@ -78,6 +76,10 @@ function makeConfig(overrides: Partial<HindsightConfig> = {}): HindsightConfig {
 }
 
 function makeSession(settings: Settings, sessionId: string | null = TEST_SESSION_ID): ToolSession {
+	const state = sessionId === TEST_SESSION_ID ? registeredMnemopiState : undefined;
+	const hindsight = sessionId === TEST_SESSION_ID ? registeredState : undefined;
+	const owner = { settings, getHindsightSessionState: () => hindsight } as never;
+	if (state) setMnemopiSessionState(owner, state);
 	return {
 		cwd: "/tmp",
 		hasUI: false,
@@ -85,8 +87,7 @@ function makeSession(settings: Settings, sessionId: string | null = TEST_SESSION
 		getSessionFile: () => null,
 		getSessionId: () => sessionId,
 		getSessionSpawns: () => null,
-		getHindsightSessionState: () => (sessionId === TEST_SESSION_ID ? registeredState : undefined),
-		getMnemopiSessionState: () => (sessionId === TEST_SESSION_ID ? registeredMnemopiState : undefined),
+		getMemoryContext: () => ({ agentDir: tempDbDir?.path() ?? "/tmp/agent", cwd: "/tmp", session: owner }),
 	} as unknown as ToolSession;
 }
 
@@ -161,6 +162,8 @@ interface RegisterMnemopiStateOptions {
 	sessionId?: string;
 	entries?: () => unknown[];
 	listeners?: Set<AgentSessionEventListener>;
+	obfuscator?: SecretObfuscator;
+	refreshBaseSystemPrompt?: () => Promise<void>;
 }
 
 function registerMnemopiState(
@@ -173,6 +176,8 @@ function registerMnemopiState(
 		sessionId,
 		config: finalConfig,
 		session: {
+			obfuscator: options.obfuscator,
+			refreshBaseSystemPrompt: options.refreshBaseSystemPrompt ?? (async () => {}),
 			sessionId,
 			settings: Settings.isolated({
 				"memory.backend": "mnemopi",
@@ -327,6 +332,28 @@ describe("retain.execute", () => {
 		expect(registeredState?.retainQueue.depth).toBe(0);
 	});
 
+	it("redacts both queued and automatic retention payloads before the remote API", async () => {
+		const settings = Settings.isolated({ "memory.backend": "hindsight" });
+		const client = new HindsightApi({ baseUrl: "http://localhost:8888" });
+		const secret = "KNOWNPRIVATECREDENTIAL123";
+		const obfuscator = new SecretObfuscator([{ type: "plain", content: secret }]);
+		const batch = vi.spyOn(HindsightApi.prototype, "retainBatch").mockResolvedValue({} as never);
+		const retain = vi.spyOn(HindsightApi.prototype, "retain").mockResolvedValue({} as never);
+		registerState(client, settings, { sessionOverrides: { obfuscator } });
+		registeredState!.config.retainContext = `password=${secret}`;
+		await MemoryRetainTool.createIf(makeSession(settings))!.execute("private-queue", {
+			items: [{ content: `Region west, credential ${secret}` }],
+		});
+		await registeredState!.flushRetainQueue();
+		await registeredState!.retainSession([{ role: "user", content: `Region west, credential ${secret}` }]);
+		expect(batch.mock.calls[0]?.[1][0]?.content).toContain("Region west");
+		expect(retain.mock.calls[0]?.[1]).toContain("Region west");
+		expect(JSON.stringify({ batch: batch.mock.calls, retain: retain.mock.calls })).not.toContain(secret);
+		expect(JSON.stringify({ batch: batch.mock.calls, retain: retain.mock.calls })).not.toContain(
+			obfuscator.obfuscate(secret),
+		);
+	});
+
 	it("emits a UI-only warning notice when the batch flush fails", async () => {
 		const settings = Settings.isolated({ "memory.backend": "hindsight" });
 		const client = new HindsightApi({ baseUrl: "http://localhost:8888" });
@@ -389,6 +416,50 @@ describe("retain.execute (Mnemopi backend)", () => {
 		expect(text).toContain("user prefers tabs");
 	});
 
+	it("rejects a failed retain instead of reporting a stored memory", async () => {
+		const state = registerMnemopiState();
+		const tool = MemoryRetainTool.createIf(makeSession(state.session.settings))!;
+		state.memory.db.exec(
+			"CREATE TRIGGER reject_test_retain BEFORE INSERT ON working_memory BEGIN SELECT RAISE(FAIL, 'test store unavailable'); END",
+		);
+		await expect(tool.execute("failed-retain", { items: [{ content: "must not claim success" }] })).rejects.toThrow();
+		expect(state.memory.db.query("SELECT content FROM working_memory").all()).toEqual([]);
+	});
+
+	it("rejects explicit sharing scope without writing to the configured bank", async () => {
+		const state = registerMnemopiState();
+		const tool = MemoryRetainTool.createIf(makeSession(state.session.settings))!;
+		await expect(
+			tool.execute("unsupported-scope", { items: [{ content: "private project detail", scope: "global" }] }),
+		).rejects.toThrow(/scope/i);
+		expect(state.memory.db.query("SELECT content FROM working_memory").all()).toEqual([]);
+	});
+
+	it("keeps a retained tool bound to its owner after another session opens", async () => {
+		const first = registerMnemopiState(makeMnemopiConfig({ scoping: "per-project", bank: "owner-first" }));
+		const firstSession = makeSession(first.session.settings);
+		const firstTool = MemoryRetainTool.createIf(firstSession)!;
+		const second = registerMnemopiState(makeMnemopiConfig({ scoping: "per-project", bank: "owner-second" }));
+		try {
+			await firstTool.execute("owner-retain", { items: [{ content: "first owner keeps this memory" }] });
+			const rows = first.memory.db.query("SELECT id, content FROM working_memory").all() as {
+				id: string;
+				content: string;
+			}[];
+			expect(rows.map(row => row.content)).toEqual(["first owner keeps this memory"]);
+			expect(second.memory.db.query("SELECT content FROM working_memory").all()).toEqual([]);
+			const runtime = createToolMemoryRuntimeContext(firstSession);
+			await expect(runtime.read(rows[0].id)).resolves.toMatchObject({
+				status: "found",
+				content: "first owner keeps this memory",
+			});
+			await runtime.edit({ op: "forget", id: rows[0].id });
+			await expect(runtime.read(rows[0].id)).resolves.toMatchObject({ status: "not_found" });
+		} finally {
+			await first.dispose();
+		}
+	});
+
 	it("stores multiple memories and returns correct count", async () => {
 		const settings = Settings.isolated({ "memory.backend": "mnemopi" });
 		registerMnemopiState();
@@ -438,6 +509,109 @@ describe("retain.execute (Mnemopi backend)", () => {
 		});
 		expect((alphaRecall.content[0] as { text: string }).text).toContain("alpha uses tabs");
 	});
+
+	it("redacts retain content and context before persistence, embeddings, and fact extraction", async () => {
+		const settings = Settings.isolated({ "memory.backend": "mnemopi" });
+		const knownSecret = "CUSTOMCREDENTIAL123456789";
+		const providerSecret = `AIza${"Q".repeat(35)}`;
+		const obfuscator = new SecretObfuscator([{ type: "plain", content: knownSecret }]);
+		const embeddingInputs: string[] = [];
+		const extractionInputs: string[] = [];
+		const providerOptions = {
+			noEmbeddings: false,
+			embeddings: {
+				model: "privacy-fixture",
+				provider: {
+					async *embed(texts: readonly string[]) {
+						embeddingInputs.push(...texts);
+						yield texts.map(() => [1, 0]);
+					},
+				},
+			},
+			llm: async (_prompt: string, options?: { task?: { input: string } }) => {
+				const input = options?.task?.input ?? "";
+				extractionInputs.push(input);
+				return JSON.stringify({ facts: [input] });
+			},
+		};
+		const state = registerMnemopiState(makeMnemopiConfig({ providerOptions, llmMode: "smol" }), { obfuscator });
+		await MemoryRetainTool.createIf(makeSession(settings))!.execute("privacy-retain", {
+			items: [
+				{ content: `Deployment stays in west; credential ${knownSecret}`, context: `api_key=${providerSecret}` },
+			],
+		});
+		await state.memory.flushExtractions();
+		const row = state.memory.db
+			.query("SELECT id, content, metadata_json FROM working_memory WHERE source = 'coding-agent-retain'")
+			.get() as { id: string; content: string; metadata_json: string };
+		expect(row.content).toContain("Deployment stays in west");
+		expect(embeddingInputs.some(input => input.includes("Deployment stays in west"))).toBe(true);
+		expect(extractionInputs.some(input => input.includes("Deployment stays in west"))).toBe(true);
+		const surfaces = JSON.stringify({
+			row,
+			fts: state.memory.db.query("SELECT content FROM fts_working").all(),
+			facts: state.memory.db.query("SELECT object FROM facts").all(),
+			embeddingInputs,
+			extractionInputs,
+		});
+		expect(surfaces).not.toContain(knownSecret);
+		expect(surfaces).not.toContain(providerSecret);
+		expect(surfaces).not.toContain(obfuscator.obfuscate(knownSecret));
+		await MemoryEditTool.createIf(makeSession(settings))!.execute("privacy-update", {
+			op: "update",
+			id: row.id,
+			content: `Deployment moved east; credential ${knownSecret}`,
+		});
+		await state.memory.flushExtractions();
+		const updated = state.memory.get(row.id) as { content: string };
+		expect(updated.content).toContain("Deployment moved east");
+		expect(updated.content).not.toContain(knownSecret);
+		expect(JSON.stringify(embeddingInputs)).not.toContain(knownSecret);
+	});
+
+	it("redacts alternate embedding text, nested metadata, and automatically retained transcripts", async () => {
+		const state = registerMnemopiState();
+		const token = `ghp_${"A".repeat(36)}`;
+		const date = new Date();
+		const id = state.rememberInScope(
+			{
+				content: "Deployment region is west",
+				embed_text: `region west ${token}`,
+				extract_text: `region west ${token}`,
+			},
+			{
+				source: "privacy-alias",
+				scope: "bank",
+				timestamp: date,
+				metadata: { nested: [{ password: "short", context: `token=${token}`, setting: "tokenizer_settings" }] },
+			},
+		);
+		await state.retainMessages(
+			[
+				{ role: "user", content: `The deployment region is west; credential ${token}` },
+				{ role: "assistant", content: `Use tokenizer_settings=fast; credential ${token}` },
+			],
+			"privacy-transcript",
+			{ extract: false },
+		);
+		await state.memory.flushExtractions();
+		const rows = state.memory.db
+			.query("SELECT id, content, embed_text, metadata_json, timestamp FROM working_memory")
+			.all() as Array<{
+			id: string;
+			content: string;
+			embed_text: string | null;
+			metadata_json: string | null;
+			timestamp: string;
+		}>;
+		const stored = JSON.stringify(rows);
+		expect(stored).not.toContain(token);
+		expect(stored).not.toContain("short");
+		expect(stored).toContain("tokenizer_settings");
+		expect(rows.find(row => row.id === id)?.timestamp).toBe(date.toISOString());
+		expect(rows.some(row => row.content.includes("The deployment region is west"))).toBe(true);
+		expect(JSON.stringify(state.memory.db.query("SELECT content FROM fts_working").all())).not.toContain(token);
+	});
 	it("throws when no per-session Mnemopi state is registered", async () => {
 		const settings = Settings.isolated({ "memory.backend": "mnemopi" });
 		const tool = MemoryRetainTool.createIf(makeSession(settings))!;
@@ -480,7 +654,56 @@ describe("Mnemopi backend lifecycle", () => {
 		);
 
 		await expect(state.maybeRecallOnAgentStart()).resolves.toBeUndefined();
-		expect(state.hasRecalledForFirstTurn).toBe(false);
+		vi.restoreAllMocks();
+		state.rememberScoped("existing memory records a west-region deployment", { scope: "bank", extract: false });
+		await state.maybeRecallOnAgentStart();
+		expect(state.lastRecallSnippet).toContain("west-region deployment");
+	});
+
+	it("recalls after an empty first turn and removes promoted memories on a topic change", async () => {
+		const state = registerMnemopiState();
+		state.rememberScoped("Deployment region is west", { scope: "bank", extract: false });
+		expect(await state.beforeAgentStartPrompt("coffee origin")).toBeUndefined();
+		expect(await state.beforeAgentStartPrompt("deployment region")).toContain("Deployment region is west");
+		expect(await state.beforeAgentStartPrompt("coffee origin")).toBeUndefined();
+		expect(state.lastRecallSnippet).toBeUndefined();
+		const instructions = await mnemopiBackend.buildDeveloperInstructions?.(
+			"/tmp",
+			state.session.settings,
+			state.session,
+		);
+		expect(instructions).not.toContain("Deployment region is west");
+	});
+
+	it("does not let an older in-flight recall replace the newer question's context", async () => {
+		const state = registerMnemopiState();
+		const old = Promise.withResolvers<string | undefined>();
+		vi.spyOn(state, "recallForContext").mockImplementation(async (_query, question) =>
+			question === "older topic" ? old.promise : "newer topic memory",
+		);
+		const pending = state.beforeAgentStartPrompt("older topic");
+		expect(await state.beforeAgentStartPrompt("newer topic")).toBe("newer topic memory");
+		old.resolve("older topic memory");
+		expect(await pending).toBeUndefined();
+		expect(state.lastRecallSnippet).toBe("newer topic memory");
+	});
+
+	it("omits automatic memory when the selector declines candidates or returns malformed output", async () => {
+		let response = '{"ids":[]}';
+		const state = registerMnemopiState(
+			makeMnemopiConfig({
+				providerOptions: { noEmbeddings: true, llm: async () => response },
+				llmMode: "smol",
+			}),
+		);
+		state.rememberScoped("Deployment region is west", { scope: "bank", extract: false });
+		expect(await state.beforeAgentStartPrompt("deployment region")).toBeUndefined();
+		response = '{"ids":["0","0","invented"]}';
+		const selected = await state.beforeAgentStartPrompt("deployment region");
+		expect(selected?.match(/Deployment region is west/g)).toHaveLength(1);
+		response = "not valid JSON";
+		expect(await state.beforeAgentStartPrompt("deployment region")).toBeUndefined();
+		expect(state.lastRecallSnippet).toBeUndefined();
 	});
 
 	it("contains unavailable-bank failures from agent-end retention", async () => {
@@ -1282,11 +1505,7 @@ describe("Mnemopi backend lifecycle", () => {
 			mnemopiBackend.search!({ agentDir: "/tmp/agent", cwd: "/tmp", session }, "anything", {
 				signal: controller.signal,
 			}),
-		).resolves.toMatchObject({
-			backend: "mnemopi",
-			count: 0,
-			message: "Search aborted.",
-		});
+		).rejects.toBe(controller.signal.reason);
 
 		const rememberSpy = vi.spyOn(state, "rememberScoped").mockReturnValue(undefined);
 		await expect(
@@ -1624,7 +1843,7 @@ describe("memory_edit.execute (Mnemopi backend)", () => {
 			id: "missing-memory-id",
 		});
 
-		expect(result.details).toEqual({ status: "not_found" });
+		expect(result.details).toMatchObject({ status: "not_found" });
 		expect((result.content[0] as { text: string }).text).toContain("not found");
 	});
 

@@ -229,11 +229,10 @@ export function createOpenAICodexCompactionRequestContext(options: {
 }
 
 const CODEX_DEBUG = $flag("PI_CODEX_DEBUG");
-const CODEX_MAX_RETRIES = 5;
 const CODEX_RETRY_DELAY_MS = 500;
 
 function resolveCodexSseMaxAttempts(value: number | undefined): number {
-	if (value === undefined) return CODEX_MAX_RETRIES + 1;
+	if (value === undefined) return AIError.codexMaxRetries() + 1;
 	if (!Number.isFinite(value)) return 1;
 	return Math.max(1, Math.trunc(value));
 }
@@ -272,7 +271,12 @@ const CODEX_WEBSOCKET_IDLE_TIMEOUT_MS = Number($env.PI_CODEX_WEBSOCKET_IDLE_TIME
  * a chance on the WS transport before falling through.
  */
 const CODEX_WEBSOCKET_FIRST_EVENT_TIMEOUT_MS = Number($env.PI_CODEX_WEBSOCKET_FIRST_EVENT_TIMEOUT_MS || 300_000);
-const CODEX_WEBSOCKET_RETRY_BUDGET = Number($env.PI_CODEX_WEBSOCKET_RETRY_BUDGET || CODEX_MAX_RETRIES);
+// Env var wins, then the user retry-rules file, then the built-in default.
+// Resolved per call so runtime edits to retry-rules.json apply live.
+function codexWebsocketRetryBudget(): number {
+	const raw = $env.PI_CODEX_WEBSOCKET_RETRY_BUDGET;
+	return raw ? Number(raw) : AIError.codexMaxRetries();
+}
 const CODEX_WEBSOCKET_RETRY_DELAY_MS = Number($env.PI_CODEX_WEBSOCKET_RETRY_DELAY_MS || CODEX_RETRY_DELAY_MS);
 const CODEX_WEBSOCKET_TRANSPORT_ERROR_PREFIX = "Codex websocket transport error";
 // `invalid_prompt` moderation flags from the ChatGPT Codex backend are
@@ -1635,7 +1639,7 @@ async function openInitialCodexEventStream(
 }> {
 	const { transformedBody, websocketState } = requestContext;
 	if (websocketState && shouldUseCodexWebSocket(model, websocketState, options?.preferWebsockets)) {
-		const websocketRetryBudget = CODEX_WEBSOCKET_RETRY_BUDGET;
+		const websocketRetryBudget = codexWebsocketRetryBudget();
 		let websocketRetries = 0;
 		while (true) {
 			try {
@@ -1869,7 +1873,7 @@ async function openCodexWebSocketTransport(
 			sentModelsEtagHeader: websocketHeaders.has(X_MODELS_ETAG_HEADER),
 			requestType: websocketRequest.type,
 			retry,
-			retryBudget: CODEX_WEBSOCKET_RETRY_BUDGET,
+			retryBudget: codexWebsocketRetryBudget(),
 		});
 	const websocketConnection = await getOrCreateCodexWebSocketConnection(
 		websocketState,
@@ -2725,7 +2729,7 @@ class CodexStreamProcessor {
 		// hammer the endpoint with zero backoff.
 		this.runtime.resetAccumulators();
 		this.firstTokenTime = undefined;
-		if (this.runtime.websocketStreamRetries >= CODEX_WEBSOCKET_RETRY_BUDGET) {
+		if (this.runtime.websocketStreamRetries >= codexWebsocketRetryBudget()) {
 			recordCodexWebSocketFailure(websocketState, true);
 			await this.#reopenSseStream(websocketState);
 			return true;
@@ -2745,7 +2749,7 @@ class CodexStreamProcessor {
 			!websocketState ||
 			this.output.content.length > 0 ||
 			this.options?.signal?.aborted ||
-			this.runtime.providerRetryAttempt >= CODEX_MAX_RETRIES
+			this.runtime.providerRetryAttempt >= AIError.codexMaxRetries()
 		) {
 			return false;
 		}
@@ -2791,13 +2795,13 @@ class CodexStreamProcessor {
 		const activateFallback =
 			replayingBufferedOutputOverSse ||
 			isFatal ||
-			this.runtime.websocketStreamRetries >= CODEX_WEBSOCKET_RETRY_BUDGET;
+			this.runtime.websocketStreamRetries >= codexWebsocketRetryBudget();
 		recordCodexWebSocketFailure(state, activateFallback);
 		CODEX_DEBUG &&
 			logger.debug("[codex] codex websocket stream fallback", {
 				error: streamError.message,
 				retry: this.runtime.websocketStreamRetries,
-				retryBudget: CODEX_WEBSOCKET_RETRY_BUDGET,
+				retryBudget: codexWebsocketRetryBudget(),
 				activated: activateFallback,
 				fatal: isFatal,
 				replayedBufferedOutput: replayingBufferedOutputOverSse,
@@ -2874,7 +2878,7 @@ class CodexStreamProcessor {
 			hasVisibleAssistantContent(this.output) ||
 			streamedContent ||
 			!this.runtime.canSafelyReplayWebsocketOverSse ||
-			this.runtime.providerRetryAttempt >= CODEX_MAX_RETRIES ||
+			this.runtime.providerRetryAttempt >= AIError.codexMaxRetries() ||
 			this.options?.signal?.aborted
 		) {
 			return false;
@@ -2895,7 +2899,7 @@ class CodexStreamProcessor {
 			logger.debug("[codex] retrying codex provider stream error", {
 				error: error instanceof Error ? error.message : String(error),
 				retry: this.runtime.providerRetryAttempt,
-				retryBudget: CODEX_MAX_RETRIES,
+				retryBudget: AIError.codexMaxRetries(),
 				transport: this.runtime.transport,
 			});
 
@@ -4845,10 +4849,17 @@ export function isRetryableCodexFailureEvent(rawEvent: Record<string, unknown>):
 	}
 	const error = event.error ?? event.response?.error;
 	const code = error?.code ?? error?.type ?? event.code;
+	const message = error?.message ?? event.message ?? event.response?.message;
+	// User-managed retry rules (~/.omp/agent/retry-rules.json) outrank the
+	// built-in tables: kill-switch patterns first, then opt-in patterns and
+	// codes — same precedence as AIError.isProviderRetryableError.
+	const userRules = AIError.loadUserRetryRules();
+	if (message && userRules.nonRetryablePatterns.some(re => re.test(message))) return false;
+	if (code && userRules.codexRetryableCodes.has(code.toLowerCase())) return true;
+	if (message && userRules.retryablePatterns.some(re => re.test(message))) return true;
 	if (code && CODEX_RETRYABLE_EVENT_CODES[code.toLowerCase()]) {
 		return true;
 	}
-	const message = error?.message ?? event.message ?? event.response?.message;
 	return !!message && CODEX_RETRYABLE_EVENT_MESSAGE.test(message);
 }
 

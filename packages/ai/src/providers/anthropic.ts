@@ -1633,7 +1633,6 @@ async function* observeDecodedAnthropicSdkEvents(
 	}
 }
 
-const PROVIDER_MAX_RETRIES = 10;
 
 /**
  * How long `ping` keepalives may keep extending the idle deadline without any
@@ -2413,7 +2412,7 @@ const streamAnthropicOnce = (
 				// The provider loop owns retries: pin the client's internal retry loop
 				// to zero even when no watchdog timeout is configured (the helper only
 				// pins it alongside a timeout; a client retry budget of 5 would otherwise
-				// multiply with PROVIDER_MAX_RETRIES into up to 66 wire attempts).
+				// multiply with the provider stream retry budget into up to 66 wire attempts).
 				// Injected SDK clients bypass client-level beta construction. Attach
 				// every beta required by fields this request actually carries. Vertex
 				// rawPredict is excluded because its betas live in `anthropic_beta`.
@@ -3110,7 +3109,7 @@ const streamAnthropicOnce = (
 						AIError.isProviderRetryableError(streamFailure);
 					if (
 						activeAbortTracker.wasCallerAbort() ||
-						providerRetryAttempt >= PROVIDER_MAX_RETRIES ||
+						providerRetryAttempt >= AIError.providerStreamMaxRetries() ||
 						(!canRetryTransientEnvelopeFailure && !canRetryProviderFailure)
 					) {
 						throw streamFailure;
@@ -4231,10 +4230,13 @@ function buildToolResultBlock(
 	hoistedImages: ContentBlockParam[],
 ): ContentBlockParam {
 	let content = convertContentBlocks(msg.content, model.input.includes("image"));
-	// Anthropic rejects images inside error tool results ("all content must be
-	// type `text` if `is_error` is true") — keep the text in the block and
-	// hoist the images after the message's tool_result run.
-	if (msg.isError && typeof content !== "string" && content.some(block => block.type === "image")) {
+	// Some Anthropic-compatible relays stringify nested tool_result images and
+	// bill their base64 as text. Top-level user images work on both those relays
+	// and Anthropic, which also requires error tool results to stay text-only.
+	if (typeof content !== "string" && content.some(block => block.type === "image")) {
+		// Keep parallel results attributable after moving their images out of the
+		// tool_result: the call id is data, immediately preceding its image group.
+		hoistedImages.push({ type: "text", text: msg.toolCallId });
 		for (const block of content) {
 			if (block.type === "image") hoistedImages.push(block);
 		}
@@ -4519,7 +4521,7 @@ export function convertAnthropicMessages(
 		} else if (msg.role === "toolResult") {
 			// Collect all consecutive toolResult messages, needed for z.ai Anthropic endpoint
 			const toolResults: ContentBlockParam[] = [];
-			// Images stripped out of error tool results, re-attached after the run.
+			// Images from every tool result, grouped by call id after the result run.
 			const hoistedImages: ContentBlockParam[] = [];
 
 			// Add the current tool result

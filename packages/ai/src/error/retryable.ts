@@ -6,6 +6,7 @@ import {
 	status,
 	TRANSIENT_TRANSPORT_PATTERN,
 } from "./flags";
+import { loadUserRetryRules } from "./user-retry-rules";
 
 /**
  * Whether a numeric HTTP status is in the canonical transient/retryable set:
@@ -46,6 +47,13 @@ function isTransientTransportMessage(message: string): boolean {
  */
 export function isProviderRetryableError(error: unknown): boolean {
 	if (!(error instanceof Error)) return false;
+	// User-managed retry rules (~/.omp/agent/retry-rules.json) outrank every
+	// built-in classification: `nonRetryablePatterns` is the explicit kill
+	// switch (checked first), `retryablePatterns` the explicit opt-in that can
+	// rescue even a misleading 4xx from a flaky relay.
+	const userRules = loadUserRetryRules();
+	if (userRules.nonRetryablePatterns.some(re => re.test(error.message))) return false;
+	if (userRules.retryablePatterns.some(re => re.test(error.message))) return true;
 	if (isUsageLimit(error)) return false;
 	// Misrouted relay nodes: new-api gateways sometimes route a request to an
 	// upstream that rejects it with a misleading 400 (code 1210 该模型始终思考，

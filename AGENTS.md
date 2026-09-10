@@ -451,3 +451,4 @@ editing a patched region, or when a patch's reasoning matters.
 25. `feat(cli)` prewarm git status scan so counts paint in the first status frame — `main.ts, active-repo-context.ts, status-line/component.ts`
 26. `fix(mnemopi)` embedding reconcile data-loss gate + persisted re-enqueue cooldown (ends the perpetual rebuild/quota loop) — `store.ts, embeddings.ts, schema.ts, embedding-model-reconcile.test.ts`
 27. `fix(ai)` let provider-pinned codex identity headers reach the wire (set-if-absent originator/UA in createCodexHeaders) — `openai-codex-responses.ts, openai-codex-header-pins.test.ts`
+28. `feat(ai)` user-editable hot-reloaded retry rules (`~/.omp/agent/retry-rules.json`: bidirectional message patterns, codex event codes, retry budgets) — `error/user-retry-rules.ts, error/retryable.ts, providers/anthropic.ts, providers/openai-codex-responses.ts, utils/openai-http.ts, test/user-retry-rules.test.ts`

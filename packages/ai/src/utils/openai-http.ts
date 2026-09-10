@@ -23,15 +23,6 @@ export { OpenAIHttpError };
 import type { FetchImpl } from "../types";
 import type { CapturedHttpErrorResponse } from "./http-inspector";
 
-/**
- * Total attempts (initial + retries). Parity with the removed SDK clients'
- * `maxRetries: 5`, i.e. 6 requests. Callers arming a first-event watchdog
- * stay bounded: the watchdog aborts the request `signal`, which
- * `fetchWithRetry` races on every attempt and every backoff sleep, so
- * transient 408/429/5xx retries can never extend the caller's deadline.
- */
-const DEFAULT_MAX_ATTEMPTS = 6;
-
 /** Bound the `Error.message` allocation for proxy HTML error pages and the like. */
 const MAX_DETAIL_CHARS = 4096;
 
@@ -41,7 +32,7 @@ const MAX_DETAIL_CHARS = 4096;
  * max_parallel_requests` — as a response header and/or a structured body field.
  * This is an admission failure, not an upstream rate/quota limit: the request
  * never reached a model. Retrying it inside the transport (honoring the proxy's
- * `Retry-After`, up to {@link DEFAULT_MAX_ATTEMPTS} times) duplicates — worse,
+ * `Retry-After`, up to the transport attempt budget) duplicates — worse,
  * at 60s per sleep instead of 5s — the concurrency backoff and model fallback
  * that `TurnRecovery` already owns, stalling one turn for up to ~300s
  * (issue #8854). {@link isConcurrencyAdmissionRejection} lets the transport
@@ -94,7 +85,7 @@ export async function postOpenAIStream<TEvent>(init: OpenAIStreamRequestInit): P
 		body: JSON.stringify(init.body),
 		signal: init.signal,
 		fetch: init.fetch,
-		maxAttempts: DEFAULT_MAX_ATTEMPTS,
+		maxAttempts: AIError.openaiHttpMaxAttempts(),
 		// A proxy concurrency-admission 429 (`rate_limit_type: max_parallel_requests`)
 		// surfaces immediately instead of being slept-and-retried here; session
 		// recovery owns its backoff/fallback (issue #8854).

@@ -6,6 +6,7 @@
 
 - `AnthropicAuthConfig` accepts optional `modelHeaders`, forwarded by `buildAnthropicSearchHeaders`, so non-streaming Messages callers that reuse a configured model's transport can send that provider's headers.
 - `anthropic-messages` providers accept `compat.extraBetas`, unioned into the generated `anthropic-beta` chain (and into hosted web search's) so a relay that gates requests on an extra beta — e.g. `context-1m-2025-08-07` on beta-locked 1M models — can opt in without `allowAnthropicHeaderOverrides` replacing the whole chain and dropping the OAuth fingerprint betas with it.
+- Added a user-editable retry-rules file (`~/.omp/agent/retry-rules.json`, hot-reloaded on file change, no restart needed): `retryablePatterns` / `nonRetryablePatterns` override built-in provider-error classification in both directions, `codexRetryableCodes` extends the Codex failure-event whitelist, and `maxRetries.{providerStream,codex,openaiHttp}` retune the retry budgets — relay-specific flakes like `No active API keys available` can now be pinned retryable (or terminal) without a rebuild.
 
 ### Fixed
 

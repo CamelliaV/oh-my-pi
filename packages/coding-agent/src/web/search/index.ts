@@ -197,10 +197,16 @@ async function executeSearch(
 	const failures: SearchProviderFailure[] = [];
 	let availableProviderCount = 0;
 	let lastProvider: Pick<SearchProvider, "id" | "label"> | undefined;
+	// Wall clock for the whole chain, including failed attempts and their
+	// fallbacks: that is what the user waited for, so that is what the card
+	// reports. Measured here (not in the renderer) because the value has to
+	// survive into a resumed session's transcript replay.
+	const searchStartedAtMs = performance.now();
 	for (const candidate of candidates) {
 		let provider: SearchProvider | undefined;
 		const providerMeta = { id: candidate.id, label: getSearchProviderLabel(candidate.id) };
 		lastProvider = providerMeta;
+		const attemptStartedAtMs = performance.now();
 		try {
 			provider = await getSearchProvider(candidate.id);
 			const availabilityContext = { activeModel, modelRegistry };
@@ -263,6 +269,7 @@ async function executeSearch(
 				details: {
 					response: finalResponse,
 					providerFailures: failures.length > 0 ? failures : undefined,
+					durationMs: Math.round(performance.now() - searchStartedAtMs),
 				},
 			};
 		} catch (error) {
@@ -272,7 +279,9 @@ async function executeSearch(
 			// failure and the loop falls through to the next provider (or to the
 			// summary error), masking the cancellation.
 			throwIfAborted(signal);
-			failures.push(createSearchProviderFailure(error, provider ?? providerMeta));
+			failures.push(
+				createSearchProviderFailure(error, provider ?? providerMeta, performance.now() - attemptStartedAtMs),
+			);
 		}
 	}
 
@@ -280,7 +289,11 @@ async function executeSearch(
 		const message = "No web search provider configured.";
 		return {
 			content: [{ type: "text" as const, text: `Error: ${message}` }],
-			details: { response: { provider: "none", sources: [] }, error: message },
+			details: {
+				response: { provider: "none", sources: [] },
+				error: message,
+				durationMs: Math.round(performance.now() - searchStartedAtMs),
+			},
 		};
 	}
 
@@ -299,6 +312,7 @@ async function executeSearch(
 			response: { provider: lastFailure?.provider ?? lastProvider?.id ?? "none", sources: [] },
 			error: message,
 			providerFailures: failures.length > 0 ? failures : undefined,
+			durationMs: Math.round(performance.now() - searchStartedAtMs),
 		},
 	};
 }

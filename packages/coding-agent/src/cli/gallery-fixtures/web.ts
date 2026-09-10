@@ -83,6 +83,8 @@ export const webFixtures: Record<string, GalleryFixture> = {
 						searchRequests: 2,
 					},
 				},
+				// What `executeSearch` measures; feeds header meta + Duration row.
+				durationMs: 4210,
 			},
 		},
 		errorResult: {
@@ -94,6 +96,7 @@ export const webFixtures: Record<string, GalleryFixture> = {
 					sources: [],
 				},
 				error: "Provider returned HTTP 429 (rate limited). Retry after 30s.",
+				durationMs: 1870,
 			},
 		},
 	},

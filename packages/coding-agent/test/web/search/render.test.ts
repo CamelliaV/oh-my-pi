@@ -1,5 +1,5 @@
 import { beforeAll, describe, expect, it } from "bun:test";
-import { getThemeByName, initTheme } from "@oh-my-pi/pi-coding-agent/modes/theme/theme";
+import { getThemeByName, initTheme, type Theme } from "@oh-my-pi/pi-coding-agent/modes/theme/theme";
 import { renderSearchResult, type SearchRenderDetails } from "@oh-my-pi/pi-coding-agent/web/search/render";
 import type { SearchResponse } from "@oh-my-pi/pi-coding-agent/web/search/types";
 import { sanitizeText } from "@oh-my-pi/pi-utils";
@@ -31,6 +31,13 @@ function buildResult(answer: string): {
 		],
 	};
 	return { content: [{ type: "text", text: answer }], details: { response } };
+}
+
+function renderPlain(result: ReturnType<typeof buildResult>, theme: Theme, args?: { query?: string }): string {
+	return renderSearchResult(result, { expanded: true, isPartial: false }, theme, args)
+		.render(120)
+		.map(line => sanitizeText(line))
+		.join("\n");
 }
 
 /** Slice the sanitized lines belonging to the framed "Answer" section. */
@@ -120,5 +127,78 @@ describe("renderSearchResult", () => {
 
 		expect(answer).toMatch(/more line/);
 		expect(answer).not.toContain("FINAL_UNIQUE_MARKER");
+	});
+
+	it("reports answer throughput and elapsed time in the header meta and Metadata section", async () => {
+		const uiTheme = (await getThemeByName("dark"))!;
+		const result = buildResult("Fast answer");
+		result.details.response.usage = { inputTokens: 900, outputTokens: 420 };
+		result.details.durationMs = 4200;
+
+		const rendered = renderPlain(result, uiTheme, { query: "throughput" });
+
+		// 420 tokens / 4.2s = 100 tok/s; the header carries the compact pair.
+		expect(rendered).toContain("100.0 tok/s");
+		expect(rendered).toContain("4.2s");
+		expect(rendered).toContain("Throughput: 100.0 tok/s (420 tokens in 4.2s)");
+		expect(rendered).toContain("Duration: 4.2s");
+	});
+
+	it("omits throughput for a provider that reports no output tokens", async () => {
+		const uiTheme = (await getThemeByName("dark"))!;
+		const result = buildResult("Scraped answer");
+		// Credential-free scrapes report no usage at all — only the searchRequests
+		// style counters are absent too, so nothing is derivable.
+		result.details.response.usage = { inputTokens: 0 };
+		result.details.durationMs = 52_600;
+
+		const rendered = renderPlain(result, uiTheme, { query: "scrape" });
+
+		expect(rendered).not.toContain("Throughput:");
+		expect(rendered).not.toContain("tok/s");
+		// The wall clock is still a measured fact and still renders.
+		expect(rendered).toContain("52.6s");
+	});
+
+	it("omits throughput rather than reporting a rate from a sub-100ms call", async () => {
+		const uiTheme = (await getThemeByName("dark"))!;
+		const result = buildResult("Instant answer");
+		result.details.response.usage = { outputTokens: 5 };
+		// Below the timing floor: the quotient would be clock noise, not a rate.
+		result.details.durationMs = 12;
+
+		const rendered = renderPlain(result, uiTheme, { query: "instant" });
+
+		expect(rendered).not.toContain("Throughput:");
+		expect(rendered).toContain("Duration: 12ms");
+	});
+
+	it("times a failed attempt on the error panel and omits the elapsed row when unmeasured", async () => {
+		const uiTheme = (await getThemeByName("dark"))!;
+		const result = buildResult("unused");
+		result.details.response = { provider: "perplexity", sources: [] };
+		result.details.error = "All web search providers failed";
+		result.details.durationMs = 9000;
+		result.details.providerFailures = [
+			{
+				provider: "codex",
+				label: "OpenAI",
+				message: "Codex web search rate limited.",
+				status: 429,
+				durationMs: 2500,
+			},
+		];
+
+		const rendered = renderPlain(result, uiTheme);
+
+		expect(rendered).toContain("Web Search: Perplexity 9.0s");
+		expect(rendered).toContain("Attempt: OpenAI: Codex web search rate limited. (HTTP 429) (2.5s)");
+
+		const legacy = buildResult("unused");
+		legacy.details.response = { provider: "perplexity", sources: [] };
+		legacy.details.error = "All web search providers failed";
+		// No durationMs — a result persisted before timing existed.
+		const legacyRendered = renderPlain(legacy, uiTheme);
+		expect(legacyRendered).not.toMatch(/Duration:|tok\/s/);
 	});
 });

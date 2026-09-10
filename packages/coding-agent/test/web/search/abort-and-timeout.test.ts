@@ -367,6 +367,8 @@ describe("executeSearch abort propagation", () => {
 				label: "OpenAI",
 				message: "Codex web search rate limited.",
 				status: 429,
+				// Each attempt is timed so the card can attribute the wall clock.
+				durationMs: expect.any(Number),
 			},
 		]);
 		const block = result.content[0];

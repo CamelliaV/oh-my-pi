@@ -4,6 +4,7 @@
 
 ### Added
 
+- Web search result cards now report elapsed time and answer throughput (`tok/s`) in the header and Metadata section; a fallback chain also shows how long each failed attempt took. Unmeasured values are omitted rather than shown as zero.
 - Added `lazy: true` support for MCP server configs: a lazily-held server is never connected at startup; the manager mounts one lightweight `mcp__<server>_gateway` device per held server (one prompt line instead of a full tool catalog), and dispatching to it connects the server on demand — real tools replace the gateway through the existing tools-changed refresh, with auth failures surfacing `/mcp` guidance. The user-level `enabledServers` allowlist bypasses the hold.
 - Hosted Anthropic web search now follows the running model when the standalone provider cannot reach it: for a Claude model served over a custom Messages endpoint, the `anthropic` search provider is promoted ahead of the configured chain and reuses that model's own transport (base URL, provider credential, request model id, Claude Code cloak, provider headers), so a relay can serve hosted search instead of being skipped for lack of official Anthropic credentials. Official `api.anthropic.com` models and an explicit `ANTHROPIC_SEARCH_API_KEY`/`ANTHROPIC_SEARCH_BASE_URL` keep the existing chain and the cheap `ANTHROPIC_SEARCH_MODEL` default.
 ## [18.1.10] - 2026-09-04

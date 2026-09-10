@@ -131,4 +131,65 @@ describe("web search directive pipeline", () => {
 			"Note: no results matched `site:nowhere.example`; the constraint was relaxed",
 		);
 	});
+
+	it("measures the elapsed time of the provider chain and carries it into the result details", async () => {
+		stubProvider("brave", async () => ({ provider: "brave", sources: SOURCES }));
+
+		const result = await runSearchQuery({ query: "timed", provider: "brave" }, { authStorage: {} as AuthStorage });
+
+		// Measured, not defaulted: a finite millisecond count on every result so
+		// a resumed transcript can still render the card's elapsed row.
+		expect(Number.isFinite(result.details.durationMs)).toBe(true);
+		expect(result.details.durationMs).toBeGreaterThanOrEqual(0);
+	});
+
+	it("attributes every provider attempt with its own elapsed time", async () => {
+		// Each attempt is timed separately, so the card can explain which leg ate
+		// the wall clock instead of showing only the chain's total.
+		const failing: provider.SearchProvider = {
+			id: "brave",
+			label: "Brave",
+			isAvailable: () => true,
+			isExplicitlyAvailable: () => true,
+			search: async () => {
+				throw new Error("upstream 502");
+			},
+		};
+		const fallback: provider.SearchProvider = {
+			id: "kagi",
+			label: "Kagi",
+			isAvailable: () => true,
+			isExplicitlyAvailable: () => true,
+			search: async () => ({
+				provider: "kagi",
+				sources: SOURCES,
+				usage: { inputTokens: 10, outputTokens: 300 },
+			}),
+		};
+		vi.spyOn(provider, "resolveProviderCandidates").mockReturnValue([
+			{ id: "brave", explicit: false },
+			{ id: "kagi", explicit: false },
+		]);
+		vi.spyOn(provider, "getSearchProvider").mockImplementation(async id => (id === "brave" ? failing : fallback));
+
+		const result = await runSearchQuery({ query: "fallback timing" }, { authStorage: {} as AuthStorage });
+
+		expect(result.details.response.provider).toBe("kagi");
+		const failedAttempt = result.details.providerFailures?.[0];
+		expect(Number.isFinite(failedAttempt?.durationMs)).toBe(true);
+		expect(failedAttempt?.durationMs).toBeGreaterThanOrEqual(0);
+		// The chain's total can never be shorter than one of its legs.
+		expect(result.details.durationMs).toBeGreaterThanOrEqual(failedAttempt!.durationMs!);
+	});
+
+	it("measures duration even when every provider fails", async () => {
+		stubProvider("brave", async () => {
+			throw new Error("all downstream");
+		});
+
+		const result = await runSearchQuery({ query: "doomed", provider: "brave" }, { authStorage: {} as AuthStorage });
+
+		expect(result.details.error).toContain("all downstream");
+		expect(Number.isFinite(result.details.durationMs)).toBe(true);
+	});
 });

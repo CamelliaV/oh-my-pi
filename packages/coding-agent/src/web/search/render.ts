@@ -11,6 +11,7 @@ import { getMarkdownTheme, type Theme } from "../../modes/theme/theme";
 import {
 	formatAge,
 	formatCount,
+	formatDuration,
 	formatExpandHint,
 	formatMoreItems,
 	formatStatusIcon,
@@ -23,9 +24,24 @@ import {
 import { renderStatusLine, renderTreeList, urlHyperlink } from "../../tui";
 import { CachedOutputBlock, markFramedBlockComponent, outputBlockContentWidth } from "../../tui/output-block";
 import { formatSearchProviderFailureRecord, getSearchProviderLabel } from "./provider";
-import type { SearchProviderFailure, SearchResponse } from "./types";
+import { searchThroughput, type SearchProviderFailure, type SearchResponse } from "./types";
 
 const MAX_COLLAPSED_ITEMS = PREVIEW_LIMITS.COLLAPSED_ITEMS;
+
+/**
+ * Header meta for a search card: elapsed wall clock and answer throughput.
+ *
+ * A search is a one-shot call, so there is no prompt reuse to report — the
+ * numbers that inform a decision are how long it took and how fast the answer
+ * came back. Both are omitted rather than zero-filled when unmeasured.
+ */
+function searchMetaFragments(usage: SearchResponse["usage"], durationMs: number | undefined): string[] {
+	const fragments: string[] = [];
+	const throughput = searchThroughput(usage, durationMs);
+	if (throughput) fragments.push(`${throughput.tokensPerSecond.toFixed(1)} tok/s`);
+	if (durationMs !== undefined && Number.isFinite(durationMs)) fragments.push(formatDuration(durationMs));
+	return fragments;
+}
 
 function renderFallbackText(contentText: string, expanded: boolean, theme: Theme): Component {
 	const lines = contentText.split("\n").filter(line => line.trim());
@@ -60,6 +76,8 @@ export interface SearchRenderDetails {
 	error?: string;
 	/** Failed attempts retained from the provider chain. */
 	providerFailures?: readonly SearchProviderFailure[];
+	/** Wall-clock cost of the provider chain, in milliseconds. */
+	durationMs?: number;
 }
 
 /** Render a web search failure as a framed error panel, matching the success layout. */
@@ -68,12 +86,22 @@ function renderSearchErrorPanel(
 	providerLabel: string | undefined,
 	theme: Theme,
 	providerFailures: readonly SearchProviderFailure[] = [],
+	durationMs?: number,
 ): Component {
-	const header = renderStatusLine({ icon: "error", title: "Web Search", description: providerLabel }, theme);
+	const timingMeta =
+		durationMs !== undefined && Number.isFinite(durationMs) ? [formatDuration(durationMs)] : undefined;
+	const header = renderStatusLine(
+		{ icon: "error", title: "Web Search", description: providerLabel, meta: timingMeta },
+		theme,
+	);
 	const body = theme.fg("error", `Error: ${truncateToWidth(replaceTabs(message), TRUNCATE_LENGTHS.LINE)}`);
 	const failureLines = providerFailures.map(failure => {
+		const attemptDuration =
+			failure.durationMs !== undefined && Number.isFinite(failure.durationMs)
+				? ` ${theme.fg("dim", `(${formatDuration(failure.durationMs)})`)}`
+				: "";
 		const text = truncateToWidth(replaceTabs(formatSearchProviderFailureRecord(failure)), TRUNCATE_LENGTHS.LINE);
-		return `${theme.fg("warning", "Attempt:")} ${theme.fg("text", text)}`;
+		return `${theme.fg("warning", "Attempt:")} ${theme.fg("text", text)}${attemptDuration}`;
 	});
 	const outputBlock = new CachedOutputBlock();
 	return markFramedBlockComponent({
@@ -106,7 +134,13 @@ export function renderSearchResult(
 		const errorProvider = details.response?.provider;
 		const errorProviderLabel =
 			errorProvider && errorProvider !== "none" ? getSearchProviderLabel(errorProvider) : undefined;
-		return renderSearchErrorPanel(details.error, errorProviderLabel, theme, details.providerFailures);
+		return renderSearchErrorPanel(
+			details.error,
+			errorProviderLabel,
+			theme,
+			details.providerFailures,
+			details.durationMs,
+		);
 	}
 
 	const rawText = result.content?.find(block => block.type === "text")?.text?.trim() ?? "";
@@ -135,6 +169,7 @@ export function renderSearchResult(
 			? truncateToWidth(searchQueries[0], 80)
 			: undefined;
 	const success = sourceCount > 0;
+	const timingMeta = searchMetaFragments(response.usage, details?.durationMs);
 	const header = renderStatusLine(
 		success
 			? {
@@ -142,13 +177,13 @@ export function renderSearchResult(
 					icon: usedFallback ? "warning" : undefined,
 					title: "Web Search",
 					description: providerLabel,
-					meta: [...(usedFallback ? ["fallback"] : []), formatCount("source", sourceCount)],
+					meta: [...(usedFallback ? ["fallback"] : []), formatCount("source", sourceCount), ...timingMeta],
 				}
 			: {
 					icon: "warning",
 					title: "Web Search",
 					description: providerLabel,
-					meta: [formatCount("source", sourceCount)],
+					meta: [formatCount("source", sourceCount), ...timingMeta],
 				},
 		theme,
 	);
@@ -164,18 +199,32 @@ export function renderSearchResult(
 		);
 		metaLines.push(`${theme.fg("warning", "Route:")} ${theme.fg("text", route)}`);
 		for (const failure of providerFailures) {
+			const attemptDuration =
+				failure.durationMs !== undefined && Number.isFinite(failure.durationMs)
+					? ` ${theme.fg("dim", `(${formatDuration(failure.durationMs)})`)}`
+					: "";
 			const text = truncateToWidth(replaceTabs(formatSearchProviderFailureRecord(failure)), TRUNCATE_LENGTHS.LINE);
-			metaLines.push(`${theme.fg("warning", "Fallback:")} ${theme.fg("text", text)}`);
+			metaLines.push(`${theme.fg("warning", "Fallback:")} ${theme.fg("text", text)}${attemptDuration}`);
 		}
 	}
-	if (response.usage) {
+	const usage = response.usage;
+	if (usage) {
 		const usageParts: string[] = [];
-		if (response.usage.inputTokens !== undefined) usageParts.push(`in ${response.usage.inputTokens}`);
-		if (response.usage.outputTokens !== undefined) usageParts.push(`out ${response.usage.outputTokens}`);
-		if (response.usage.totalTokens !== undefined) usageParts.push(`total ${response.usage.totalTokens}`);
-		if (response.usage.searchRequests !== undefined) usageParts.push(`search ${response.usage.searchRequests}`);
+		if (usage.inputTokens !== undefined) usageParts.push(`in ${usage.inputTokens}`);
+		if (usage.outputTokens !== undefined) usageParts.push(`out ${usage.outputTokens}`);
+		if (usage.totalTokens !== undefined) usageParts.push(`total ${usage.totalTokens}`);
+		if (usage.searchRequests !== undefined) usageParts.push(`search ${usage.searchRequests}`);
 		if (usageParts.length > 0)
 			metaLines.push(`${theme.fg("muted", "Usage:")} ${theme.fg("text", usageParts.join(theme.sep.dot))}`);
+	}
+	const throughput = searchThroughput(usage, details?.durationMs);
+	if (throughput) {
+		metaLines.push(
+			`${theme.fg("muted", "Throughput:")} ${theme.fg("text", `${throughput.tokensPerSecond.toFixed(1)} tok/s`)} ${theme.fg("dim", `(${throughput.outputTokens} tokens in ${formatDuration(throughput.durationMs)})`)}`,
+		);
+	}
+	if (details?.durationMs !== undefined && Number.isFinite(details.durationMs)) {
+		metaLines.push(`${theme.fg("muted", "Duration:")} ${theme.fg("text", formatDuration(details.durationMs))}`);
 	}
 
 	const answerMarkdown = contentText ? new Markdown(contentText, 0, 0, getMarkdownTheme()) : undefined;

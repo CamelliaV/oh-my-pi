@@ -191,12 +191,16 @@ export function formatSearchProviderFailures(
 export function createSearchProviderFailure(
 	error: unknown,
 	provider: Pick<SearchProvider, "id" | "label">,
+	durationMs?: number,
 ): SearchProviderFailure {
 	return {
 		provider: provider.id,
 		label: provider.label,
 		message: formatSearchProviderFailure(error, provider),
 		status: error instanceof SearchProviderError ? error.status : undefined,
+		// Sub-millisecond clock skew rounds to 0; keep the field honest instead
+		// of reporting a floor that was never measured.
+		...(durationMs !== undefined && durationMs >= 0 ? { durationMs: Math.round(durationMs) } : {}),
 	};
 }
 

@@ -189,6 +189,45 @@ export interface SearchProviderFailure {
 	label: string;
 	message: string;
 	status?: number;
+	/** Wall-clock cost of the failed attempt, when the caller measured it. */
+	durationMs?: number;
+}
+
+/** Answer-generation throughput of one search call, for display. */
+export interface SearchThroughput {
+	/** Generated answer tokens per second of the measured call. */
+	tokensPerSecond: number;
+	outputTokens: number;
+	durationMs: number;
+}
+
+/**
+ * Below this, a call is too short to time meaningfully and the quotient turns
+ * into clock noise (same floor the session status line uses).
+ */
+const MIN_THROUGHPUT_DURATION_MS = 100;
+
+/**
+ * Derive the answer throughput of a search, or `null` when either factor is
+ * missing.
+ *
+ * The denominator is the full measured call — the provider's own web-search
+ * rounds included — so this is the effective rate the user actually waited
+ * through, not raw decode speed. Returns `null` for unreported usage or an
+ * unmeasured call rather than a zero that would read as a real stall.
+ */
+export function searchThroughput(
+	usage: SearchUsage | undefined,
+	durationMs: number | undefined,
+): SearchThroughput | null {
+	const outputTokens = usage?.outputTokens;
+	if (outputTokens === undefined || !Number.isFinite(outputTokens) || outputTokens <= 0) return null;
+	if (durationMs === undefined || !Number.isFinite(durationMs) || durationMs < MIN_THROUGHPUT_DURATION_MS) {
+		return null;
+	}
+	const tokensPerSecond = (outputTokens * 1000) / durationMs;
+	if (!Number.isFinite(tokensPerSecond) || tokensPerSecond <= 0) return null;
+	return { tokensPerSecond, outputTokens, durationMs };
 }
 
 /** Provider-specific error with optional HTTP status */

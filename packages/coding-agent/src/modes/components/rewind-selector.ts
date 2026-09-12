@@ -92,8 +92,17 @@ interface SiblingColumn {
 
 /** Rows the frame chrome occupies: top rule, header, rule, footer hint, bottom rule. */
 const CHROME_ROWS = 5;
+/** Rows above the scroll view: top rule, header, rule. Mouse rows map through this offset. */
+const CONTENT_TOP = 3;
 /** Blank columns between branch-strip columns. */
 const STRIP_GAP = 2;
+
+/** One clickable region on a rendered scroll line: click inside [x0, x1) confirms `entryId`. */
+interface HitRegion {
+	x0: number;
+	x1: number;
+	entryId: string;
+}
 /** Duration of the branch-swap camera slide. */
 const SLIDE_MS = 160;
 
@@ -109,6 +118,13 @@ export class RewindSelectorComponent implements Component {
 	#siblingVisible: boolean[] | undefined;
 	#scrollToSelection = true;
 	#expanded = false;
+	/**
+	 * Per rendered scroll line → clickable rewind regions, rebuilt every render
+	 * (mirrors the copy picker's control map). Read by mouse clicks; the SGR
+	 * event row/col are screen-based while the fullscreen overlay paints from
+	 * row 0, so a click maps to `row - CONTENT_TOP + scrollOffset`.
+	 */
+	#hitRows: (HitRegion[] | undefined)[] = [];
 
 	// Branch strip: present when the selected turn has sibling branches.
 	// Column 0 is the current path; siblings follow in tree order.
@@ -244,7 +260,9 @@ export class RewindSelectorComponent implements Component {
 				if (event.wheel !== null) {
 					this.#scrollView.scroll(event.wheel * 3);
 					this.deps.requestRender();
+					return true;
 				}
+				if (event.leftClick) this.#click(event.row, event.col);
 				return true;
 			});
 			return;
@@ -283,6 +301,14 @@ export class RewindSelectorComponent implements Component {
 			} else if (this.#activeVariant === 0) {
 				this.#move(1, target => target.isUserTurn);
 			}
+			return;
+		}
+		if (matchesKey(data, "ctrl+shift+home")) {
+			this.#jumpToEnd(-1);
+			return;
+		}
+		if (matchesKey(data, "ctrl+shift+end")) {
+			this.#jumpToEnd(1);
 			return;
 		}
 		if (matchesKey(data, "enter") || matchesKey(data, "return") || data === "\n") {
@@ -339,6 +365,54 @@ export class RewindSelectorComponent implements Component {
 		return this.#mainVisible?.[index] ?? true;
 	}
 
+	/**
+	 * Ctrl+Shift+Home/End: rest the selection on the first/last selectable
+	 * target of the active column. Plain Home/End stay scroll-only (they are
+	 * ScrollView keys); the selection jump is what makes Enter/click cheap.
+	 */
+	#jumpToEnd(direction: -1 | 1): void {
+		if (this.#activeVariant > 0) {
+			const targets = this.#stripColumns()[this.#activeVariant - 1]?.targets ?? [];
+			let index = direction === -1 ? 0 : targets.length - 1;
+			while (index >= 0 && index < targets.length) {
+				if (this.#siblingVisible?.[index] !== false) {
+					this.#siblingSelected = index;
+					this.#scrollToSelection = true;
+					this.deps.requestRender();
+					return;
+				}
+				index += direction === -1 ? 1 : -1;
+			}
+			return;
+		}
+		let index = direction === -1 ? 0 : this.#targets.length - 1;
+		while (index >= 0 && index < this.#targets.length) {
+			if (this.#isMainSelectable(index)) {
+				this.#selected = index;
+				this.#activeVariant = 0;
+				this.#siblingSelected = 0;
+				this.#stopSlide();
+				this.#scrollToSelection = true;
+				this.deps.requestRender();
+				return;
+			}
+			index += direction === -1 ? 1 : -1;
+		}
+	}
+
+	/**
+	 * A left click on a transcript block rewinds to it — same as stepping onto
+	 * it and pressing Enter (session-picker parity). Clicks on chrome rows,
+	 * blank gaps, or the header resolve to nothing through the hit map.
+	 */
+	#click(row: number, col: number): void {
+		const line = row - CONTENT_TOP + this.#scrollView.getScrollOffset();
+		const regions = this.#hitRows[line];
+		if (!regions) return;
+		const hit = regions.find(region => col >= region.x0 && col < region.x1);
+		if (hit) this.deps.onSelect(hit.entryId);
+	}
+
 	// ========================================================================
 	// Render
 	// ========================================================================
@@ -368,27 +442,41 @@ export class RewindSelectorComponent implements Component {
 		}
 
 		const columns = this.#stripColumns();
-		const composed =
-			columns.length > 0
-				? this.#renderStrip(childRows, columns, contentWidth)
-				: composeOutlineColumn(
-						childRows,
-						0,
-						children.length,
-						this.#targets,
-						this.#selected,
-						contentWidth,
-						undefined,
-					);
-		const lines = composed.lines;
+		let lines: string[];
+		let selStart: number;
+		let selEnd: number;
+		if (columns.length > 0) {
+			const strip = this.#renderStrip(childRows, columns, contentWidth);
+			lines = strip.lines;
+			selStart = strip.selStart;
+			selEnd = strip.selEnd;
+			this.#hitRows = strip.hitRows;
+		} else {
+			const flat = composeOutlineColumn(
+				childRows,
+				0,
+				children.length,
+				this.#targets,
+				this.#selected,
+				contentWidth,
+				undefined,
+			);
+			lines = flat.lines;
+			selStart = flat.selStart;
+			selEnd = flat.selEnd;
+			// Flat mode: one region per target line, stopping at the scrollbar column.
+			this.#hitRows = flat.hit.map(hit =>
+				hit === undefined ? undefined : [{ x0: 0, x1: contentWidth, entryId: this.#targets[hit]!.entryId }],
+			);
+		}
 
 		const viewportHeight = Math.max(3, termHeight - CHROME_ROWS);
 		this.#scrollView.setLines(lines);
 		this.#scrollView.setHeight(viewportHeight);
-		if (this.#scrollToSelection && composed.selStart >= 0) {
+		if (this.#scrollToSelection && selStart >= 0) {
 			const offset = this.#scrollView.getScrollOffset();
-			const top = Math.max(0, composed.selStart - 1);
-			const bottom = Math.min(lines.length, composed.selEnd + 1);
+			const top = Math.max(0, selStart - 1);
+			const bottom = Math.min(lines.length, selEnd + 1);
 			if (top < offset) this.#scrollView.setScrollOffset(top);
 			else if (bottom > offset + viewportHeight) this.#scrollView.setScrollOffset(bottom - viewportHeight);
 			this.#scrollToSelection = false;
@@ -403,7 +491,9 @@ export class RewindSelectorComponent implements Component {
 		output.push(...this.#scrollView.render(width));
 		const position = this.#targets.length > 0 ? `${this.#selected + 1}/${this.#targets.length}  ` : "";
 		const lateral = columns.length > 0 ? "←/→ branches" : "←/→ user turns";
-		output.push(` ${theme.fg("dim", `${position}↑/↓ step  ${lateral}  enter rewind  ctrl+o expand  esc cancel`)}`);
+		output.push(
+			` ${theme.fg("dim", `${position}↑/↓ step  ${lateral}  ⌃⇧home/end jump  enter/click rewind  ctrl+o expand  esc cancel`)}`,
+		);
 		output.push(...this.#border.render(width));
 		return output;
 	}
@@ -411,15 +501,22 @@ export class RewindSelectorComponent implements Component {
 	/**
 	 * Shared prefix at full width, then the divergence as a camera-positioned
 	 * strip of half-width branch columns (current path first, siblings after).
+	 * `hitRows` parallels `lines` with the clickable rewind regions (column
+	 * windows under the current camera); prefix rows click through to main-path
+	 * targets, as clicking an older turn above the fork rewinds there too.
 	 */
-	#renderStrip(mainRows: (readonly string[])[], columns: SiblingColumn[], contentWidth: number): ComposedColumn {
+	#renderStrip(
+		mainRows: (readonly string[])[],
+		columns: SiblingColumn[],
+		contentWidth: number,
+	): { lines: string[]; selStart: number; selEnd: number; hitRows: (HitRegion[] | undefined)[] } {
 		const anchor = this.#targets[this.#selected]!;
 		const colWidth = Math.max(24, Math.floor((contentWidth - STRIP_GAP) / 2));
 		const colInner = Math.max(10, colWidth - 4);
 		const count = columns.length + 1;
 
 		// Shared history above the fork, full width, never outlined.
-		const prefix = composeOutlineColumn(mainRows, 0, anchor.start, [], -1, contentWidth, undefined);
+		const prefix = composeOutlineColumn(mainRows, 0, anchor.start, this.#targets, -1, contentWidth, undefined);
 
 		// Column 0: the current path from the fork down, re-rendered at column width.
 		const suffixRows: (readonly string[])[] = [];
@@ -474,6 +571,9 @@ export class RewindSelectorComponent implements Component {
 
 		const height = Math.max(...composedColumns.map(column => column.lines.length));
 		const lines = prefix.lines;
+		const hitRows: (HitRegion[] | undefined)[] = prefix.hit.map(hit =>
+			hit === undefined ? undefined : [{ x0: 0, x1: contentWidth, entryId: this.#targets[hit]!.entryId }],
+		);
 		// With more branches than the window fits, a dot rail tracks the active
 		// column and dim ellipses flag content beyond the visible edge.
 		// Edge markers follow the slide's destination, not the eased camera,
@@ -490,6 +590,7 @@ export class RewindSelectorComponent implements Component {
 				),
 				"",
 			);
+			hitRows.push(undefined, undefined);
 		}
 		const active = composedColumns[this.#activeVariant]!;
 		const selStart = active.selStart >= 0 ? lines.length + active.selStart : -1;
@@ -497,20 +598,32 @@ export class RewindSelectorComponent implements Component {
 		for (let row = 0; row < height; row++) {
 			let line = "";
 			let filled = 0;
+			const regions: HitRegion[] = [];
 			for (let index = 0; index < count; index++) {
 				const x0 = index * stride - camera;
 				const x1 = x0 + colWidth;
 				const visible0 = Math.max(0, x0);
 				const visible1 = Math.min(contentWidth, x1);
 				if (visible1 <= visible0) continue;
+				const columnTarget = composedColumns[index]!.hit[row];
+				if (columnTarget !== undefined) {
+					// Column 0 maps into the main-path suffix targets; siblings map
+					// into their own column's targets.
+					const entryId =
+						index === 0
+							? suffixTargets[columnTarget]!.entryId
+							: columns[index - 1]!.targets[columnTarget]!.entryId;
+					regions.push({ x0: visible0, x1: visible1, entryId });
+				}
 				const source = fit(composedColumns[index]!.lines[row] ?? "", colWidth);
 				const slice = sliceByColumn(source, visible0 - x0, visible1 - visible0, true);
 				line += padding(Math.max(0, visible0 - filled)) + fit(slice, visible1 - visible0);
 				filled = visible1;
 			}
 			lines.push(line);
+			hitRows.push(regions.length > 0 ? regions : undefined);
 		}
-		return { lines, selStart, selEnd };
+		return { lines, selStart, selEnd, hitRows };
 	}
 
 	/** Two caption rows leading a strip column: `⎇ i/n · label` plus a spacer. */

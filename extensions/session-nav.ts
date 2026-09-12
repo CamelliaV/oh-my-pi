@@ -13,7 +13,7 @@
  *
  * Inside the transcript viewer:
  *   n / p     jump to next / previous user-message block
- *   ↑↓ pgup/pgdn g/G home/end — free scroll
+ *   ↑↓ pgup/pgdn g/G home/end ⌃⇧home/end — free scroll
  *   ctrl+o    toggle tool-output expansion (same as the live transcript)
  *   Pointer note: SGR mouse tracking stays OFF for the whole viewer — plain
  *   drag selects/copies text natively; the terminal translates wheel to arrow
@@ -291,8 +291,10 @@ class TranscriptViewer implements Component {
 		else if (matchesKey(data, "down")) this.#scrollView.scroll(1);
 		else if (matchesKey(data, "pageUp")) this.#scrollView.scroll(-(this.#viewportRows() - 1));
 		else if (matchesKey(data, "pageDown")) this.#scrollView.scroll(this.#viewportRows() - 1);
-		else if (matchesKey(data, "home") || matchesKey(data, "g")) this.#scrollView.scrollToTop();
-		else if (matchesKey(data, "end") || matchesKey(data, "shift+g")) this.#scrollView.scrollToBottom();
+		else if (matchesKey(data, "home") || matchesKey(data, "g") || matchesKey(data, "ctrl+shift+home"))
+			this.#scrollView.scrollToTop();
+		else if (matchesKey(data, "end") || matchesKey(data, "shift+g") || matchesKey(data, "ctrl+shift+end"))
+			this.#scrollView.scrollToBottom();
 		else if (matchesKey(data, "ctrl+o")) {
 			const expanded = !this.#builder.expanded;
 			this.#builder.setExpanded(expanded);
@@ -431,8 +433,8 @@ class TurnPicker implements Component {
 		else if (matchesKey(data, "down")) this.#index = Math.min(total - 1, this.#index + 1);
 		else if (matchesKey(data, "pageUp") || matchesKey(data, "left")) this.#index = Math.max(0, this.#index - visible);
 		else if (matchesKey(data, "pageDown") || matchesKey(data, "right")) this.#index = Math.min(total - 1, this.#index + visible);
-		else if (matchesKey(data, "home")) this.#index = 0;
-		else if (matchesKey(data, "end")) this.#index = total - 1;
+		else if (matchesKey(data, "home") || matchesKey(data, "ctrl+shift+home")) this.#index = 0;
+		else if (matchesKey(data, "end") || matchesKey(data, "ctrl+shift+end")) this.#index = total - 1;
 		else if (matchesKey(data, "backspace")) {
 			if (this.#query.length > 0) {
 				this.#query = [...this.#query].slice(0, -1).join("");

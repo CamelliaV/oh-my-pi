@@ -6,6 +6,7 @@ import { formatDuration, formatNumber } from "@oh-my-pi/pi-utils";
 import type { SessionEntry } from "../../session/session-entries";
 import { theme } from "../theme/theme";
 import { DynamicBorder } from "./dynamic-border";
+import { markUsageRowBlock } from "./usage-row";
 
 type AssistantMessage = Extract<AgentMessage, { role: "assistant" }>;
 type ToolResultMessage = Extract<AgentMessage, { role: "toolResult" }>;
@@ -499,7 +500,9 @@ export function formatSessionUsageRow(snapshot: SessionUsageSnapshot): string {
 
 /** Render the completed work total with prompt-style accent chrome. */
 export function createWorkUsageRowBlock(snapshot: WorkUsageSnapshot): Container {
-	const block = new Container();
+	// Marked as a usage row so outline selectors (esc-esc rewind, /copy) fold it
+	// into the turn above instead of offering it as its own target.
+	const block = markUsageRowBlock(new Container());
 	const border = new DynamicBorder(str => theme.fg("borderAccent", str));
 	block.addChild(new Spacer(1));
 	block.addChild(border);

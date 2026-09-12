@@ -79,6 +79,16 @@ export function isUsageRowBlock(component: object): boolean {
 	return usageRowBlocks.has(component as Container);
 }
 
+/**
+ * Register an external usage-style block (e.g. the WORK aggregate row) for the
+ * same attribution: transcript walkers fold it into the turn above instead of
+ * treating it as its own selectable/renders-nothing entry.
+ */
+export function markUsageRowBlock(block: Container): Container {
+	usageRowBlocks.add(block);
+	return block;
+}
+
 // `timestamp` and `turnElapsedMs` are optional and trail the throughput args to
 // preserve the existing (usage, durationMs, ttftMs) call contract — this
 // function is part of the package's public export surface (./modes/components/*).

@@ -22,6 +22,10 @@ const DOWN = "\x1b[B";
 const LEFT = "\x1b[D";
 const RIGHT = "\x1b[C";
 const ENTER = "\r";
+const CTRL_SHIFT_HOME = "\x1b[1;6H";
+const CTRL_SHIFT_END = "\x1b[1;6F";
+/** SGR left-button press at 0-based screen (col, row). */
+const click = (col: number, row: number) => `\x1b[<0;${col + 1};${row + 1}M`;
 
 function entry(id: string, parentId: string | null, message: AgentMessage): SessionMessageEntry {
 	return { type: "message", id, parentId, timestamp: "2024-01-01T00:00:00Z", message };
@@ -228,5 +232,56 @@ describe("RewindSelectorComponent", () => {
 		expect(boxed.join("\n")).toContain("second prompt");
 		expect(boxed.join("\n")).not.toContain("first prompt");
 		expect(lines.join("\n")).toContain("first prompt");
+	});
+
+	it("ctrl+shift+home/end jumps the selection to the first/last rendered item", () => {
+		const selected: string[] = [];
+		const selector = makeSelector(id => selected.push(id));
+		selector.render(80);
+
+		// Initial selection is the newest target; ⌃⇧Home walks to the top, and Enter
+		// rewinds to the first user prompt. ⌃⇧End returns to the newest.
+		selector.handleInput(CTRL_SHIFT_HOME);
+		selector.handleInput(ENTER);
+		selector.handleInput(CTRL_SHIFT_END);
+		selector.handleInput(ENTER);
+		selector.dispose();
+
+		expect(selected).toEqual(["u1", "u2"]);
+	});
+
+	it("rewinds on a left click of a rendered block, like Enter on the picked item", () => {
+		const selected: string[] = [];
+		const selector = makeSelector(id => selected.push(id));
+		const lines = selector.render(80).map(line => Bun.stripANSI(line));
+
+		const promptRow = lines.findIndex(line => line.includes("first prompt"));
+		expect(promptRow).toBeGreaterThanOrEqual(0);
+		selector.handleInput(click(10, promptRow));
+		expect(selected).toEqual(["u1"]);
+
+		// Chrome rows (header above the scroll view) hit-test to nothing.
+		selector.handleInput(click(10, 1));
+		expect(selected).toEqual(["u1"]);
+		selector.dispose();
+	});
+
+	it("rewinds onto a sibling branch when its strip column is clicked", () => {
+		const selected: string[] = [];
+		const siblings = (entryId: string): BranchVariantPath[] =>
+			entryId === "u2" ? [{ rootId: "u2b", entries: [entry("u2b", "a2", userMessage("alternate prompt"))] }] : [];
+		const selector = makeSelector(id => selected.push(id), siblings);
+		selector.handleInput(RIGHT);
+		const lines = selector.render(120).map(line => Bun.stripANSI(line));
+		// The column header also shows the prompt as its caption; click the
+		// outlined body (the last row bearing the text).
+		const promptRow = lines.findLastIndex(line => line.includes("alternate prompt"));
+		expect(promptRow).toBeGreaterThan(8);
+
+		// The sibling column sits on the right half; clicking its prompt rewinds
+		// onto the branch without scrolling the keyboard selection there first.
+		selector.handleInput(click(80, promptRow));
+		expect(selected).toEqual(["u2b"]);
+		selector.dispose();
 	});
 });

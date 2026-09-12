@@ -32,6 +32,12 @@ export interface ComposedColumn {
 	lines: string[];
 	selStart: number;
 	selEnd: number;
+	/**
+	 * Per-line hit map for pointer interaction: index into the `targets` array
+	 * whose rendered range covers that line, or `undefined` for header, gutter,
+	 * and blank rows. Indices refer to the `targets` argument as passed.
+	 */
+	hit: (number | undefined)[];
 }
 /** Presentation of the dotted outline: stroke color and an optional caption inset into the top rule. */
 export interface OutlineStyle {
@@ -155,9 +161,19 @@ export function composeOutlineColumn(
 ): ComposedColumn {
 	const inner = Math.max(10, columnWidth - 4);
 	const lines: string[] = header ? [...header] : [];
+	const hit: (number | undefined)[] = header ? Array<undefined>(header.length).fill(undefined) : [];
 	let selStart = -1;
 	let selEnd = -1;
 	const target = selected >= 0 ? targets[selected] : undefined;
+	// Child → owning target index, so plain (non-outlined) rows also hit-test.
+	// Target ranges never overlap (appendOutlineEntries folds/skips gaps).
+	const childTarget: (number | undefined)[] = Array<undefined>(to).fill(undefined);
+	for (let t = 0; t < targets.length; t++) {
+		const range = targets[t]!;
+		for (let child = Math.max(range.start, from); child < Math.min(range.end, to); child++) {
+			childTarget[child] = t;
+		}
+	}
 	for (let index = from; index < to; index++) {
 		if (target && index === target.start && target.end <= to) {
 			const segment: string[] = [];
@@ -167,17 +183,28 @@ export function composeOutlineColumn(
 			let tail = segment.length;
 			while (head < tail && !/\S/.test(segment[head]!)) head++;
 			while (tail > head && !/\S/.test(segment[tail - 1]!)) tail--;
-			for (let row = 0; row < head; row++) lines.push("");
+			for (let row = 0; row < head; row++) {
+				lines.push("");
+				hit.push(undefined);
+			}
 			selStart = lines.length;
-			lines.push(...outlineRows(segment.slice(head, tail), inner, style));
+			const outlined = outlineRows(segment.slice(head, tail), inner, style);
+			lines.push(...outlined);
+			for (let row = 0; row < outlined.length; row++) hit.push(selected);
 			selEnd = lines.length;
-			for (let row = tail; row < segment.length; row++) lines.push("");
+			for (let row = tail; row < segment.length; row++) {
+				lines.push("");
+				hit.push(undefined);
+			}
 			index = target.end - 1;
 			continue;
 		}
-		for (const row of childRows[index]!) lines.push(row ? `  ${row}` : row);
+		for (const row of childRows[index]!) {
+			lines.push(row ? `  ${row}` : row);
+			hit.push(childTarget[index]);
+		}
 	}
-	return { lines, selStart, selEnd };
+	return { lines, selStart, selEnd, hit };
 }
 
 /** Centered position rail for horizontally windowed content: `… ○ ◉ ○ …`. */

@@ -42,6 +42,7 @@ export function createGallerySession(options: GallerySessionOptions = {}): Agent
 			getGroup: () => ({ enabled: true, reserveTokens: 20_000 }),
 		},
 		sessionManager: {
+			getBranch: () => GALLERY_SESSION_BRANCH,
 			getUsageStatistics: () => ({
 				input: 12_400,
 				output: 3_600,
@@ -80,4 +81,71 @@ export function createGallerySession(options: GallerySessionOptions = {}): Agent
 		getPrewalkState: () => false,
 		compactionSpeculation: "idle",
 	} as unknown as AgentSession;
+}
+
+/**
+ * Deterministic persisted branch for `session_usage` previews — two work
+ * units, four billed requests. Replayed by the production component, so the
+ * gallery shows exactly what a resumed session with this history would.
+ */
+const GALLERY_SESSION_BRANCH = buildGallerySessionBranch();
+
+function buildGallerySessionBranch() {
+	const t0 = 1_789_000_000_000;
+	const requests = [
+		{ at: 2_000, duration: 2_400_000, input: 1_200_000, output: 84_000, cacheRead: 22_000_000, cacheWrite: 340_000 },
+		{
+			at: 2_462_000,
+			duration: 1_500_000,
+			input: 900_000,
+			output: 51_000,
+			cacheRead: 16_000_000,
+			cacheWrite: 210_000,
+		},
+		{
+			at: 1_844_000_000,
+			duration: 1_860_000,
+			input: 1_400_000,
+			output: 77_000,
+			cacheRead: 27_000_000,
+			cacheWrite: 390_000,
+		},
+		{
+			at: 1_847_864_000,
+			duration: 1_080_000,
+			input: 700_000,
+			output: 38_000,
+			cacheRead: 13_000_000,
+			cacheWrite: 160_000,
+		},
+	] as const;
+	const entries: object[] = [];
+	for (const work of [0, 2]) {
+		const userAt = t0 + (work === 0 ? 0 : 1_800_000_000);
+		entries.push({ type: "message", message: { role: "user", content: "continue", timestamp: userAt } });
+		for (const spec of [requests[work]!, requests[work + 1]!]) {
+			entries.push({
+				type: "message",
+				message: {
+					role: "assistant",
+					content: [],
+					api: "anthropic-messages",
+					provider: "anthropic",
+					model: "claude-sonnet-4-6",
+					stopReason: "stop",
+					usage: {
+						input: spec.input,
+						output: spec.output,
+						cacheRead: spec.cacheRead,
+						cacheWrite: spec.cacheWrite,
+						totalTokens: spec.input + spec.output + spec.cacheRead + spec.cacheWrite,
+						cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+					},
+					timestamp: t0 + spec.at,
+					duration: spec.duration,
+				},
+			});
+		}
+	}
+	return entries;
 }

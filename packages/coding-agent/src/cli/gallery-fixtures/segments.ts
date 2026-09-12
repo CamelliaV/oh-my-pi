@@ -60,6 +60,34 @@ export function createGallerySegmentContext(sessionOptions?: GallerySessionOptio
 			cost: sessionOptions?.cost ?? 0.42,
 			tokensPerSecond: 87.3,
 		},
+		sessionUsage: {
+			usage: {
+				input: 4_200_000,
+				output: 250_000,
+				cacheRead: 78_000_000,
+				cacheWrite: 1_100_000,
+				totalTokens: 83_300_000,
+				cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+			},
+			works: 2,
+			requests: 4,
+			startedAt: 1_789_000_000_000,
+			endedAt: 1_789_007_944_000,
+			wallMs: 7_944_000,
+			modelMs: 6_840_000,
+			toolMs: 0,
+			waitMs: 1_104_000,
+			cacheRate: 0.936,
+			cacheReportedRequests: 4,
+			cacheEligibleRequests: 4,
+			cacheReadTokens: 78_000_000,
+			cachePromptTokens: 83_300_000,
+			actualCost: 0,
+			actualCostRequests: 0,
+			estimatedCost: 1.84,
+			estimatedCostRequests: 4,
+			unknownCostRequests: 0,
+		},
 		contextPercent: 62,
 		contextTokens: 124_000,
 		contextWindow: GALLERY_CONTEXT_WINDOW,
@@ -205,6 +233,16 @@ function variantsFor(id: StatusLineSegmentId): readonly SegmentVariantSpec[] {
 			return [
 				{ label: "24-hour with seconds" },
 				{ label: "12-hour", context: { options: { time: { format: "12h", showSeconds: false } } } },
+			];
+		case "session_usage":
+			return [
+				{ label: "resumed session" },
+				{
+					label: "parts off (time + tokens)",
+					context: { options: { sessionUsage: { cache: false, rate: false, requests: false } } },
+				},
+				{ label: "requests shown", context: { options: { sessionUsage: { requests: true } } } },
+				{ label: "new session (no work yet)", context: { sessionUsage: null } },
 			];
 		case "usage":
 			return [

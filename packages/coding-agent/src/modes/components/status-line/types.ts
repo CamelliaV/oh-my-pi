@@ -1,3 +1,4 @@
+import type { SessionUsageSnapshot } from "../work-usage";
 import type { CollabSessionState } from "../../../collab/protocol";
 import type {
 	ContextLineMode,
@@ -24,6 +25,12 @@ export interface StatusLineSegmentOptions {
 	path?: { abbreviate?: boolean; maxLength?: number; stripWorkPrefix?: boolean };
 	git?: { showBranch?: boolean; showStaged?: boolean; showUnstaged?: boolean; showUntracked?: boolean };
 	time?: { format?: "12h" | "24h"; showSeconds?: boolean };
+	/**
+	 * Session-cumulative usage parts. Each part defaults to visible except
+	 * `requests`; set one to `false` to drop it from the single
+	 * `session_usage` segment.
+	 */
+	sessionUsage?: { time?: boolean; tokens?: boolean; cache?: boolean; rate?: boolean; requests?: boolean };
 }
 
 export interface StatusLineSettings {
@@ -111,6 +118,14 @@ export interface SegmentContext {
 		cost: number;
 		tokensPerSecond: number | null;
 	};
+	/**
+	 * Cumulative usage of the *focused* session branch (processing time,
+	 * tokens, cache rate, tok/s) — replayed from the persisted session
+	 * entries, so a resumed session shows its full prior totals and a new
+	 * session starts hidden until its first billed request. Null when the
+	 * branch has no measurable work yet.
+	 */
+	sessionUsage?: SessionUsageSnapshot | null;
 	/** Context usage percent, or null when unknown (e.g. right after compaction). */
 	contextPercent: number | null;
 	contextTokens: number;

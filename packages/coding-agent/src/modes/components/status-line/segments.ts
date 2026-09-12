@@ -658,6 +658,73 @@ const timeSpentSegment: StatusLineSegment = {
 	},
 };
 
+/**
+ * Cumulative usage of the focused session branch: processing time,
+ * prompt/output tokens, cache-hit rate and throughput, replayed from the
+ * persisted session entries. A brand-new session stays hidden until its
+ * first billed request; a resumed session shows its full prior totals and
+ * keeps accumulating — the counters belong to the session, not the machine.
+ */
+const sessionUsageSegment: StatusLineSegment = {
+	id: "session_usage",
+	render(ctx) {
+		const snapshot = ctx.sessionUsage;
+		if (!snapshot) return { content: "", visible: false };
+		const opts = ctx.options.sessionUsage ?? {};
+
+		const parts: string[] = [];
+		// Model ∪ tool execution time: the measured window of actual work,
+		// excluding idle wall-clock between turns.
+		const activeMs = snapshot.modelMs + snapshot.toolMs;
+		if (opts.time !== false && activeMs > 0) {
+			parts.push(withIcon(theme.icon.time, statusValue(ctx, formatDuration(activeMs))));
+		}
+		if (opts.tokens !== false) {
+			if (snapshot.usage.input > 0) {
+				parts.push(
+					theme.fg(
+						"statusLineSpend",
+						withIcon(theme.icon.input, statusValue(ctx, formatNumber(snapshot.usage.input))),
+					),
+				);
+			}
+			if (snapshot.usage.output > 0) {
+				parts.push(
+					theme.fg(
+						"statusLineOutput",
+						withIcon(theme.icon.output, statusValue(ctx, formatNumber(snapshot.usage.output))),
+					),
+				);
+			}
+		}
+		if (opts.cache !== false && snapshot.cacheRate !== null) {
+			parts.push(
+				theme.fg(
+					"statusLineSpend",
+					withIcon(theme.icon.cache, statusValue(ctx, `${(snapshot.cacheRate * 100).toFixed(1)}%`)),
+				),
+			);
+		}
+		// Null-not-zero: tokens without a measured duration must not imply a
+		// zero throughput; the rate stays hidden instead.
+		const tokensPerSecond =
+			snapshot.modelMs > 0 && snapshot.usage.output > 0 ? (snapshot.usage.output * 1000) / snapshot.modelMs : null;
+		if (opts.rate !== false && tokensPerSecond !== null) {
+			parts.push(
+				theme.fg(
+					"statusLineOutput",
+					withIcon(theme.icon.throughput, statusValue(ctx, `${tokensPerSecond.toFixed(1)} tok/s`)),
+				),
+			);
+		}
+		if (opts.requests === true && snapshot.requests > 0) {
+			parts.push(theme.fg("statusLineOutput", statusValue(ctx, `${formatNumber(snapshot.requests)} req`)));
+		}
+		if (parts.length === 0) return { content: "", visible: false };
+		return { content: parts.join("  "), visible: true };
+	},
+};
+
 const timeSegment: StatusLineSegment = {
 	id: "time",
 	render(ctx) {
@@ -883,6 +950,7 @@ export const SEGMENTS: Record<StatusLineSegmentId, StatusLineSegment> = {
 	context_pct: contextPctSegment,
 	context_total: contextTotalSegment,
 	time_spent: timeSpentSegment,
+	session_usage: sessionUsageSegment,
 	time: timeSegment,
 	session: sessionSegment,
 	hostname: hostnameSegment,

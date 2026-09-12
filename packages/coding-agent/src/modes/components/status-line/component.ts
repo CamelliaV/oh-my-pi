@@ -37,6 +37,7 @@ import {
 	type CodexResetUsageSnapshot,
 	detectCodexResetFireworks,
 } from "../codex-reset-fireworks";
+import { buildSessionUsageTimeline, type SessionUsageSnapshot } from "../work-usage";
 import { canReuseCachedPr, createPrCacheContext, isSamePrCacheContext, type PrCacheContext } from "./git-utils";
 import { getPreset } from "./presets";
 import { renderSegment, type SegmentContext } from "./segments";
@@ -503,6 +504,11 @@ export class StatusLineComponent implements Component {
 	// the provider total-context anchor used by its automatic trigger.
 	#contextUsageCache: ContextUsageMemo | undefined;
 
+	// Session-usage memo for the `session_usage` segment. Replay is O(branch),
+	// so it only reruns when the focused session's branch grows (every append
+	// changes the length) or the focused session itself changes.
+	#sessionUsageCache: { key: string; snapshot: SessionUsageSnapshot | null } | undefined;
+
 	constructor(private session: AgentSession) {
 		this.#settings = {
 			preset: settings.get("statusLine.preset"),
@@ -939,6 +945,7 @@ export class StatusLineComponent implements Component {
 		this.#usageFetchedAt = 0;
 		this.#usageInFlight = false;
 		this.#contextUsageCache = undefined;
+		this.#sessionUsageCache = undefined;
 		this.#lastTokensPerSecond = null;
 		this.#lastTokensPerSecondTimestamp = null;
 	}
@@ -1801,6 +1808,24 @@ export class StatusLineComponent implements Component {
 		return { usedTokens, contextWindow };
 	}
 
+	/**
+	 * Cumulative usage of the focused session's branch, replayed from the
+	 * persisted entries (assistant durations, tool-result timestamps, usage
+	 * buckets) — the same source the user-input card's SESSION row uses. The
+	 * replay is memoized on session id + branch length: appends invalidate it
+	 * naturally, renders between appends reuse it. Null while the branch has
+	 * no billed request, which keeps the segment hidden on fresh sessions.
+	 */
+	#getSessionUsage(): SessionUsageSnapshot | null {
+		const manager = this.session.sessionManager;
+		const branch = typeof manager?.getBranch === "function" ? manager.getBranch() : [];
+		const key = `${manager?.getSessionId?.() ?? ""}:${branch.length}`;
+		if (this.#sessionUsageCache?.key === key) return this.#sessionUsageCache.snapshot;
+		const snapshot = buildSessionUsageTimeline(branch).at(-1)?.session ?? null;
+		this.#sessionUsageCache = { key, snapshot };
+		return snapshot;
+	}
+
 	#buildSegmentContext(
 		width: number,
 		segmentOptions: StatusLineSettings["segmentOptions"],
@@ -1831,6 +1856,10 @@ export class StatusLineComponent implements Component {
 			...aggregateUsageStats,
 			tokensPerSecond: this.#getTokensPerSecond(),
 		};
+		// Session-cumulative usage for the `session_usage` segment: replayed from
+		// the focused session's persisted branch (memoized), so resumed sessions
+		// show their full prior totals and new sessions start hidden.
+		const sessionUsage = this.#getSessionUsage();
 
 		let contextWindow = state.model?.contextWindow ?? this.session.model?.contextWindow ?? 0;
 		const breakdown = this.getCachedContextBreakdown();
@@ -1885,6 +1914,7 @@ export class StatusLineComponent implements Component {
 			vibeMode: this.#vibeModeStatus,
 			collab: this.#collabStatus,
 			usageStats,
+			sessionUsage,
 			contextPercent,
 			contextTokens,
 			contextWindow,

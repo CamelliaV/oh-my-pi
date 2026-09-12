@@ -619,6 +619,66 @@ reasoning matters.
    tests that fail pre-change and pass post-change.
 
 
+30. `feat(task)` subagent execution-state visibility + `hub resume` — the
+   executor's coarse `AgentProgress.status` ("running"/"completed") answered
+   "is this child alive?" but not "is it queued, retrying, or dead in a way I
+   must act on?", so a child sleeping on a provider 429 or killed mid-run
+   looked identical to one making progress, and a stopped child could only be
+   re-spawned (losing its transcript) rather than continued. A second,
+   orthogonal `execution` field now carries an immutable phase snapshot
+   (`queued → creating → waiting-model → responding → tool → waiting →
+   retrying → finishing → completed | failed | cancelled`) on both
+   `AgentProgress` and `SingleResult`, built by pure transitions in
+   `task/execution-state.ts` (`snapshot()` deep-freezes, so a published
+   snapshot never aliases mutable nested state) and projected by the pure
+   `presentSubagentExecution()` in `task/execution-view.ts`. `2f06f47`'s
+   `Object.freeze` return needed an `as SubagentExecutionState` assertion:
+   the frozen `events` array is `readonly`, which the mutable field rejects.
+
+   Persistence is deliberate rather than incidental: `updateExecution` writes
+   to the registry only when `persist` is set AND the phase actually changed
+   (`executionPersisted && next.phase === previous.phase` returns early), so
+   streaming heartbeats do not spam the transcript's custom-entry log, while a
+   retry or terminal transition survives the session's disposal for `hub
+   resume` to read back through `ref.history.execution`. `updateExecution` is
+   exposed on `SubagentRunMonitor` because `finalizeRunResult` is a
+   module-level function that cannot close over the monitor's locals — the
+   dropped commit called a bare `updateExecution` there and did not compile.
+
+   `hub resume` (`tools/hub/resume.ts`) is the explicit-continuation op:
+   idempotent via `requestSubagentRecovery` (a second request while one is
+   queued returns "already scheduled" instead of starting a duplicate run),
+   refuses a hard-killed child ("不可续跑", pointing at `history://`), refuses
+   plan mode/restricted sessions and non-`sub` refs, and reports a queued vs
+   started run honestly (`current.run > previous.run`) rather than claiming
+   resumption before the runtime confirms it. Continuation lineage flows
+   through `attachIrcWakeTurnMonitor` and `runSubagentFollowUpTurn`, which
+   seed their monitor from `ref.history.execution` so a follow-up turn
+   accumulates onto the prior run's retry history instead of resetting it.
+
+   `2f06f47` itself could not compile or land: it was authored against a stale
+   `executor.ts` and its diff DELETED nine live locals
+   (`accumulatedUsage`, `hasUsage`, `budgetSteerSent`, `budgetLimitExceeded`,
+   `budgetStopRequested`, `budgetStopAbortPromise`, `terminalError`,
+   `consecutiveYieldToolErrors`, the pre-existing `activeSession`),
+   `ExecutorOptions.restrictToolNames`, and
+   `IrcWakeTurnMonitorOptions.{agent,description}` — all still referenced by
+   the file and by `structured-subagent.ts`/`persisted-revive.ts`. It was
+   re-landed by applying only the semantic hunks onto HEAD's clean
+   `executor.ts` (the commit also carried unrelated reformat noise);
+   `render.ts`'s `formatBadge(view.summary, iconColor)` additionally required
+   widening `formatBadge`'s `color` parameter from `ToolUIColor` (no "dim")
+   to `ThemeColor`.
+
+   Verified: `check:types` shows only the three pre-existing baseline errors
+   (`copy-selector.ts` `hit` ×2, `extensions-runner.test.ts`
+   `MemoryRuntimeContext`); `oxfmt --check` clean on every touched file;
+   34 hub-list tests green (4 new resume contracts: non-sub/self/broadcast
+   refusal, hard-killed unrecoverable, plan-mode refusal) plus 11
+   subagent-HUD and 511 task/extension tests; the three
+   `web-search-codex`/`browser-tabs`/Jina failures reproduce on a stashed
+   clean tree, so they are unrelated to this patch.
+
 
 ## Merge adjudications (v18.0.10 → v18.1.6 → v18.1.10, 2026-09-04)
 

@@ -1,5 +1,7 @@
 import type { AgentProgress, SubagentLifecyclePayload, SubagentProgressPayload } from "../task";
 import { TASK_SUBAGENT_LIFECYCLE_CHANNEL, TASK_SUBAGENT_PROGRESS_CHANNEL } from "../task";
+import type { SubagentExecutionState } from "../task/execution-state";
+import { latestSubagentExecution } from "../task/execution-view";
 import type { EventBus } from "../utils/event-bus";
 
 export interface ObservableSession {
@@ -22,6 +24,10 @@ export interface ObservableSession {
 	lastUpdate: number;
 	/** Latest progress snapshot from the subagent executor */
 	progress?: AgentProgress;
+	/** Latest lifecycle/progress execution snapshot, including pre-session queue state. */
+	execution?: SubagentExecutionState;
+	/** Restored snapshot without a live executor; never infer activity from its saved phase. */
+	historical?: boolean;
 }
 
 /** Coarse source of an observer change; callers use it to separate lifecycle work from high-frequency progress. */
@@ -33,6 +39,23 @@ const STATUS_MAP: Record<string, ObservableSession["status"]> = {
 	failed: "failed",
 	aborted: "aborted",
 };
+
+function executionStatus(execution: SubagentExecutionState): ObservableSession["status"] {
+	switch (execution.phase) {
+		case "completed":
+			return "completed";
+		case "failed":
+			return "failed";
+		case "cancelled":
+			return "aborted";
+		default:
+			return "active";
+	}
+}
+
+function progressStatus(progress: AgentProgress): ObservableSession["status"] {
+	return progress.status === "running" || progress.status === "pending" ? "active" : progress.status;
+}
 
 export class SessionObserverRegistry {
 	#sessions = new Map<string, ObservableSession>();
@@ -176,8 +199,23 @@ export class SessionObserverRegistry {
 						this.#ensureParentSortOrder(payload.parentToolCallId, sortOrder);
 						const existing = this.#sessions.get(payload.id);
 						if (existing) {
-							existing.status = status;
-							existing.lastUpdate = Date.now();
+							const execution = latestSubagentExecution(
+								payload.execution,
+								existing.execution,
+								existing.progress?.execution,
+							);
+							if (payload.execution && execution !== payload.execution) return;
+							const nextStatus = execution ? executionStatus(execution) : status;
+							if (
+								nextStatus === "active" &&
+								(existing.status !== "active" ||
+									(execution && execution.run > (existing.progress?.execution?.run ?? -1)))
+							)
+								existing.progress = undefined;
+							existing.execution = execution;
+							existing.status = nextStatus;
+							existing.historical = false;
+							existing.lastUpdate = execution?.updatedAt ?? Date.now();
 							existing.index = payload.index;
 							existing.parentToolCallId = payload.parentToolCallId ?? existing.parentToolCallId;
 							existing.detached = payload.detached ?? existing.detached;
@@ -190,12 +228,13 @@ export class SessionObserverRegistry {
 								label: payload.description ?? `Subagent #${payload.index}`,
 								agent: payload.agent,
 								description: payload.description,
-								status,
+								status: payload.execution ? executionStatus(payload.execution) : status,
 								sessionFile: payload.sessionFile,
 								parentToolCallId: payload.parentToolCallId,
 								detached: payload.detached,
 								index: payload.index,
-								lastUpdate: Date.now(),
+								execution: payload.execution,
+								lastUpdate: payload.execution?.updatedAt ?? Date.now(),
 							});
 						}
 						this.#notifyListeners("lifecycle");
@@ -215,7 +254,16 @@ export class SessionObserverRegistry {
 						const sortOrder = this.#ensureSortOrder(id);
 						this.#ensureParentSortOrder(payload.parentToolCallId, sortOrder);
 						if (existing) {
-							existing.lastUpdate = Date.now();
+							const execution = latestSubagentExecution(
+								progress.execution,
+								existing.execution,
+								existing.progress?.execution,
+							);
+							if (progress.execution && execution !== progress.execution) return;
+							existing.execution = execution;
+							existing.status = execution ? executionStatus(execution) : progressStatus(progress);
+							existing.historical = false;
+							existing.lastUpdate = execution?.updatedAt ?? Date.now();
 							existing.index = payload.index;
 							existing.parentToolCallId = payload.parentToolCallId ?? existing.parentToolCallId;
 							existing.detached = payload.detached ?? existing.detached;
@@ -229,12 +277,13 @@ export class SessionObserverRegistry {
 								label: progress.description ?? `Subagent #${payload.index}`,
 								agent: payload.agent,
 								description: progress.description,
-								status: "active",
+								status: progress.execution ? executionStatus(progress.execution) : progressStatus(progress),
 								sessionFile: payload.sessionFile,
 								parentToolCallId: payload.parentToolCallId,
 								detached: payload.detached,
 								index: payload.index,
-								lastUpdate: Date.now(),
+								execution: progress.execution,
+								lastUpdate: progress.execution?.updatedAt ?? Date.now(),
 								progress,
 							});
 						}

@@ -47,12 +47,19 @@ import { hasResolvableTranscript } from "../internal-urls/registry-helpers";
 import { AgentRegistry } from "../registry/agent-registry";
 import { type DiscoveryResult, discoverAgents } from "./discovery";
 import { createEvalCustomTools, describeEvalTools, evalToolsEnabled } from "./eval-tools";
+import { createQueuedSubagentProgress, publishSubagentProgress } from "./execution-progress";
+import { createSubagentExecution, type SubagentExecutionState, transitionSubagentExecution } from "./execution-state";
 import { generateTaskName } from "./name-generator";
 import { AgentOutputManager } from "./output-manager";
 import { mapWithConcurrencyLimitAllSettled, Semaphore } from "./parallel";
 import { renderResult, renderCall as renderTaskCall } from "./render";
 import { repairTaskParams } from "./repair-args";
-import { resolveEffectiveSubagentPolicy, runStructuredSubagent, StructuredSubagentError } from "./structured-subagent";
+import {
+	reserveStructuredSubagentId,
+	resolveEffectiveSubagentPolicy,
+	runStructuredSubagent,
+	StructuredSubagentError,
+} from "./structured-subagent";
 
 function renderSubagentUserPrompt(assignment: string): string {
 	return prompt.render(subagentUserPromptTemplate, {
@@ -879,6 +886,7 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 					tokens: 0,
 					cost: 0,
 					durationMs: 0,
+					execution: createSubagentExecution(callStartedAt),
 				},
 			});
 		}
@@ -917,6 +925,7 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 		const started: Array<{ agentId: string; jobId: string }> = [];
 		const failedSchedules: string[] = [];
 		for (const spawn of asyncSpawns) {
+			publishSubagentProgress(this.session, spawn.progress, { parentToolCallId: toolCallId, detached: true });
 			try {
 				const jobId = this.#registerSpawnJob({
 					manager,
@@ -938,6 +947,8 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 				const message = error instanceof Error ? error.message : String(error);
 				failedSchedules.push(`${spawn.agentId}: ${message}`);
 				spawn.progress.status = "failed";
+				spawn.progress.execution = transitionSubagentExecution(spawn.progress.execution!, "failed", message);
+				publishSubagentProgress(this.session, spawn.progress, { parentToolCallId: toolCallId, detached: true });
 				settledCount += 1;
 				failedCount += 1;
 			}
@@ -1053,6 +1064,7 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 						? "completed"
 						: "failed";
 				spawn.progress.durationMs = result.durationMs;
+				spawn.progress.execution = result.execution ?? spawn.progress.execution;
 			} else {
 				spawn.progress.status = payloads[position] ? "failed" : "aborted";
 			}
@@ -1136,6 +1148,8 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 				if (!semaphoreHeld || runSignal.aborted) {
 					releasePermit();
 					progress.status = "aborted";
+					progress.execution = transitionSubagentExecution(progress.execution!, "cancelled", "启动前已取消");
+					publishSubagentProgress(this.session, progress, { parentToolCallId: toolCallId, detached: true });
 					onSettled?.(true);
 					throw new Error("Aborted before execution");
 				}
@@ -1170,6 +1184,7 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 							progress.recentOutput = nextProgress.recentOutput.slice();
 							progress.retryState = nextProgress.retryState;
 							progress.retryFailure = nextProgress.retryFailure;
+							progress.execution = nextProgress.execution;
 						}
 						const updateText =
 							update.content.find(part => part.type === "text")?.text ?? `Running background task ${agentId}...`;
@@ -1183,7 +1198,7 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 						agentId,
 						progress.index,
 						true,
-						{ invokedAt: startedAt, acquiredAt },
+						{ invokedAt: startedAt, acquiredAt, execution: progress.execution },
 						cleanup => {
 							// Tie the retained temp directory's lifetime to this job
 							// row: the manager runs `cleanup` exactly once, on
@@ -1212,6 +1227,14 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 					progress.extractedToolData = singleResult?.extractedToolData;
 					progress.retryFailure = singleResult?.retryFailure;
 					progress.retryState = undefined;
+					progress.execution =
+						singleResult?.execution ??
+						transitionSubagentExecution(
+							progress.execution!,
+							resultFailed ? "failed" : "completed",
+							resultFailed ? finalText : undefined,
+						);
+					publishSubagentProgress(this.session, progress, { parentToolCallId: toolCallId, detached: true });
 					progress.modelRole = singleResult?.modelRole ?? progress.modelRole;
 					if (singleResult?.resolvedModel) {
 						progress.resolvedModel = singleResult.resolvedModel;
@@ -1239,6 +1262,12 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 					}
 					progress.status = "failed";
 					progress.durationMs = Math.max(0, Date.now() - startedAt);
+					progress.execution = transitionSubagentExecution(
+						progress.execution!,
+						"failed",
+						error instanceof Error ? error.message : String(error),
+					);
+					publishSubagentProgress(this.session, progress, { parentToolCallId: toolCallId, detached: true });
 					onSettled?.(true);
 					const statusText = `Background task ${agentId} failed.`;
 					await reportProgress(statusText, buildDetails() as unknown as Record<string, unknown>);
@@ -1275,28 +1304,6 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 		signal?: AbortSignal,
 		onUpdate?: AgentToolUpdateCallback<TaskToolDetails>,
 	): Promise<AgentToolResult<TaskToolDetails>> {
-		if (spawns.length === 1) {
-			const spawn = spawns[0]!;
-			const semaphore = this.#getSpawnSemaphore();
-			const invokedAt = Date.now();
-			await semaphore.acquire(signal);
-			const acquiredAt = Date.now();
-			try {
-				return await this.#executeSync(
-					toolCallId,
-					spawnParamsFor(params, spawn.item, defaultAgent),
-					signal,
-					onUpdate,
-					spawn.preAllocatedId,
-					spawn.index,
-					false,
-					{ invokedAt, acquiredAt },
-				);
-			} finally {
-				this.#releaseSpawnSemaphore();
-			}
-		}
-
 		const startTime = Date.now();
 		const latestProgress = new Map<number, AgentProgress>();
 		const emitCombined = () => {
@@ -1363,11 +1370,35 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 			spawns.length,
 			async (spawn, _position, workerSignal) => {
 				const invokedAt = Date.now();
+				const id =
+					spawn.preAllocatedId ?? (await reserveStructuredSubagentId(this.session, { label: spawn.item.name }));
+				const agentName = spawn.item.agent ?? defaultAgent;
+				const queued = createQueuedSubagentProgress(
+					{
+						id,
+						index: spawn.index,
+						agent: agentName,
+						agentSource: this.#discoveredAgents.find(agent => agent.name === agentName)?.source ?? "user",
+						task: renderSubagentUserPrompt(spawn.item.task ?? ""),
+						assignment: spawn.item.task,
+					},
+					invokedAt,
+				);
+				publishSubagentProgress(this.session, queued, { parentToolCallId: toolCallId, detached: false });
+				onItemProgress?.(spawn.index, queued);
 				let semaphoreHeld = false;
 				try {
 					await semaphore.acquire(workerSignal);
 					semaphoreHeld = true;
 				} catch (error) {
+					queued.status = workerSignal.aborted ? "aborted" : "failed";
+					queued.execution = transitionSubagentExecution(
+						queued.execution!,
+						workerSignal.aborted ? "cancelled" : "failed",
+						String(error),
+					);
+					publishSubagentProgress(this.session, queued, { parentToolCallId: toolCallId, detached: false });
+					onItemProgress?.(spawn.index, queued);
 					if (workerSignal.aborted) return undefined;
 					throw error;
 				}
@@ -1384,10 +1415,10 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 						spawnParamsFor(params, spawn.item, defaultAgent),
 						workerSignal,
 						itemOnUpdate,
-						spawn.preAllocatedId,
+						id,
 						spawn.index,
 						false,
-						{ invokedAt, acquiredAt },
+						{ invokedAt, acquiredAt, execution: queued.execution },
 					);
 				} finally {
 					if (semaphoreHeld) this.#releaseSpawnSemaphore();
@@ -1426,7 +1457,7 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 		preAllocatedId?: string,
 		spawnIndex = 0,
 		detached = false,
-		launchTiming?: { invokedAt: number; acquiredAt: number },
+		launchTiming?: { invokedAt: number; acquiredAt: number; execution?: SubagentExecutionState },
 		onArtifactsRetained?: (cleanup: () => Promise<void>) => void,
 	): Promise<AgentToolResult<TaskToolDetails>> {
 		return this.#runSpawn(
@@ -1451,7 +1482,7 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 		preAllocatedId?: string,
 		spawnIndex = 0,
 		detached = false,
-		launchTiming?: { invokedAt: number; acquiredAt: number },
+		launchTiming?: { invokedAt: number; acquiredAt: number; execution?: SubagentExecutionState },
 		onArtifactsRetained?: (cleanup: () => Promise<void>) => void,
 	): Promise<AgentToolResult<TaskToolDetails>> {
 		const startTime = Date.now();
@@ -1491,6 +1522,7 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 				...(onArtifactsRetained ? { onArtifactsRetained } : {}),
 				invokedAt: launchTiming?.invokedAt,
 				acquiredAt: launchTiming?.acquiredAt,
+				execution: launchTiming?.execution,
 				...("isolated" in params ? { isolation: { requested: params.isolated } } : {}),
 				blockedAgent: this.#blockedAgent,
 				enableLsp: (this.session.enableLsp ?? true) && this.session.settings.get("task.enableLsp"),
@@ -1518,6 +1550,18 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 			);
 		} catch (error) {
 			const message = error instanceof StructuredSubagentError ? error.message : String(error);
+			if (latestProgress?.execution) {
+				latestProgress = {
+					...latestProgress,
+					status: signal?.aborted ? "aborted" : "failed",
+					execution: transitionSubagentExecution(
+						latestProgress.execution,
+						signal?.aborted ? "cancelled" : "failed",
+						message,
+					),
+				};
+				publishSubagentProgress(this.session, latestProgress, { parentToolCallId: toolCallId, detached });
+			}
 			return {
 				content: [{ type: "text", text: `Task execution failed: ${message}` }],
 				details: {

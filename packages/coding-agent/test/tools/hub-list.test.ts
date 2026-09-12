@@ -9,6 +9,12 @@ import { IrcBus } from "@oh-my-pi/pi-coding-agent/irc/bus";
 import { AgentLifecycleManager } from "@oh-my-pi/pi-coding-agent/registry/agent-lifecycle";
 import { AgentRegistry, getAgentTombstonePath, MAIN_AGENT_ID } from "@oh-my-pi/pi-coding-agent/registry/agent-registry";
 import { ensurePersistedRoster, registerPersistedSubagents } from "@oh-my-pi/pi-coding-agent/registry/persisted-agents";
+import {
+	createSubagentExecution,
+	retrySubagentExecution,
+	startSubagentExecution,
+	transitionSubagentExecution,
+} from "@oh-my-pi/pi-coding-agent/task/execution-state";
 import type { AgentSession } from "@oh-my-pi/pi-coding-agent/session/agent-session";
 import { CURRENT_SESSION_VERSION } from "@oh-my-pi/pi-coding-agent/session/session-entries";
 import { collectIrcPeerRoster } from "@oh-my-pi/pi-coding-agent/task/executor";
@@ -20,6 +26,7 @@ import {
 	executeSend,
 	MAX_HUB_LIST_LIMIT,
 } from "@oh-my-pi/pi-coding-agent/tools/hub/messaging";
+import { executeResume } from "@oh-my-pi/pi-coding-agent/tools/hub/resume";
 import { prompt, TempDir } from "@oh-my-pi/pi-utils";
 
 function sessionHeader(id: string): string {
@@ -1791,5 +1798,164 @@ describe("hub direct addressing refreshes the caller root without a prior list",
 		);
 		expect(unknown.isError).toBeTruthy();
 		expect(unknown.details?.receipts?.[0]?.outcome).toBe("failed");
+	});
+});
+
+describe("hub resume", () => {
+	it("refuses ids that are not resumable subagents of this session", async () => {
+		const registry = new AgentRegistry();
+		registry.register({
+			id: MAIN_AGENT_ID,
+			displayName: MAIN_AGENT_ID,
+			kind: "main",
+			session: null,
+			status: "running",
+		});
+		registry.register({
+			id: "Advisor",
+			displayName: "advisor",
+			kind: "advisor",
+			session: null,
+			status: "idle",
+		});
+		const session = makeToolSession(registry, MAIN_AGENT_ID);
+
+		const self = await executeResume(session, { to: MAIN_AGENT_ID, message: "continue" });
+		expect(self.isError).toBeTruthy();
+		expect(self.details?.op).toBe("resume");
+
+		const broadcast = await executeResume(session, { to: "all", message: "continue" });
+		expect(broadcast.isError).toBeTruthy();
+
+		const missingMessage = await executeResume(session, { to: "Advisor" });
+		expect(missingMessage.isError).toBeTruthy();
+
+		// A non-sub agent is not a continuation target: its transcript is not a
+		// resumable child session, so resume must refuse rather than revive it.
+		const advisor = await executeResume(session, { to: "Advisor", message: "continue" });
+		expect(advisor.isError).toBeTruthy();
+		expect(listText(advisor)).toContain("Advisor");
+	});
+
+	it("reports a hard-killed subagent as unrecoverable instead of claiming a restart", async () => {
+		const registry = new AgentRegistry();
+		registry.register({
+			id: MAIN_AGENT_ID,
+			displayName: MAIN_AGENT_ID,
+			kind: "main",
+			session: null,
+			status: "running",
+		});
+		registry.register({
+			id: "Killed",
+			displayName: "task",
+			kind: "sub",
+			parentId: MAIN_AGENT_ID,
+			session: null,
+			status: "aborted",
+		});
+
+		const result = await executeResume(makeToolSession(registry, MAIN_AGENT_ID), {
+			to: "Killed",
+			message: "keep going",
+		});
+		expect(result.isError).toBeTruthy();
+		expect(listText(result)).toContain("不可续跑");
+	});
+
+	it("refuses continuation in plan mode", async () => {
+		const registry = new AgentRegistry();
+		registry.register({
+			id: MAIN_AGENT_ID,
+			displayName: MAIN_AGENT_ID,
+			kind: "main",
+			session: null,
+			status: "running",
+		});
+		registry.register({
+			id: "Worker",
+			displayName: "task",
+			kind: "sub",
+			parentId: MAIN_AGENT_ID,
+			session: null,
+			status: "idle",
+		});
+		const session: ToolSession = {
+			...makeToolSession(registry, MAIN_AGENT_ID),
+			getPlanModeState: () => ({ enabled: true, planFilePath: "/tmp/plan.md" }),
+		};
+
+		const result = await executeResume(session, { to: "Worker", message: "keep going" });
+		expect(result.isError).toBeTruthy();
+		expect(listText(result)).toContain("plan mode");
+	});
+
+	it("revives a parked child and carries its prior retry history into the new run", async () => {
+		using tempDir = TempDir.createSync("@omp-hub-resume-");
+		const dir = tempDir.path();
+		const root = path.join(dir, "main.jsonl");
+		const child = path.join(dir, "main", "Worker.jsonl");
+		await Bun.write(root, `${sessionHeader("r")}\n`);
+		await writeParkedTranscript(child, "Worker", "worker resume task");
+
+		const registry = AgentRegistry.global();
+		const delivered: string[] = [];
+		const priorRun = startSubagentExecution(
+			retrySubagentExecution(createSubagentExecution(Date.now() - 60_000), {
+				attempt: 2,
+				maxAttempts: 5,
+				delayMs: 5_000,
+				error: "429",
+			}),
+			Date.now() - 30_000,
+		);
+		registry.register({
+			id: MAIN_AGENT_ID,
+			displayName: MAIN_AGENT_ID,
+			kind: "main",
+			session: null,
+			sessionFile: root,
+			status: "running",
+		});
+		registry.register({
+			id: "Worker",
+			displayName: "task",
+			kind: "sub",
+			parentId: MAIN_AGENT_ID,
+			session: null,
+			sessionFile: child,
+			status: "parked",
+			history: { execution: transitionSubagentExecution(priorRun, "failed", "429 exhausted") },
+		});
+		AgentLifecycleManager.global().setPersistedSubagentReviverFactory(
+			async () => async () =>
+				({
+					isStreaming: false,
+					messages: [],
+					deliverIrcMessage: async (msg: { body: string }) => {
+						delivered.push(msg.body);
+						return "woken";
+					},
+				}) as unknown as AgentSession,
+			0,
+		);
+
+		const result = await executeResume(makeToolSession(registry, MAIN_AGENT_ID, root), {
+			to: "Worker",
+			message: "keep going",
+		});
+
+		if (result.isError) throw new Error("RESUME ERROR: " + listText(result));
+		expect(delivered).toEqual(["keep going"]);
+		expect(result.details?.op).toBe("resume");
+		// The continuation is queued against the previous run, preserving the
+		// cumulative retry count instead of resetting it, and is reported as
+		// requested-but-not-yet-started rather than as a live restart.
+		const execution = result.details?.execution;
+		expect(execution?.retries).toBe(1);
+		expect(execution?.recovery?.requestedBy).toBe(MAIN_AGENT_ID);
+		expect(execution?.phase).toBe("queued");
+		expect(registry.get("Worker")?.history?.execution?.recovery?.requestedBy).toBe(MAIN_AGENT_ID);
+		expect(listText(result)).toContain("Worker");
 	});
 });

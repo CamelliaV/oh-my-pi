@@ -42,6 +42,7 @@ import { type AgentRef, AgentRegistry, type AgentStatus, MAIN_AGENT_ID } from ".
 import { registerPersistedSubagents } from "../../registry/persisted-agents";
 import { USER_INTERRUPT_LABEL } from "../../session/messages";
 import { shortenPath, truncateToWidth } from "../../tools/render-utils";
+import { latestSubagentExecution, presentSubagentExecution } from "../../task/execution-view";
 import { formatLocalDateTimeWithOffset } from "../../utils/local-date";
 import type { ObservableSession, SessionObserverRegistry } from "../session-observer-registry";
 import { theme } from "../theme/theme";
@@ -1065,6 +1066,19 @@ export class AgentHubOverlayComponent extends Container implements SelectListMou
 		if (badge) modelDetails.push(badge);
 		if (modelDetails.length > 0) add(modelDetails.join(theme.sep.dot));
 
+		const execution = latestSubagentExecution(observed?.execution, progress?.execution, ref.history?.execution);
+		if (execution || progress) {
+			const executionView = presentSubagentExecution(
+				{ id: ref.id, execution, status: ref.status, progress, historical: ref.session === null },
+				Date.now(),
+				true,
+			);
+			section("Execution");
+			addWrapped(executionView.summary, 2);
+			for (const detail of executionView.details.slice(0, 6)) addWrapped(detail, 2);
+			for (const event of executionView.events.slice(-4)) addWrapped(event, 2);
+		}
+
 		const task = observed?.description ?? progress?.task ?? ref.activity;
 		if (task) {
 			section("Task");
@@ -1077,9 +1091,8 @@ export class AgentHubOverlayComponent extends Container implements SelectListMou
 		if (current) {
 			section("Current");
 			addWrapped(current);
-			if (progress?.retryState) {
+			if (progress?.retryState)
 				add(theme.fg("warning", `retry ${progress.retryState.attempt}/${progress.retryState.maxAttempts}`));
-			}
 		}
 
 		section("Usage", 1);

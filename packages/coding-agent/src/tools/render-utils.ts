@@ -15,7 +15,7 @@ import { pluralize } from "@oh-my-pi/pi-utils";
 import { formatKeyHints, type KeyId } from "../config/keybindings";
 import { isSettingsInitialized, settings } from "../config/settings";
 import { getDefault } from "../config/settings-schema";
-import type { Theme } from "../modes/theme/theme";
+import type { Theme, ThemeColor } from "../modes/theme/theme";
 import { Hasher } from "../tui/utils";
 import { formatDimensionNote, type ResizedImage } from "../utils/image-resize";
 
@@ -205,7 +205,7 @@ export function formatExpandHint(theme: Theme, expanded?: boolean, hasMore?: boo
 /**
  * Format a badge like [done] or [failed] with brackets and color.
  */
-export function formatBadge(label: string, color: ToolUIColor, theme: Theme): string {
+export function formatBadge(label: string, color: ThemeColor, theme: Theme): string {
 	const left = theme.format.bracketLeft;
 	const right = theme.format.bracketRight;
 	return theme.fg(color, `${left}${label}${right}`);

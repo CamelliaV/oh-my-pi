@@ -16,7 +16,6 @@ import {
 	shouldRenderAbortReason,
 } from "../../session/messages";
 import { createIrcMessageCard } from "../../tools/hub";
-import { replaceTabs, TRUNCATE_LENGTHS, truncateToWidth } from "../../tools/render-utils";
 import { canonicalizeMessage } from "../../utils/thinking-display";
 import { ToolActivityContainer } from "../components/tool-activity";
 import { TranscriptBlock } from "../components/transcript-container";
@@ -251,7 +250,6 @@ export type AssistantErrorPresentation =
 	| { kind: "none" }
 	| { kind: "full"; text: string; isError: true }
 	| { kind: "compact-recovered"; text: string; isError: false };
-
 
 /**
  * Resolve the turn-ending assistant error presentation, if any.

@@ -19,7 +19,6 @@ import {
 	formatDuration,
 	formatExpandHint,
 	formatMoreItems,
-	formatStatusIcon,
 	previewLine,
 	previewWindowRows,
 	replaceTabs,
@@ -35,6 +34,7 @@ import {
 	type SubmitReviewDetails,
 } from "../tools/review";
 import { framedBlock, renderStatusLine } from "../tui";
+import { executionDisplayText, presentSubagentExecution } from "./execution-view";
 import { repairDoubleEncodedJsonString } from "./repair-args";
 import { subprocessToolRegistry } from "./subprocess-tool-registry";
 import type { AgentProgress, SingleResult, TaskItem, TaskParams, TaskToolDetails, YieldItem } from "./types";
@@ -65,25 +65,6 @@ function renderNestedCycleLine(theme: Theme): string {
 	return theme.fg("dim", "… nested task progress already shown");
 }
 
-/**
- * Get status icon for agent state.
- * For running status, uses animated spinner if spinnerFrame is provided.
- * Maps AgentProgress status to styled icon format.
- */
-function getStatusIcon(status: AgentProgress["status"], theme: Theme, spinnerFrame?: number): string {
-	switch (status) {
-		case "pending":
-			return formatStatusIcon("pending", theme);
-		case "running":
-			return formatStatusIcon("running", theme, spinnerFrame);
-		case "completed":
-			return formatStatusIcon("success", theme);
-		case "failed":
-			return formatStatusIcon("error", theme);
-		case "aborted":
-			return formatStatusIcon("aborted", theme);
-	}
-}
 
 /**
  * Append tool-count, context, and cost stats to a status line string.
@@ -298,7 +279,7 @@ function formatJsonScalar(value: unknown, _theme: Theme): string {
 export function formatTaskId(id: string): string {
 	// Ids are name-based (e.g. "Anna", "Anna-2"); a "." separates nesting levels
 	// (e.g. "Anna.Bob"). Render the hierarchy with a ">" breadcrumb.
-	const sanitizedId = sanitizeText(id);
+	const sanitizedId = executionDisplayText(id);
 	const segments = sanitizedId.split(".");
 	return segments.length < 2 ? sanitizedId : segments.join(">");
 }
@@ -711,7 +692,7 @@ function formatAgentHeaderLabel(args: Partial<TaskParams> | undefined): string |
 
 /** Dim `⟨agent⟩` badge for a non-default agent type; empty for the generic worker. */
 export function agentTypeBadge(agent: string | undefined, theme: Theme): string {
-	const trimmed = agent?.trim();
+	const trimmed = agent ? executionDisplayText(agent, 40).trim() : undefined;
 	if (!trimmed || trimmed === "task") return "";
 	return ` ${theme.fg("dim", `${theme.format.bracketLeft}${trimmed}${theme.format.bracketRight}`)}`;
 }
@@ -899,13 +880,8 @@ function renderAgentProgress(
 ): string[] {
 	const lines: string[] = [];
 
-	const icon = getStatusIcon(progress.status, theme, spinnerFrame);
-	const iconColor =
-		progress.status === "completed"
-			? "success"
-			: progress.status === "failed" || progress.status === "aborted"
-				? "error"
-				: "accent";
+	const view = presentSubagentExecution({ id: progress.id, progress, status: progress.status }, nowMs, expanded);
+	const iconColor = frozen ? "dim" : view.color;
 
 	// Main status line: id: description [status] · stats · ⟨agent⟩
 	const trimmedDescription = progress.description?.trim();
@@ -913,40 +889,10 @@ function renderAgentProgress(
 	const displayId = formatTaskId(progress.id);
 	const titlePart = description ? `${theme.bold(displayId)}: ${description}` : displayId;
 	const indent = prefix ? `${prefix} ` : "";
-	let statusLine: string;
-	if (progress.status === "running" || progress.status === "pending") {
-		// Live (or queued) agents use the same dot finished rows keep: detached
-		// async spawns can stay "pending" while real work is running, so a
-		// pending/hourglass or spinner glyph reads wrong in the transcript. Keep
-		// the row static; the Task tool header already carries the dispatch icon.
-		const dot = theme.styledSymbol("status.done", frozen ? "dim" : "accent");
-		const nameColor = frozen ? "dim" : "accent";
-		const name = theme.fg(nameColor, description ? theme.bold(displayId) : displayId);
-		statusLine = `${indent}${dot} ${name}`;
-		if (description) {
-			statusLine += `${theme.fg(nameColor, ":")} ${theme.fg(nameColor, description)}`;
-		}
-	} else if (progress.status === "completed") {
-		// Finished rows keep the dot but settle from accent to the plain
-		// foreground: completion reads as a color change, not a new glyph.
-		statusLine = `${indent}${theme.styledSymbol("status.done", "text")} ${theme.fg("text", titlePart)}`;
-	} else {
-		statusLine = `${indent}${theme.fg(iconColor, icon)} ${theme.fg("accent", titlePart)}`;
-	}
+	const glyph = view.failed ? theme.status.error : view.phase === "cancelled" || progress.status === "aborted" ? theme.status.aborted : theme.status.done;
+	let statusLine = `${indent}${theme.fg(iconColor, glyph)} ${theme.fg(frozen ? "dim" : view.active ? "accent" : "text", titlePart)}`;
 	statusLine += agentTypeBadge(progress.agent, theme);
-
-	// Show retry-blocked badge so the parent immediately sees that a child
-	// is sleeping on a provider 429, not silently progressing. Wins over the
-	// generic running marker because "we're waiting on a quota window" is
-	// the operationally meaningful state.
-	if (progress.retryState && progress.status === "running") {
-		statusLine += ` ${formatBadge("retrying", "warning", theme)}`;
-	} else if (progress.retryFailure && (progress.status === "failed" || progress.status === "aborted")) {
-		statusLine += ` ${formatBadge("rate-limited", "error", theme)}`;
-	} else if (progress.status === "failed" || progress.status === "aborted") {
-		const statusLabel = progress.status === "failed" ? "failed" : "aborted";
-		statusLine += ` ${formatBadge(statusLabel, iconColor, theme)}`;
-	}
+	statusLine += ` ${formatBadge(view.summary, iconColor, theme)}`;
 
 	const showBadge = settings.get("task.showResolvedModelBadge");
 	if (progress.status === "running") {
@@ -960,11 +906,13 @@ function renderAgentProgress(
 	}
 
 	lines.push(statusLine);
+	for (const detail of view.details) lines.push(`${continuePrefix}${theme.tree.hook} ${theme.fg(iconColor, detail)}`);
+	for (const event of view.events) lines.push(`${continuePrefix}${theme.fg("dim", event)}`);
 
 	lines.push(...renderTaskSection(progress.assignment ?? progress.task, continuePrefix, expanded, theme));
 
 	// Current tool (if running) or most recent completed tool
-	if (progress.status === "running") {
+	if (expanded && view.active) {
 		if (progress.currentTool) {
 			let toolLine = `${continuePrefix}${theme.tree.hook} ${theme.fg("muted", sanitizeText(progress.currentTool))}`;
 			const toolDetail = progress.lastIntent ?? progress.currentToolArgs;
@@ -990,22 +938,6 @@ function renderAgentProgress(
 		}
 	}
 
-	// Retry detail line: surface why the subagent is paused and roughly how
-	// long until the next attempt. Without this, the parent UI would just
-	// keep spinning while a child sleeps on a 3-hour provider rate-limit.
-	if (progress.retryState && progress.status === "running") {
-		const remainingMs = Math.max(0, progress.retryState.startedAtMs + progress.retryState.delayMs - nowMs);
-		const waitLabel = remainingMs > 0 ? `in ${formatDuration(remainingMs)}` : "now";
-		const summary =
-			`retrying ${progress.retryState.attempt}/${progress.retryState.maxAttempts} ${waitLabel}: ` +
-			previewLine(sanitizeText(progress.retryState.errorMessage), 60);
-		lines.push(`${continuePrefix}${theme.tree.hook} ${theme.fg("warning", summary)}`);
-	} else if (progress.retryFailure && progress.status !== "running") {
-		const summary = `auto-retry gave up after ${progress.retryFailure.attempt} attempt${
-			progress.retryFailure.attempt === 1 ? "" : "s"
-		}: ${previewLine(sanitizeText(progress.retryFailure.errorMessage), 80)}`;
-		lines.push(`${continuePrefix}${theme.tree.hook} ${theme.fg("error", summary)}`);
-	}
 
 	// Render extracted tool data inline (e.g., review findings)
 	if (progress.extractedToolData) {
@@ -1234,15 +1166,12 @@ function renderAgentResult(
 				? theme.styledSymbol("status.done", "text")
 				: theme.status.error;
 	const iconColor = needsWarning ? "warning" : success ? "success" : mergeFailed ? "warning" : "error";
-	const statusText = aborted
-		? "aborted"
-		: needsWarning
-			? "warning"
-			: success
-				? "done"
-				: mergeFailed
-					? "merge failed"
-					: "failed";
+	const view = presentSubagentExecution(
+		{ id: result.id, execution: result.execution, status: aborted ? "aborted" : success ? "completed" : "failed", error: result.error },
+		result.execution?.stoppedAt ?? result.execution?.updatedAt ?? 0,
+		expanded,
+	);
+	const statusText = needsWarning ? `${view.label} · 警告` : mergeFailed ? "合并失败" : view.summary;
 
 	// Main status line: id: description [status] · stats · ⟨agent⟩
 	const trimmedDescription = result.description ? sanitizeText(result.description).trim() : undefined;
@@ -1274,6 +1203,8 @@ function renderAgentResult(
 	}
 
 	lines.push(statusLine);
+	for (const detail of view.details) lines.push(`${continuePrefix}${theme.fg(view.color, detail)}`);
+	for (const event of view.events) lines.push(`${continuePrefix}${theme.fg("dim", event)}`);
 
 	lines.push(...renderTaskSection(result.assignment ?? result.task, continuePrefix, expanded, theme));
 
@@ -1582,9 +1513,12 @@ export function renderResult(
 			// the display order, so folding from the top keeps running/pending
 			// agents (and their current-tool lines) visible while one summary line
 			// stands in for everything above it.
-			const visible = expanded ? ordered : ordered.slice(Math.max(0, ordered.length - COLLAPSED_AGENT_LIMIT));
+			const retainedFailures = ordered.filter(progress => progress.execution?.phase === "failed" || progress.status === "failed").slice(0, COLLAPSED_AGENT_LIMIT);
+			const retained = new Set(retainedFailures);
+			for (let index = ordered.length - 1; index >= 0 && retained.size < COLLAPSED_AGENT_LIMIT; index--) retained.add(ordered[index]!);
+			const visible = expanded ? ordered : ordered.filter(progress => retained.has(progress));
 			if (visible.length < ordered.length) {
-				lines.push(formatHiddenProgressLine(ordered.slice(0, ordered.length - visible.length), theme));
+				lines.push(formatHiddenProgressLine(ordered.filter(progress => !retained.has(progress)), theme));
 			}
 			for (const progress of visible) {
 				lines.push(

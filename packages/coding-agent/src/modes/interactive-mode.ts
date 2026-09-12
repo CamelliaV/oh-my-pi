@@ -122,6 +122,7 @@ import { STTController, type SttState } from "../stt";
 import { resolveCliEntryCmd } from "../subprocess/worker-client";
 import { discoverTitleSystemPromptFile, resolvePromptInput } from "../system-prompt";
 import { labelEchoesHandle } from "../task/label";
+import { presentSubagentExecution } from "../task/execution-view";
 import { agentTypeBadge, formatTaskId } from "../task/render";
 import type { ConfiguredThinkingLevel } from "../thinking";
 import { tinyTitleClient } from "../tiny/title-client";
@@ -509,51 +510,40 @@ const SUBAGENT_OBSERVER_UI_COALESCE_MS = 100;
  * Returns an empty array when nothing is running so the container can clear.
  */
 export function renderSubagentHudLines(sessions: ObservableSession[], columns: number): string[] {
-	const running = sessions.filter(
-		session => session.kind === "subagent" && session.status === "active" && session.detached === true,
-	);
-	if (running.length === 0) return [];
-
-	const dot = theme.styledSymbol("status.done", "accent");
-	const visible = running.slice(0, SUBAGENT_HUD_VISIBLE_LIMIT);
-	const hiddenCount = running.length - visible.length;
-	const rows = renderTreeList(
-		{
-			items: visible,
-			expanded: true,
-			renderItem: session => {
-				const displayId = formatTaskId(session.id);
-				const role = session.agent ?? session.progress?.agent;
-				const badge = agentTypeBadge(role, theme);
-				let line = `${dot} ${theme.fg("accent", theme.bold(displayId))}${badge}`;
-				const description = session.description?.trim() || session.progress?.description?.trim();
-				const distinctDescription =
-					description && !labelEchoesHandle(session.id, description) ? description : undefined;
-				if (distinctDescription) {
-					const budget = Math.max(
-						TRUNCATE_LENGTHS.SHORT,
-						columns - visibleWidth(displayId) - visibleWidth(Bun.stripANSI(badge)) - 10,
-					);
-					const formatted = replaceTabs(distinctDescription).replace(/\s*[\r\n]+\s*/g, " ↵ ");
-					line += `${theme.fg("accent", ":")} ${theme.fg("accent", truncateToWidth(formatted, budget))}`;
-				} else {
-					// No spawn description: fall back to a muted task preview, same as
-					// the inline task rows when a row has no label.
-					const taskPreview = session.progress?.task?.trim();
-					if (taskPreview && !labelEchoesHandle(session.id, taskPreview)) {
-						const formatted = replaceTabs(taskPreview).replace(/\s*[\r\n]+\s*/g, " ↵ ");
-						line += ` ${theme.fg("muted", truncateToWidth(formatted, TRUNCATE_LENGTHS.SHORT))}`;
-					}
-				}
-				return line;
-			},
+	const visibleSessions = sessions.filter(session => {
+		if (session.kind !== "subagent" || session.detached !== true) return false;
+		if (session.status === "active" || session.status === "failed" || session.status === "aborted") return true;
+		return session.execution?.phase === "failed" || session.execution?.phase === "cancelled" || session.historical === true;
+	});
+	if (visibleSessions.length === 0) return [];
+	const visible = visibleSessions.slice(0, SUBAGENT_HUD_VISIBLE_LIMIT);
+	const hiddenCount = visibleSessions.length - visible.length;
+	const rows = renderTreeList({
+		items: visible,
+		expanded: true,
+		renderItem: session => {
+			const displayId = formatTaskId(session.id);
+			const role = session.agent ?? session.progress?.agent;
+			const badge = agentTypeBadge(role, theme);
+			const view = presentSubagentExecution(
+				{ id: session.id, execution: session.execution ?? session.progress?.execution, status: session.status, progress: session.progress, historical: session.historical },
+				Date.now(),
+			);
+			const color = view.color;
+			const description = session.description?.trim() || session.progress?.description?.trim();
+			const text = description && !labelEchoesHandle(session.id, description)
+				? description
+				: !session.execution && session.progress?.task
+					? session.progress.task
+					: view.summary;
+			const budget = Math.max(TRUNCATE_LENGTHS.SHORT, columns - visibleWidth(displayId) - visibleWidth(Bun.stripANSI(badge)) - 10);
+			return `${theme.styledSymbol("status.done", color)} ${theme.fg(color, theme.bold(displayId))}${badge}${theme.fg(color, ":")} ${theme.fg(color, truncateToWidth(replaceTabs(text).replace(/\s*[\r\n]+\s*/g, " ↵ "), budget))}`;
 		},
-		theme,
-	);
-	if (hiddenCount > 0) {
-		rows.push(theme.fg("dim", `… ${hiddenCount} more running — open Agent Hub for full list`));
-	}
-	return ["", theme.bold(theme.fg("accent", "Subagents")), ...rows.map(line => ` ${line}`)];
+	}, theme);
+	if (hiddenCount > 0) rows.push(theme.fg("dim", `… ${hiddenCount} more — open Agent Hub for full list`));
+	const unresolved = visibleSessions.filter(session => session.status === "failed" || session.status === "aborted" || session.execution?.phase === "failed" || session.execution?.phase === "cancelled").length;
+	const header = unresolved > 0 ? `Subagents · ${unresolved} 项待 Main 处理` : "Subagents";
+	return ["", theme.bold(theme.fg(unresolved > 0 ? "warning" : "accent", header)), ...rows.map(line => ` ${line}`)];
 }
 
 const CTRL_L_APPEARANCE_RESPONSE_DEADLINE_MS = 2000;

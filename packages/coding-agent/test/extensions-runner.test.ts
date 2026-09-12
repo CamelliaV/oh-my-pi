@@ -2091,11 +2091,7 @@ describe("ExtensionRunner", () => {
 
 			await runner.emit({ type: "session_start" });
 
-			expect(globalState.__ompMemoryStatus).toMatchObject({
-				backend: "mnemopi",
-				active: true,
-				searchable: true,
-			});
+			expect(globalState.__ompMemoryStatus).toMatchObject({ backend: "mnemopi", active: true, searchable: true });
 			delete globalState.__ompMemoryStatus;
 		});
 	});

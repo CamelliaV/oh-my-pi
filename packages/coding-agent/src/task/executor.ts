@@ -89,6 +89,16 @@ import {
 	type TaskToolDetails,
 	type YieldItem,
 } from "./types";
+import {
+	createSubagentExecution,
+	progressSubagentExecution,
+	retrySubagentExecution,
+	settleSubagentRetry,
+	startSubagentExecution,
+	transitionSubagentExecution,
+	SUBAGENT_EXECUTION_ENTRY_TYPE,
+	type SubagentExecutionState,
+} from "./execution-state";
 import { arrayValuedLabels, assembleYieldResult } from "./yield-assembly";
 
 export type { YieldItem } from "./types";
@@ -464,7 +474,8 @@ export interface ExecutorOptions {
 	 * Limit the child to its explicit host tool names and the required yield
 	 * tool, suppressing discovered and always-included capabilities.
 	 */
-	restrictToolNames?: boolean;
+	/** Queue/recovery execution snapshot from the task frontend. */
+	execution?: SubagentExecutionState;
 	signal?: AbortSignal;
 	onProgress?: (progress: AgentProgress) => void;
 	/**
@@ -1017,6 +1028,8 @@ interface RunMonitorArgs {
 	softRequestBudgetNotice: boolean;
 	/** Wall-clock cap in ms; 0 disables the timer. */
 	maxRuntimeMs: number;
+	/** Queue/recovery execution snapshot from the task frontend. */
+	execution?: SubagentExecutionState;
 }
 
 /**
@@ -1101,7 +1114,8 @@ function createSubagentRunMonitor(args: RunMonitorArgs): SubagentRunMonitor {
 		maxRuntimeMs,
 	} = args;
 	const startTime = Date.now();
-
+	const initialExecution = args.execution ?? createSubagentExecution(startTime);
+	let activeSession: AgentSession | null = null;
 	const progress: AgentProgress = {
 		index,
 		id,
@@ -1121,6 +1135,17 @@ function createSubagentRunMonitor(args: RunMonitorArgs): SubagentRunMonitor {
 		durationMs: 0,
 		modelOverride: args.modelOverride,
 		modelRole: args.modelRole,
+		execution: startSubagentExecution(initialExecution, startTime),
+	};
+	let executionPersisted = false;
+	const updateExecution = (next: SubagentExecutionState, persist = false): void => {
+		const previous = progress.execution;
+		if (next === previous) return;
+		progress.execution = next;
+		if (!persist || executionPersisted && next.phase === previous?.phase) return;
+		AgentRegistry.global().setHistory(id, { execution: next }, args.sessionFile);
+		activeSession?.sessionManager.appendCustomEntry(SUBAGENT_EXECUTION_ENTRY_TYPE, next);
+		executionPersisted = true;
 	};
 
 	const outputChunks: string[] = [];
@@ -1136,30 +1161,11 @@ function createSubagentRunMonitor(args: RunMonitorArgs): SubagentRunMonitor {
 	const listenerSignal = listenerController.signal;
 	const abortController = new AbortController();
 	const abortSignal = abortController.signal;
-	let activeSession: AgentSession | null = null;
 	let yieldCalled = false;
 	let yieldCallPending = false;
 	let yieldInvalidatedByAsync = false;
 	let yieldTurnStopRequested = false;
 	let yieldTurnStopPromise: Promise<void> | null = null;
-
-	// Accumulate usage incrementally from message_end events (no memory for streaming events)
-	const accumulatedUsage: Usage = {
-		input: 0,
-		output: 0,
-		cacheRead: 0,
-		cacheWrite: 0,
-		totalTokens: 0,
-		reasoningTokens: 0,
-		cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
-	};
-	let hasUsage = false;
-	let budgetSteerSent = false;
-	let budgetLimitExceeded = false;
-	let budgetStopRequested = false;
-	let budgetStopAbortPromise: Promise<void> | undefined;
-	let terminalError: string | undefined;
-	let consecutiveYieldToolErrors = 0;
 	let lastAssistantSalvageText: string | undefined;
 	let activeSessionAbortPromise: Promise<void> | undefined;
 
@@ -1479,14 +1485,9 @@ function createSubagentRunMonitor(args: RunMonitorArgs): SubagentRunMonitor {
 		switch (event.type) {
 			case "message_start":
 				if (event.message?.role === "assistant") {
+					if (!abortSignal.aborted) updateExecution(transitionSubagentExecution(progress.execution!, "responding", "等待模型输出"));
 					resetRecentOutput();
 				}
-				// An async-result follow-up injected after a recorded yield
-				// supersedes that yield: its payload predates the job outcome the
-				// model is now being shown. Un-latch so the quiescence barrier's
-				// reminder ladder demands a fresh yield. Guarded on the run signal:
-				// once the run is completing, late injections must not destabilize
-				// the settled classification.
 				if (yieldCalled && !abortSignal.aborted && isAsyncResultInjection(event.message)) {
 					yieldCalled = false;
 					yieldInvalidatedByAsync = true;
@@ -1494,54 +1495,33 @@ function createSubagentRunMonitor(args: RunMonitorArgs): SubagentRunMonitor {
 				break;
 
 			case "tool_execution_start": {
+				updateExecution(transitionSubagentExecution(progress.execution!, "tool", `执行 ${event.toolName}`));
 				progress.toolCount++;
 				progress.currentTool = event.toolName;
 				let startArgs: Record<string, unknown> = {};
-				if ("toolArgs" in event && isRecord(event.toolArgs)) {
-					startArgs = event.toolArgs;
-				} else if (isRecord(event.args)) {
-					startArgs = event.args;
-				}
+				if ("toolArgs" in event && isRecord(event.toolArgs)) startArgs = event.toolArgs;
+				else if (isRecord(event.args)) startArgs = event.args;
 				progress.currentToolArgs = extractToolArgsPreview(startArgs);
 				progress.currentToolStartMs = now;
 				const intent = event.intent?.trim();
-				if (intent) {
-					progress.lastIntent = intent;
-				}
-				if (event.toolName === "yield" && !yieldCalled) {
-					yieldCallPending = true;
-				}
-				// Reset any prior in-flight task snapshot so we don't show stale
-				// nested progress when the agent enters a fresh `task` call.
-				if (event.toolName === "task") {
-					progress.inflightTaskDetails = undefined;
-				}
+				if (intent) progress.lastIntent = intent;
+				if (event.toolName === "yield" && !yieldCalled) yieldCallPending = true;
+				if (event.toolName === "task") progress.inflightTaskDetails = undefined;
 				break;
 			}
 
 			case "tool_execution_end": {
+				if (!event.isError && event.toolName !== "yield") updateExecution(progressSubagentExecution(progress.execution!, `工具 ${event.toolName} 已返回`));
 				if (progress.currentTool) {
-					progress.recentTools.unshift({
-						tool: progress.currentTool,
-						args: progress.currentToolArgs || "",
-						endMs: now,
-					});
-					// Keep only last 5
-					if (progress.recentTools.length > 5) {
-						progress.recentTools.pop();
-					}
+					progress.recentTools.unshift({ tool: progress.currentTool, args: progress.currentToolArgs || "", endMs: now });
+					if (progress.recentTools.length > 5) progress.recentTools.pop();
 				}
 				progress.currentTool = undefined;
 				progress.currentToolArgs = undefined;
 				progress.currentToolStartMs = undefined;
-				// The finalized TaskToolDetails will be captured below into
-				// `extractedToolData.task`; drop the in-flight snapshot so the
-				// renderer doesn't double-count it against the final entry.
-				if (event.toolName === "task") {
-					progress.inflightTaskDetails = undefined;
-				}
+				if (event.toolName === "task") progress.inflightTaskDetails = undefined;
 
-				// Check for registered subagent tool handler
+
 				const handler = subprocessToolRegistry.getHandler(event.toolName);
 				const eventRecord: unknown = event;
 				const eventArgs = isRecord(eventRecord) && isRecord(eventRecord.args) ? eventRecord.args : {};
@@ -1662,6 +1642,7 @@ function createSubagentRunMonitor(args: RunMonitorArgs): SubagentRunMonitor {
 				// Extract text from assistant and toolResult messages (not user prompts)
 				const role = event.message?.role;
 				if (role === "assistant") {
+					if (!abortSignal.aborted) updateExecution(progressSubagentExecution(progress.execution!, "模型完成一轮回应"));
 					progress.requests += 1;
 					const eventContent = isRecord(event) && "content" in event ? event.content : undefined;
 					const messageContent = getMessageContent(event.message) || eventContent;
@@ -1793,13 +1774,8 @@ function createSubagentRunMonitor(args: RunMonitorArgs): SubagentRunMonitor {
 			emitSubagentEvent(event);
 			publishServingModel();
 			if (event.type === "auto_retry_start") {
-				progress.retryState = {
-					attempt: event.attempt,
-					maxAttempts: event.maxAttempts,
-					delayMs: event.delayMs,
-					errorMessage: event.errorMessage,
-					startedAtMs: Date.now(),
-				};
+				updateExecution(retrySubagentExecution(progress.execution!, { attempt: event.attempt, maxAttempts: event.maxAttempts, delayMs: event.delayMs, error: event.errorMessage }), true);
+				progress.retryState = { attempt: event.attempt, maxAttempts: event.maxAttempts, delayMs: event.delayMs, errorMessage: event.errorMessage, startedAtMs: Date.now() };
 				progress.retryFailure = undefined;
 				scheduleProgress(true);
 				return;
@@ -1807,29 +1783,23 @@ function createSubagentRunMonitor(args: RunMonitorArgs): SubagentRunMonitor {
 			if (event.type === "auto_retry_end") {
 				const attempt = progress.retryState?.attempt ?? event.attempt;
 				progress.retryState = undefined;
-				if (!event.success) {
-					progress.retryFailure = {
-						attempt,
-						errorMessage: event.finalError ?? "Auto-retry failed",
-					};
+				if (event.success) {
+					updateExecution(transitionSubagentExecution(settleSubagentRetry(progress.execution!), "waiting-model", "重试请求已恢复"), true);
+				} else {
+					const message = event.finalError ?? "自动重试失败";
+					updateExecution(transitionSubagentExecution(progress.execution!, "failed", message), true);
+					progress.retryFailure = { attempt, errorMessage: message };
 				}
 				scheduleProgress(true);
 				return;
 			}
 			if (isAgentEvent(event)) {
-				// Breadcrumb the synchronous subagent event handling so the loop
-				// watchdog can attribute any block to this in-process subagent.
 				pushLoopPhase(`subagent:${id}`);
-				try {
-					processEvent(event);
-				} catch (err) {
-					logger.error("Subagent event processing failed", {
-						error: err instanceof Error ? err.message : String(err),
-					});
+				try { processEvent(event); }
+				catch (err) {
+					logger.error("Subagent event processing failed", { error: err instanceof Error ? err.message : String(err) });
 					requestAbort("terminate");
-				} finally {
-					popLoopPhase();
-				}
+				} finally { popLoopPhase(); }
 			}
 		});
 	};
@@ -2376,6 +2346,7 @@ async function finalizeRunResult(args: FinalizeRunArgs): Promise<SingleResult> {
 						: monitor.resolveAbortReasonText()
 		: undefined;
 	progress.status = wasAborted ? "aborted" : exitCode === 0 ? "completed" : "failed";
+	updateExecution(transitionSubagentExecution(progress.execution!, wasAborted ? "cancelled" : exitCode === 0 ? "completed" : "failed", wasAborted ? finalAbortReason : exitCode === 0 ? "结果已提交" : (stderr || "子任务失败")), true);
 	monitor.scheduleProgress(true);
 
 	// Emit lifecycle end event after finalization so yield status is reflected
@@ -2388,6 +2359,7 @@ async function finalizeRunResult(args: FinalizeRunArgs): Promise<SingleResult> {
 		description: progress.description,
 		status: progress.status as "completed" | "failed" | "aborted",
 		sessionFile: args.sessionFile,
+		execution: progress.execution,
 		index,
 	};
 	emitSubagentFrame(args.eventBus, args.subagentEventBus, TASK_SUBAGENT_LIFECYCLE_CHANNEL, settledPayload);
@@ -2422,6 +2394,7 @@ async function finalizeRunResult(args: FinalizeRunArgs): Promise<SingleResult> {
 		outputPath,
 		extractedToolData: progress.extractedToolData,
 		retryFailure: progress.retryFailure,
+		execution: progress.execution,
 		outputMeta,
 	};
 }
@@ -2431,8 +2404,6 @@ export interface IrcWakeTurnMonitorOptions {
 	/** Registry id of the kept-alive subagent whose autonomous IRC wake turns are monitored. */
 	id: string;
 	index?: number;
-	agent: AgentDefinition;
-	description?: string;
 	modelOverride?: string | string[];
 	/** Explicit pre-expansion model role alias selected for this run. */
 	modelRole?: string;
@@ -2558,7 +2529,9 @@ export function attachIrcWakeTurnMonitor(session: AgentSession, options: IrcWake
 		const turnStartTime = Date.now();
 		const relay = Promise.withResolvers<void>();
 		session.trackIrcReply(relay.promise);
-		const sessionFile = AgentRegistry.global().get(id)?.sessionFile ?? options.sessionFile ?? undefined;
+		const ref = AgentRegistry.global().get(id);
+		const sessionFile = ref?.sessionFile ?? options.sessionFile ?? undefined;
+		const initialExecution = ref?.history?.execution;
 		const turnMonitor = createSubagentRunMonitor({
 			index,
 			id,
@@ -2575,6 +2548,7 @@ export function attachIrcWakeTurnMonitor(session: AgentSession, options: IrcWake
 			softRequestBudget: 0,
 			softRequestBudgetNotice: false,
 			maxRuntimeMs,
+			execution: initialExecution,
 		});
 
 		const startedPayload = {
@@ -2587,6 +2561,7 @@ export function attachIrcWakeTurnMonitor(session: AgentSession, options: IrcWake
 			status: "started",
 			sessionFile,
 			index,
+			execution: turnMonitor.progress.execution,
 		} as const;
 		emitSubagentFrame(options.eventBus, options.subagentEventBus, TASK_SUBAGENT_LIFECYCLE_CHANNEL, startedPayload);
 
@@ -2830,6 +2805,7 @@ export async function runSubagentFollowUpTurn(options: FollowUpTurnOptions): Pro
 	session.setWorkPoolYieldItems(options.workPoolYieldItems ?? []);
 	const ref = AgentRegistry.global().get(id);
 	const sessionFile = ref?.sessionFile ?? undefined;
+	const initialExecution = ref?.history?.execution;
 
 	const monitor = createSubagentRunMonitor({
 		index,
@@ -2845,6 +2821,7 @@ export async function runSubagentFollowUpTurn(options: FollowUpTurnOptions): Pro
 		parentToolCallId: options.parentToolCallId,
 		detached: true,
 		sessionFile,
+		execution: initialExecution,
 		softRequestBudget: 0,
 		softRequestBudgetNotice: false,
 		maxRuntimeMs: options.maxRuntimeMs ?? 0,
@@ -2860,6 +2837,7 @@ export async function runSubagentFollowUpTurn(options: FollowUpTurnOptions): Pro
 		status: "started",
 		sessionFile,
 		index,
+		execution: monitor.progress.execution,
 	} as const;
 	emitSubagentFrame(options.eventBus, options.subagentEventBus, TASK_SUBAGENT_LIFECYCLE_CHANNEL, startedPayload);
 
@@ -3057,6 +3035,7 @@ export async function runSubprocess(options: ExecutorOptions): Promise<SingleRes
 		onProgress,
 		eventBus: options.eventBus,
 		subagentEventBus: options.subagentEventBus,
+		execution: options.execution,
 		parentToolCallId: options.parentToolCallId,
 		detached: options.detached,
 		sessionFile: subtaskSessionFile,
@@ -3494,6 +3473,7 @@ export async function runSubprocess(options: ExecutorOptions): Promise<SingleRes
 				status: "started" as const,
 				sessionFile: subtaskSessionFile,
 				index,
+				execution: progress.execution,
 			};
 			emitSubagentFrame(options.eventBus, options.subagentEventBus, TASK_SUBAGENT_LIFECYCLE_CHANNEL, startedPayload);
 

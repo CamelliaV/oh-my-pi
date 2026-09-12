@@ -528,6 +528,8 @@ function callTitle(args: HubRenderArgs | undefined, theme: Theme): string {
 	switch (args?.op) {
 		case "send":
 			return `IRC ${theme.nav.selected} ${args.to?.trim() || "…"}`;
+		case "resume":
+			return `继续子任务 ${args.to?.trim() || "…"}`;
 		case "wait":
 			return `IRC ${theme.nav.back} ${args.from?.trim() || "anyone"}`;
 		case "inbox":

@@ -8,6 +8,7 @@ import { assistantTurnProducedOutput } from "../session/messages";
 import { EPHEMERAL_MODEL_CHANGE_ROLE } from "../session/session-entries";
 import { visitEntriesFromFileStream } from "../session/session-loader";
 import { loadBundledAgents } from "../task/agents";
+import { SUBAGENT_EXECUTION_ENTRY_TYPE, readSubagentExecution } from "../task/execution-state";
 import { isReadOnlyAgent } from "../task/read-only-policy";
 import { persistedVibeChildIds } from "../vibe/lifecycle";
 import {
@@ -151,6 +152,7 @@ async function readPersistedAgentHistory(
 	const parents = new Map<string, string | undefined>();
 	const assistantById = new Map<string, AssistantMetrics>();
 	const modelChangeById = new Map<string, { model: string; role?: string; resolvedModelIsFallback: boolean }>();
+	let execution: AgentHistorySummary["execution"];
 	let leafId: string | undefined;
 	let leafTimestamp: number | undefined;
 	try {
@@ -172,6 +174,11 @@ async function readPersistedAgentHistory(
 						role: typeof record.role === "string" ? record.role : undefined,
 						resolvedModelIsFallback: record.resolvedModelIsFallback === true,
 					});
+					return;
+				}
+				if (record.type === "custom" && record.customType === SUBAGENT_EXECUTION_ENTRY_TYPE) {
+					const candidate = readSubagentExecution(record.data);
+					if (candidate && (!execution || candidate.updatedAt > execution.updatedAt)) execution = candidate;
 					return;
 				}
 				if (record.type !== "message") return;
@@ -267,6 +274,7 @@ async function readPersistedAgentHistory(
 		...(metrics.requests > 0 ? { metrics } : {}),
 		...(resolvedModel ? { resolvedModel, resolvedModelIsFallback } : {}),
 		...(modelRole ? { modelRole } : {}),
+		...(execution ? { execution } : {}),
 	};
 }
 

@@ -1,6 +1,6 @@
 import { describe, expect, it } from "bun:test";
 import { streamAnthropic } from "@oh-my-pi/pi-ai/providers/anthropic";
-import type { AssistantMessage, Context, ImageContent, Model, TextContent, Usage } from "@oh-my-pi/pi-ai/types";
+import type { AssistantMessage, Context, ImageContent, Model, Usage } from "@oh-my-pi/pi-ai/types";
 import { buildModel } from "@oh-my-pi/pi-catalog/build";
 
 const RED_1X1_PNG_BASE64 =
@@ -31,11 +31,6 @@ const emptyUsage: Usage = {
 type AnthropicImageBlock = {
 	type: "image";
 	source: { type: "base64"; media_type: string; data: string };
-};
-
-type AnthropicToolResultBlock = {
-	type: "tool_result";
-	content: Array<TextContent | AnthropicImageBlock> | string;
 };
 
 type AnthropicPayload = {
@@ -117,11 +112,7 @@ function extractToolResultImages(payload: AnthropicPayload): AnthropicImageBlock
 	expect(Array.isArray(lastMessage?.content)).toBe(true);
 	const content = lastMessage?.content;
 	if (!Array.isArray(content)) throw new Error("Expected final Anthropic message content array");
-	const toolResult = content.find(block => block.type === "tool_result") as AnthropicToolResultBlock | undefined;
-	expect(toolResult).toBeDefined();
-	if (!toolResult || !Array.isArray(toolResult.content))
-		throw new Error("Expected Anthropic tool_result content array");
-	return toolResult.content.filter(isAnthropicImageBlock);
+	return content.filter(isAnthropicImageBlock);
 }
 
 describe("Anthropic many-image payload resizing", () => {

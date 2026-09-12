@@ -158,17 +158,19 @@ describe("subagent HUD lines", () => {
 		expect(defaultWorker).not.toMatch(/SchemaMigrator.*task/);
 	});
 
-	it("only shows active subagents and clears once everything finished", () => {
+it("keeps unresolved failures visible but clears completed work", () => {
 		const finishedStates = ["completed", "failed", "aborted"] as const;
 		const sessions: ObservableSession[] = [
 			{ id: "main", kind: "main", label: "Main Session", status: "active", lastUpdate: Date.now() },
 			...finishedStates.map(status => makeSession({ id: `Done-${status}`, status, description: "old work" })),
 		];
-		expect(renderSubagentHudLines(sessions, 120)).toEqual([]);
+		expect(Bun.stripANSI(renderSubagentHudLines(sessions, 120).join("\n"))).toContain("Done-failed");
+		expect(Bun.stripANSI(renderSubagentHudLines(sessions, 120).join("\n"))).toContain("Done-aborted");
+		expect(Bun.stripANSI(renderSubagentHudLines(sessions, 120).join("\n"))).not.toContain("Done-completed");
 
 		const out = render([...sessions, makeSession({ id: "StillRunning", description: "live work" })]);
 		expect(out).toContain("StillRunning: live work");
-		expect(out).not.toContain("Done-");
+		expect(out).toContain("Done-failed");
 		expect(out).not.toContain("Main Session");
 	});
 
@@ -181,7 +183,7 @@ describe("subagent HUD lines", () => {
 		const fromTask = render([
 			makeSession({ id: "Worker", progress: makeProgress({ id: "Worker", task: "Investigate flaky CI on macOS" }) }),
 		]);
-		expect(fromTask).toContain("Worker Investigate flaky CI on macOS");
+		expect(fromTask).toContain("Worker: Investigate flaky CI on macOS");
 
 		const multiLineTask = render([
 			makeSession({
@@ -315,7 +317,7 @@ describe("subagent HUD lines", () => {
 		for (const session of active.slice(8)) {
 			expect(out).not.toContain(`${session.id}: ${session.description}`);
 		}
-		expect(out).toContain("2 more running");
+		expect(out).toContain("2 more — open Agent Hub");
 	});
 });
 

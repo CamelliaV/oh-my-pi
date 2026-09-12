@@ -1,6 +1,8 @@
 import { afterEach, describe, expect, test, vi } from "bun:test";
+import type { AssistantMessage, ImageContent, ToolResultMessage } from "@oh-my-pi/pi-ai";
 import * as natives from "@oh-my-pi/pi-natives";
 import { Tokenizer, tokenizerEncodingForModel } from "../src/tokenizer";
+import type { AgentMessage } from "../src/types";
 
 afterEach(() => {
 	vi.restoreAllMocks();
@@ -105,6 +107,70 @@ describe("countTokens with modes", () => {
 		});
 		expect(() => new Tokenizer({ tokenizer: "deepseek-v3" }).countTokens("hello world", "strict")).toThrow(
 			"native tokenizer exploded",
+		);
+	});
+});
+
+describe("message image budgets", () => {
+	const image: ImageContent = { type: "image", data: "a".repeat(40_000), mimeType: "image/png" };
+	const toolResult: ToolResultMessage = {
+		role: "toolResult",
+		toolCallId: "image-call",
+		toolName: "read",
+		content: [image],
+		isError: false,
+		timestamp: 0,
+	};
+
+	test("budgets images in every wire message role without tokenizing their base64 as text", () => {
+		const tokenizer = new Tokenizer();
+		const perImage = tokenizer.countMessage(toolResult);
+		const assistant: AssistantMessage = {
+			role: "assistant",
+			content: [image],
+			api: "openai-responses",
+			provider: "openai",
+			model: "vision",
+			usage: {
+				input: 0,
+				output: 0,
+				cacheRead: 0,
+				cacheWrite: 0,
+				totalTokens: 0,
+				cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+			},
+			stopReason: "stop",
+			timestamp: 0,
+		};
+		const messages: AgentMessage[] = [
+			{ role: "user", content: [image], timestamp: 0 },
+			{ role: "developer", content: [image], timestamp: 0 },
+			assistant,
+		];
+		expect(perImage).toBeGreaterThan(0);
+		expect(perImage).toBeLessThan(tokenizer.countTokens(image.data));
+		expect(messages.map(message => tokenizer.countMessage(message))).toEqual([perImage, perImage, perImage]);
+		expect(tokenizer.countMessages(messages)).toBe(3 * perImage);
+		const mixed: AgentMessage = {
+			role: "developer",
+			content: [{ type: "text", text: "caption" }, image],
+			timestamp: 0,
+		};
+		expect(tokenizer.countMessage(mixed)).toBe(tokenizer.countTokens("caption") + perImage);
+	});
+
+	test("includes shell screenshot attachments in the pre-conversion message budget", () => {
+		const tokenizer = new Tokenizer();
+		const shell = {
+			role: "bashExecution",
+			command: "capture",
+			output: "saved",
+			images: [image, image],
+			timestamp: 0,
+		};
+		const textTokens = tokenizer.countTokens([shell.command, shell.output]);
+		expect(tokenizer.countMessage(shell as unknown as AgentMessage)).toBe(
+			textTokens + 2 * tokenizer.countMessage(toolResult),
 		);
 	});
 });

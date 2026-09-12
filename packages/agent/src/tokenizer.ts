@@ -215,27 +215,19 @@ export class Tokenizer {
 		if (role === "bashExecution") {
 			if ("command" in message && typeof message.command === "string") fragments.push(message.command);
 			if ("output" in message && typeof message.output === "string") fragments.push(message.output);
-			return fragments.length === 0 ? 0 : this.countTokens(fragments);
+			if ("images" in message && Array.isArray(message.images)) {
+				extra += message.images.length * IMAGE_TOKEN_ESTIMATE;
+			}
+			return extra + (fragments.length === 0 ? 0 : this.countTokens(fragments));
 		}
 
 		switch (message.role) {
-			case "user": {
-				const content: string | Array<{ type: string; text?: string }> = message.content;
-				if (typeof content === "string") {
-					fragments.push(content);
-				} else if (Array.isArray(content)) {
-					for (const block of content) {
-						if (block.type === "text" && block.text) {
-							fragments.push(block.text);
-						}
-					}
-				}
-				break;
-			}
 			case "assistant": {
 				for (const block of message.content) {
 					if (block.type === "text") {
 						fragments.push(block.text);
+					} else if (block.type === "image") {
+						extra += IMAGE_TOKEN_ESTIMATE;
 					} else if (block.type === "thinking") {
 						fragments.push(block.thinking);
 						// Providers charge for the opaque signature/reasoning payload that
@@ -266,6 +258,8 @@ export class Tokenizer {
 				}
 				break;
 			}
+			case "user":
+			case "developer":
 			case "hookMessage":
 			case "toolResult": {
 				if (typeof message.content === "string") {

@@ -22,6 +22,8 @@ import type { ToolSession } from "../tools";
 import { isIrcEnabled } from "../tools/hub";
 import { buildOutputValidator } from "../tools/output-schema-validator";
 import { trackLateCleanup } from "../utils/late-cleanup";
+import { createQueuedSubagentProgress, publishSubagentProgress } from "./execution-progress";
+import { type SubagentExecutionState, transitionSubagentExecution } from "./execution-state";
 import { type DiscoveryResult, discoverAgents, getAgent } from "./discovery";
 import { type ExecutorOptions, runSubprocess } from "./executor";
 import {
@@ -99,6 +101,8 @@ export interface StructuredSubagentRequest {
 	detached?: boolean;
 	invokedAt?: number;
 	acquiredAt?: number;
+	/** Queue/recovery state published before the executor owns the run. */
+	execution?: SubagentExecutionState;
 	isolation?: StructuredSubagentIsolationControls;
 	/** The parent agent name forbidden from recursively spawning itself. */
 	blockedAgent?: string;
@@ -421,6 +425,7 @@ function buildExecutorOptions(
 		taskDepth: session.taskDepth ?? 0,
 		invokedAt: request.invokedAt,
 		acquiredAt: request.acquiredAt,
+		execution: request.execution,
 		modelOverride: policy.modelOverride,
 		modelRole: policy.modelRole,
 		parentActiveModelPattern: policy.parentActiveModelPattern,
@@ -591,6 +596,20 @@ export async function runStructuredSubagent(request: StructuredSubagentRequest):
 			label: request.identity?.label ?? (request.invocationKind === "eval" ? "EvalAgent" : undefined),
 		});
 		const baseOptions = buildExecutorOptions(request, policy, lease, id);
+		const pending = createQueuedSubagentProgress({
+			id,
+			agent: policy.agentName,
+			agentSource: policy.agent.source,
+			task: baseOptions.task,
+			assignment: request.assignment,
+			index: request.index,
+			description: baseOptions.description,
+			modelRole: policy.modelRole,
+		}, request.invokedAt);
+		pending.execution = transitionSubagentExecution(request.execution ?? pending.execution!, "creating", "初始化会话与工具");
+		baseOptions.execution = pending.execution;
+		request.onProgress?.(pending);
+		publishSubagentProgress(request.session, pending, { parentToolCallId: request.parentToolCallId, detached: request.detached });
 		baseOptions.onCleanupDeferred = completion => {
 			deferredCleanup = completion;
 		};
@@ -627,6 +646,9 @@ export async function runStructuredSubagent(request: StructuredSubagentRequest):
 			});
 		}
 		attachStructuredOutputMetadata(result, policy.schema);
+		if (policy.isIsolated && result.execution && result.exitCode === 0 && !result.error && !result.aborted) {
+			result.execution = transitionSubagentExecution(result.execution, "finishing", "处理隔离产物");
+		}
 		hasValidStructuredOutput = result.structuredOutput?.status === "valid";
 		requiresRecoveryArtifacts =
 			policy.isIsolated &&
@@ -672,6 +694,9 @@ export async function runStructuredSubagent(request: StructuredSubagentRequest):
 		}
 
 		completedSuccessfully = result.exitCode === 0 && !result.error && !result.aborted;
+		if (result.execution) {
+			result.execution = transitionSubagentExecution(result.execution, completedSuccessfully ? "completed" : result.aborted ? "cancelled" : "failed", completedSuccessfully ? "结果已完成" : result.error);
+		}
 		return {
 			result,
 			policy,

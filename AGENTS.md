@@ -70,20 +70,8 @@ Use Bun APIs where they provide a cleaner alternative; fall back to `node:*` onl
 
 ### Quick reference
 
-| Operation       | Use                                       | Not                                |
-| --------------- | ----------------------------------------- | ---------------------------------- |
-| File read/write | `Bun.file()`, `Bun.write()`               | `readFileSync`, `writeFileSync`    |
-| Spawn process   | `` $`cmd` ``, `Bun.spawn()`               | `child_process`                    |
-| Sleep           | `Bun.sleep(ms)`                           | `setTimeout` promise               |
-| Binary lookup   | `$which("git")` from `@oh-my-pi/pi-utils` | `spawnSync(["which", "git"])`      |
-| HTTP server     | `Bun.serve()`                             | `http.createServer()`              |
-| SQLite          | `bun:sqlite`                              | `better-sqlite3`                   |
-| Hashing         | `Bun.hash()`, `Bun.password.*`, WebCrypto | `node:crypto`                      |
-| Path resolution | `import.meta.dir`, `import.meta.path`     | `fileURLToPath` dance              |
-| JSON5           | `Bun.JSON5.parse()` / `.stringify()`      | `json5` package                    |
-| JSONL           | `Bun.JSONL.parse()` / `.parseChunk()`     | `text.split("\n").map(JSON.parse)` |
-| String width    | `Bun.stringWidth()`                       | `get-east-asian-width`, custom     |
-| Text wrapping   | `Bun.wrapAnsi()`                          | custom ANSI-aware wrappers         |
+Prefer Bun APIs: `Bun.file()`, `Bun.write()`, `Bun.sleep()`, `$`cmd``, `bun:sqlite`, `Bun.hash()`. Use `node:*` only for what Bun doesn't cover. Never spawn shell commands for operations with proper APIs.
+
 
 ### Process execution
 
@@ -283,30 +271,16 @@ Test the contract the system exposes — not the easiest internal detail to asse
 ### Good vs. bad test filter
 
 - **Name the failure mode.** Every test MUST state what a consumer observes if it regresses. Cannot name one? NEVER add it.
-- **Good: transformation.** One fixture MAY prove parse/render/normalize/encode/resolve behavior when output is computed, not echoed.
-- **Good: branch or boundary.** Distinct inputs, empty values, malformed input, version/provider routing, and state transitions MUST prove distinct outcomes.
-- **Good: external contract.** Exact bytes/shape MAY be asserted when a provider, parser, protocol, or persisted consumer reads them.
-- **Good: precedence or negative contract.** Keep explicit `false`/override-wins assertions and required absence only when they prevent a documented leak, downgrade, 400, or incompatible wire field.
-- **Good: regression.** A repro MUST trigger the prior real failure path and assert the corrected observable result.
-- **Bad: static echo.** NEVER test a constructor/builder merely copied a fixture or baked constant into an in-memory config/metadata field.
-- **Bad: success passthrough.** NEVER assert `fn(x) === x` when `x` was already supplied/declared valid; assert a transform, rejection, or downstream effect instead.
-- **Bad: wording/defaults.** NEVER assert prompt/UI boilerplate, a default literal, object existence, non-empty output, or length growth without a consumer contract.
-- **Bad: duplicate rows.** Parameterized/loop rows MUST each cover a distinct branch, provider/model path, or consumer contract; delete same-path duplicates.
-- **Metadata exception.** Exact metadata, identity, ordering, or `undefined` MAY remain only when a downstream consumer depends on it and the test establishes branch, precedence, negative-contract, wire, or regression evidence.
-- **Termination exception.** For cyclic/large inputs, assert a bounded output, surfaced error, or state change; bare `not.toThrow()` is insufficient.
-- No placeholder tests, tautologies, or "the code ran" assertions (`expect(true).toBe(true)`, bare `not.toThrow()`, non-empty string checks, length-grew checks, "prompt exists" checks without semantic assertion).
-- Prefer contract-level tests over implementation details. Avoid asserting internal helper wiring, field assignment, singleton identity, incidental ordering, prompt boilerplate, or passthrough option forwarding unless another component depends on that exact detail.
-- Don't duplicate coverage across abstraction levels. If an integration test already proves the behavior, drop the narrower unit test that restates it through mocks.
-- Tests **must be full-suite safe**, not just file-local safe. No long-lived file-wide mutations of `Bun.*`, `process.platform`, `process.env`, or `Bun.env` when a narrower seam exists. Prefer per-test `vi.spyOn(...)` with `vi.restoreAllMocks()` in `afterEach`. A test that passes alone but poisons later files is broken.
-- **Never use `mock.module()`**. Bun's `mock.module()` mutates the global module registry and leaks across files ([oven-sh/bun#12823](https://github.com/oven-sh/bun/issues/12823)). Use `spyOn` on the imported module object instead. For pass deps, import the pass and spy on `.run`. For package deps, namespace-import and spy on the exported function.
-- For lifecycle/stateful code, prefer one test per invariant or transition over several tiny tests asserting one field each from the same transition.
-- For error handling, trigger the real failure path and assert the surfaced contract — don't instantiate error classes directly or inspect internal metadata.
-- Smoke tests are acceptable only when they catch a failure mode narrower tests would miss. "Package boots" or "command starts" alone is not enough.
-- Assert exact strings, ordering, and formatting only when downstream code parses or depends on the exact bytes. Otherwise assert semantic content.
-- Compile-time guarantees → type checks/type tests, not runtime placeholders.
-- **Never source-grep.** A test that reads an implementation file (`.ts`/`.rs`/build script) and asserts on its _text_ — `expect(src).toContain("someCall()")`, `.toMatch(/import .../)`, `.not.toContain("oldName")`, or "comment must say X" — is banned. It tests how code _looks_, not what it _does_: it breaks on harmless refactors (comment reflow, rename, import reorder) and passes while the behavior is broken. Assert the observable contract instead (run the code, check output/state/error), use the runtime smoke probe for wiring you cannot exercise in-process, and enforce structural invariants (no value-import of X, no self-import) with a type test or an oxlint rule — never a string scan of the source. (Reading a file your code _wrote_ — apply-patch result, generated bundle, temp fixture — and asserting on that output is fine; that is behavior, not a source grep.)
-- Don't add tests for tiny low-risk changes unless they protect a real contract or fix a regression-prone edge case.
-- Prefer focused package-local verification for the changed area.
+- **Name the failure mode.** Every test MUST state what a consumer observes if it regresses.
+
+- **Good**: transformation, branch/boundary, external contract, precedence, regression.
+
+- **Bad**: static echo, success passthrough, wording/defaults, duplicate rows, placeholder tests.
+
+- Prefer contract-level tests over implementation details.
+
+- Tests must be full-suite safe. No `mock.module()` (leaks globally). Never source-grep.
+
 
 ## Changelog
 
@@ -357,99 +331,24 @@ source-level rebase (below).
 - Baseline commit = pristine upstream tag source (from the release **tarball**,
   not a git clone — GitHub cloning is unreliable from this network; use
   `aria2c -x8 <tarball-url>`). Every commit after it is a local patch; keep
-  patches small and self-contained. Backup remote `origin` =
-  `https://github.com/CamelliaV/oh-my-pi` (private); push all branches there
-  (`git push origin --all`) after accepted work — never force-push over it
-  during rebase without a fresh backup.
-- `packages/natives/native/pi_natives.linux-x64-{baseline,modern}.node` are
-  reused binaries copied from `~/.omp/natives/<version>/` — cargo is never
-  needed. **natives are version-coupled**: after rebasing onto a new tag, run
-  the official binary of that tag once (`~/.omp/natives/<new>/` materializes),
-  then copy the two .node files over.
-- `~/.omp/agent/themes/amethyst-glass.json` custom theme (transparent bg
-  experiments) lives OUTSIDE this repo.
-
-### Build (~20 s)
+### Build
 
 ```bash
-cd ~/code/oh-my-pi
-bun install --frozen-lockfile          # first time only
+
+bun install --frozen-lockfile  # first time
+
 RELEASE_TARGETS='linux-x64' bun run ci:release:build-binaries
+
 install -Dm755 packages/coding-agent/binaries/omp-linux-x64 ~/.local/bin/omp-patched
+
 ```
 
-Never run `bun run release`, never push, never edit CHANGELOG sections.
 
-### Patch policy
 
-- One feature per commit, English commit messages matching upstream style.
-- Verify each patch by rendering the touched component standalone
-  (`bun packages/coding-agent/test/<name>.ts`, init the global theme via
-  `initTheme(false, "unicode", false, "amethyst-glass", "light")`) and/or
-  `omp-patched gallery`. Delete throwaway drivers after.
-- Local regression drivers kept in-tree: `packages/ai/test/reasoning-fallback-zh.ts`
-  (`bun` + exit code, uses the captured real-world [1210] error text).
-
-### Upgrading the fork (source-level, NEVER `omp update`)
-
-Preferred since v18: **synthetic-commit merge**. Create a commit whose parent
-is the old baseline commit and whose tree is the new tag's tarball
-(`upstream/v<NEW>` branch), then `git merge` it into a working branch — the
-merge-base is correct, so only fork-touched regions conflict with full
-three-way context. Future upgrades repeat this (each new synthetic commit
-parents onto the previous one), making every upgrade incremental. v17.3.5→v18.0.7
-was done this way (34 files, 76 hunks; merge commit `008c64c`); v18.0.9→v18.0.10
-cost exactly ONE trivial conflict (159 files, +6398−774); v18.0.10→v18.1.10
-(2026-09-04) went through `trial/v18.1.6` — 40 conflicts resolved there, then
-the v18.1.10 incremental merge added only 8 (541 files, +31953−15683).
-
-Legacy alternative: replace the worktree with the tarball and re-apply the
-patch series by hand/cherry-pick.
-
-1. `aria2c -x8 https://github.com/can1357/oh-my-pi/archive/refs/tags/v<NEW>.tar.gz`
-2. Synthetic commit + merge (above), resolve conflicts per adjudication. Read
-   [`docs/fork-patches.md`](docs/fork-patches.md) for the reasoning behind every
-   fork-touched region before adjudicating — the index below is not enough.
-3. Materialize new natives: run the official v<NEW> binary ONCE with an
-   isolated `HOME=/tmp/...` (`--smoke-test` triggers extraction), copy the two
-   .node files into `packages/natives/native/` of EVERY worktree that builds.
-4. `bun install --frozen-lockfile` + `bun run check:ts` + build + install.
-5. Verify: `omp-patched gallery`, `omp -r <fuzzy term>`, zh driver, `--no-session`
-   PTY probes for extensions (`/tools`) — debug sessions MUST use `--no-session`.
-
+**Upgrading**: Synthetic-commit merge (see `omp-fork-upstream-recon` skill). Copy new natives from `~/.omp/natives/<version>/`.
 
 ### Patch list (v18.1.10 baseline)
 
-Index only. Full rationale, wire measurements, and verification recipes live in
-[`docs/fork-patches.md`](docs/fork-patches.md) — read it before rebasing, before
-editing a patched region, or when a patch's reasoning matters.
+See `docs/fork-patches.md` for the full 31-patch rationale and verification recipes.
 
-1. `feat(tui)` user message bubble rounded frame — `user-message.ts`
-2. `fix(ai)` zh relay thinking-effort 400 fallback — `openai-reasoning-fallback.ts`
-3. `fix(ai)` misrouted-relay [1210] auto-retry, 3 layers — `fetch-retry.ts, openai-http.ts, flags.ts, retryable.ts`
-4. `feat(tui)` Ctrl+R rename in session picker — `session-selector.ts, custom-editor.ts, file-session-storage.ts`
-5. `feat(tui)` error/pending cards as frames without solid bg — `output-block.ts, default-renderer.ts, tool-execution.ts`
-6. `feat(cli)` fuzzy `--resume <term>` — `resume-match.ts, main.ts`
-7. `feat(tui)` turn-level token usage aggregate — `work-usage.ts`
-8. `feat(web)` codex-affinity search chain gating — `codex-affinity.ts, web-search-affinity-driver.ts, anthropic-affinity.ts, provider-chain.test.ts`
-9. `feat(tui)` tool intent as highlighted card annotation — `tool-execution.ts, read-tool-group.ts`
-10. `feat(extensions)` session-nav user-turn viewport jump — `session-nav.ts`
-11. `feat(extensions)` history_search recall over full session history — `recall.ts`
-12. `feat(extensions)` desktop-pet companion (bypasses disabled KDE notifications) — `pet-bridge.ts, omp_pet.py, skins.py, motions.json`
-13. `fix(tui)` kitty per-screen graphics store retransmit — `image.ts, tui.ts`
-14. `feat(tui)` read-only Workspace Inspector — `workspace-inspector/, git-snapshot.ts`
-15. `feat(tui)` bash-mode Ctrl+R command history search — `shell-history.ts`
-16. `feat(tui)` bash-mode Tab completion + history ghost text — `bash-autocomplete.ts`
-17. `fix(ai)` Claude Code cloak seam + relay `device_id` enrichment — `claude-code-cloak.ts, anthropic.ts, model-thinking.ts, anthropic-alignment.test.ts`
-18. `fix(ai)` relay prompt-cache restored by scoping the `cch` attestation — `claude-code-cloak.ts, anthropic.ts, anthropic-cch-cache-stability.test.ts`
-19. `feat(ai)` provider-declared Anthropic betas via `compat.extraBetas` — `types.ts, anthropic-alignment.test.ts, provider-chain.test.ts`
-20. `fix(tui)` draft-image preview strip follows the active composer shape — `custom-editor.ts, editor.ts`
-21. `fix(ai)` Anthropic user turns always serialize as content blocks — `anthropic.ts, anthropic-cch-cache-stability.test.ts`
-22. `fix(ai)` prompt-inclusive `input_tokens` on anthropic-wire relays — `anthropic.ts, types.ts, resolve.ts, models-config-schema-bundle.ts, anthropic-stream-envelope.test.ts`
-23. `feat(web)` Grok relay web-search channel (declarable endpoint/model/credential + real-search gate) — `grok.ts, grok-responses.ts, xai.ts, provider.ts, types.ts, settings-schema.ts, web-search-grok.test.ts`
-24. `fix(mnemopi)` stop rebuilding FTS mirrors on every bank open (gated on legacy/drift; cut ~500ms off session start) — `schema.ts, fts-sync.ts, fts-cjk-bigram.test.ts`
-25. `feat(cli)` prewarm git status scan so counts paint in the first status frame — `main.ts, active-repo-context.ts, status-line/component.ts`
-26. `fix(mnemopi)` embedding reconcile data-loss gate + persisted re-enqueue cooldown (ends the perpetual rebuild/quota loop) — `store.ts, embeddings.ts, schema.ts, embedding-model-reconcile.test.ts`
-27. `fix(ai)` let provider-pinned codex identity headers reach the wire (set-if-absent originator/UA in createCodexHeaders) — `openai-codex-responses.ts, openai-codex-header-pins.test.ts`
-28. `feat(ai)` user-editable hot-reloaded retry rules (`~/.omp/agent/retry-rules.json`: bidirectional message patterns, codex event codes, retry budgets) — `error/user-retry-rules.ts, error/retryable.ts, providers/anthropic.ts, providers/openai-codex-responses.ts, utils/openai-http.ts, test/user-retry-rules.test.ts`
-29. `feat(tui)` web_search card reports elapsed time and answer throughput (`searchThroughput`, timed chain + per-attempt fallback legs; `null`-not-zero when unmeasured) — `web/search/types.ts, web/search/render.ts, web/search/index.ts, web/search/provider.ts, cli/gallery-fixtures/web.ts, test/web/search/{throughput,render,query-pipeline,abort-and-timeout}.test.ts`
+31. `feat(ai)` models.yml multi-key pools per provider (`apiKeys: string[]` + `apiKeyRotation: first-fill|round-robin`, default first-fill) synced as `source:"config"` rows into the AuthStorage credential pool — block-aware rotation, persisted usage-limit blocks, stable row ids across config reloads — `ai/auth-storage.ts, ai/auth/sqlite-credential-store.ts, config/{models-config-schema-bundle,models-config,model-registry}.ts, test/{auth-storage-config-api-key-pool,model-registry-api-key-pool}.test.ts`

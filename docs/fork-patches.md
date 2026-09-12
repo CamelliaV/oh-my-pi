@@ -7,7 +7,6 @@ reasoning matters.
 
 ## Patch list (v18.1.10 baseline; merged 2026-09-04 from v18.0.10 via trial/v18.1.6 two-stage merge — adjudications at the bottom)
 
-
 1. `feat(tui)` user message bubble rounded frame — `user-message.ts` Box +
    `theme.boxRound`, `borderAccent`, `setIgnoreTight(true)`; OSC 133 markers
    open on the first frame row, close on the last.
@@ -105,520 +104,566 @@ reasoning matters.
    in `#bodyBox` for injection). Same annotation in `read-tool-group.ts` rows.
    Gallery fixtures expose intent. Tests: gallery-cli, read-tool-group,
    tool-execution, event-controller-args-reveal.
-10. `feat(extensions)` session-nav user-turn viewport jump — runtime extension
-   at `extensions/session-nav.ts`, deployed by symlink to
-   `~/.omp/agent/extensions/session-nav.ts` (rebase-immune, no binary rebuild).
-   Alt+U or `/turns`: fuzzy picker of user messages on the active branch;
-   Enter opens a fullscreen viewer rendering the branch through the REAL
-   pipeline (ChatTranscriptBuilder via subpath import + TranscriptContainer
-   assembly rules), viewport jumps to the selected block (n/p block-to-block,
-   SGR wheel 3 rows/notch, ctrl+o tool-output expansion, turn/line footer
-   synced from scroll offset, ⊕/☰ icons + accent numbers). ctrl+r rewind /
-   ctrl+b branch are explicit isIdle-guarded secondary actions. Viewer leaves
-   overlay mouseTracking off (selection-first: plain drag selects/copies text;
-   kitty translates wheel to arrow keys on the alt screen). PTY-verified
-   marker/jump/expansion/rewind + no-mouse-tracking-bytes paths.
-11. `feat(extensions)` history_search recall over full session history —
-   runtime extension at `extensions/recall.ts`, deployed by symlink to
-   `~/.omp/agent/extensions/recall.ts` (rebase-immune, no binary rebuild).
-   Compaction never deletes data: old entries stay on the branch tree, so a
-   stateless `history_search` tool reads `ctx.sessionManager.getBranch()` and
-   queries pre-compaction / pre-`/clear` messages directly (zero I/O, no JSONL
-   parsing). BM25 with tier weights (user > assistant > tool I/O > thinking) +
-   CJK bigram tokenizer for Chinese sessions; regex mode (`/re/` or
-   `regex:true`); turn-grouped excerpts with 8k char budget + pagination;
-   `expand:[entryId]` renders full originals and `include_images:true`
-   re-attaches persisted image blobs (screenshots) the model lost to
-   compaction. `loadMode: "essential"`, `approval: "read"`. Driver-tested on
-   synthetic + real session JSONL; PTY-registered via live `/tools`.
-12. `feat(extensions)` desktop-pet companion (bypasses disabled KDE notifications) —
-   runtime extension `extensions/pet-bridge.ts` (deployed by symlink to
-   `~/.omp/agent/extensions/`) + independent GTK4 layer-shell daemon
-   `desktop-pet/omp_pet.py` launched via `desktop-pet/omppet` wrapper (LD_PRELOADs
-   libgtk4-layer-shell; without it layer init fails and the window degrades to a
-   plain toplevel). KDE autostart: `~/.config/autostart/omp-pet.desktop`; hub name
-   `omp-pet`. Bridge pushes lifecycle state over `$XDG_RUNTIME_DIR/omp-pet.sock`
-   (JSON lines: hello/state/settle/poke/bye); `agent_end.willContinue` ignored;
-   esc-abort settles calm, error settles alert; open `ask` call or final
-   assistant message ending in ？/? settles as waiting("ask") NOT done — a
-   turn parked on user input is not a completion (verified live);
-   queued steering holds the working pose instead of flashing done;
-   terminal auto-retry failures (empty-stop retry cap etc.) settle as ERROR —
-   turn-recovery drops the failed assistant turn from the branch, so the
-   bridge remembers auto_retry_end{success:false,finalError} and agent_end
-   consumes it before the stopReason classification can celebrate.
-   waiting/done/error poses persist until clicked (`acknowledge_all`); working
-   states are ambient motion; idle >3min sleeps with zzz; multi-session aggregate,
-   newest-active wins, ×N badge. Model interaction: `pet_poke` tool (approval
-   "read", default discoverable) + `/pet` command + alt+p shortcut return one-line
-   reactions; plain click = local petting; right-click = context menu with
-   退出 (quit action in a widget-level "win" SimpleActionGroup — plain
-   Gtk.Window has no action map in GTK4). Position/mood persist in
-   `~/.local/state/omp-pet.json`. PangoCairo.show_layout takes exactly (cr, layout)
-   — position via ctx.move_to first. Read-only session supervision: daemon scans /proc every 3s for omp/omp-patched
-   processes (excludes __omp_worker_* helpers and zombies), so the ×N badge counts
-   REAL sessions including ones started before the bridge existed (they render as
-   `○ pid … · <proj> · 未桥接` until restarted with the extension loaded); hover
-   opens the supervision panel listing every session (bridged: glyph+state+tool+
-   elapsed; unbridged: pid+proj). Clock semantics: TURN clock (monotonic since
-   prompt) not state age — bridge marks the first working frame of each turn
-   `fresh:true`; tool flips within a turn never reset the timer; `ask` tool maps
-   to waiting, not a churning tool. Window drag tracks the pointer by PER-UPDATE
-   DELTAS (GtkGestureDrag offsets are cumulative from the press point — deltas
-   cancel constant compositor discrepancies) with layer-shell anchors FROZEN for
-   the whole gesture: flipping anchors mid-drag re-places the surface under the
-   grabbed pointer and corrupts all later surface-local offsets, which is why a
-   one-shot drag across the screen midpoint used to die. Nearest-edge re-anchor
-   + clamp happen once on release; wlr-layer-shell margins apply only on ANCHORED
-   edges, so set_anchor must flip LEFT/TOP together with RIGHT/BOTTOM and margins
-   go on the matching pair. The omppet wrapper must readlink -f BASH_SOURCE:
-   symlink invocation (~/.local/bin/omppet) otherwise resolves omp_pet.py in
-   ~/.local/bin and dies.
-   PTY-verified live turn: bash + pet_poke round
-   trip, `/pet status` 在线, parallel-session badge matched /proc ground truth;
-   replay-verified all poses. Skins: `desktop-pet/skins.py` plugin module —
-   `--skin cat|image:<png>|frames:<dir>|live2d:<model-dir>` (persisted in
-   `~/.local/state/omp-pet.json`; bad asset/deps fall back to cat with a stderr
-   notice). image = one cutout PNG animated by the shared pose dict; frames =
-   `<state>-<n>.png` sequences with alias chain (done→idle etc.), ~7fps; live2d =
-   live2d-py + GtkGLArea overlay (chrome drawn on a DrawingArea above GL),
-   optional per-model `motions.json` mapping pet states→motion/expression.
-   Launcher prefers `~/.local/share/omp-pet/venv/bin/python` when it can import
-   gi+live2d. Cairo gotcha: clip() consumes the path — pixbuf draw must end in
-   paint_with_alpha(), fill() after clip() is a no-op; PyCairo has NO
-   ctx.global_alpha; ImageSurface.create_for_data needs a WRITABLE buffer
-   (bytearray, not bytes). live2d mode RUNTIME-VERIFIED with Hiyori sample
-   (~/.local/share/omp-pet/models/Hiyori + motions.json state→motion map):
-   build recipe = PyPI sdist (GitHub main branch lacks Live2D/CMakeLists) +
-   pre-place CubismSdkForNative zip into cubism_sdk_temp.zip + inject
-   `#include <cstdint>` into .hpp/.cpp only (NOT Glad .c/khrplatform.h —
-   <cstdint> is C++ and breaks the C build) + venv pip wheel; system python
-   3.14 has no cp314 wheel so venv is mandatory. Rendering goes through an
-   EGL pbuffer + OpenGL 2.1-compat context blitted to Cairo as premultiplied
-   BGRA — GtkGLArea CANNOT host Cubism (GDK only offers core/ES; Cubism
-   shaders are GLSL 120 → silent empty draw). ctypes c_int arrays reject
-   float sizes (BODY_BOX must be int()). KWin logical coords ≠ spectacle
-   physical pixels under 1.5× scale — locate windows by color-clustering the
-   screenshot, not by geometry math.
+10.   `feat(extensions)` session-nav user-turn viewport jump — runtime extension
+      at `extensions/session-nav.ts`, deployed by symlink to
+      `~/.omp/agent/extensions/session-nav.ts` (rebase-immune, no binary rebuild).
+      Alt+U or `/turns`: fuzzy picker of user messages on the active branch;
+      Enter opens a fullscreen viewer rendering the branch through the REAL
+      pipeline (ChatTranscriptBuilder via subpath import + TranscriptContainer
+      assembly rules), viewport jumps to the selected block (n/p block-to-block,
+      SGR wheel 3 rows/notch, ctrl+o tool-output expansion, turn/line footer
+      synced from scroll offset, ⊕/☰ icons + accent numbers). ctrl+r rewind /
+      ctrl+b branch are explicit isIdle-guarded secondary actions. Viewer leaves
+      overlay mouseTracking off (selection-first: plain drag selects/copies text;
+      kitty translates wheel to arrow keys on the alt screen). PTY-verified
+      marker/jump/expansion/rewind + no-mouse-tracking-bytes paths.
+11.   `feat(extensions)` history_search recall over full session history —
+      runtime extension at `extensions/recall.ts`, deployed by symlink to
+      `~/.omp/agent/extensions/recall.ts` (rebase-immune, no binary rebuild).
+      Compaction never deletes data: old entries stay on the branch tree, so a
+      stateless `history_search` tool reads `ctx.sessionManager.getBranch()` and
+      queries pre-compaction / pre-`/clear` messages directly (zero I/O, no JSONL
+      parsing). BM25 with tier weights (user > assistant > tool I/O > thinking) +
+      CJK bigram tokenizer for Chinese sessions; regex mode (`/re/` or
+      `regex:true`); turn-grouped excerpts with 8k char budget + pagination;
+      `expand:[entryId]` renders full originals and `include_images:true`
+      re-attaches persisted image blobs (screenshots) the model lost to
+      compaction. `loadMode: "essential"`, `approval: "read"`. Driver-tested on
+      synthetic + real session JSONL; PTY-registered via live `/tools`.
+12.   `feat(extensions)` desktop-pet companion (bypasses disabled KDE notifications) —
+      runtime extension `extensions/pet-bridge.ts` (deployed by symlink to
+      `~/.omp/agent/extensions/`) + independent GTK4 layer-shell daemon
+      `desktop-pet/omp_pet.py` launched via `desktop-pet/omppet` wrapper (LD_PRELOADs
+      libgtk4-layer-shell; without it layer init fails and the window degrades to a
+      plain toplevel). KDE autostart: `~/.config/autostart/omp-pet.desktop`; hub name
+      `omp-pet`. Bridge pushes lifecycle state over `$XDG_RUNTIME_DIR/omp-pet.sock`
+      (JSON lines: hello/state/settle/poke/bye); `agent_end.willContinue` ignored;
+      esc-abort settles calm, error settles alert; open `ask` call or final
+      assistant message ending in ？/? settles as waiting("ask") NOT done — a
+      turn parked on user input is not a completion (verified live);
+      queued steering holds the working pose instead of flashing done;
+      terminal auto-retry failures (empty-stop retry cap etc.) settle as ERROR —
+      turn-recovery drops the failed assistant turn from the branch, so the
+      bridge remembers auto_retry_end{success:false,finalError} and agent_end
+      consumes it before the stopReason classification can celebrate.
+      waiting/done/error poses persist until clicked (`acknowledge_all`); working
+      states are ambient motion; idle >3min sleeps with zzz; multi-session aggregate,
+      newest-active wins, ×N badge. Model interaction: `pet_poke` tool (approval
+      "read", default discoverable) + `/pet` command + alt+p shortcut return one-line
+      reactions; plain click = local petting; right-click = context menu with
+      退出 (quit action in a widget-level "win" SimpleActionGroup — plain
+      Gtk.Window has no action map in GTK4). Position/mood persist in
+      `~/.local/state/omp-pet.json`. PangoCairo.show_layout takes exactly (cr, layout)
+      — position via ctx.move_to first. Read-only session supervision: daemon scans /proc every 3s for omp/omp-patched
+      processes (excludes __omp_worker_* helpers and zombies), so the ×N badge counts
+      REAL sessions including ones started before the bridge existed (they render as
+      `○ pid … · <proj> · 未桥接` until restarted with the extension loaded); hover
+      opens the supervision panel listing every session (bridged: glyph+state+tool+
+      elapsed; unbridged: pid+proj). Clock semantics: TURN clock (monotonic since
+      prompt) not state age — bridge marks the first working frame of each turn
+      `fresh:true`; tool flips within a turn never reset the timer; `ask` tool maps
+      to waiting, not a churning tool. Window drag tracks the pointer by PER-UPDATE
+      DELTAS (GtkGestureDrag offsets are cumulative from the press point — deltas
+      cancel constant compositor discrepancies) with layer-shell anchors FROZEN for
+      the whole gesture: flipping anchors mid-drag re-places the surface under the
+      grabbed pointer and corrupts all later surface-local offsets, which is why a
+      one-shot drag across the screen midpoint used to die. Nearest-edge re-anchor
 
-   Tab-focus auto-ack (2026-08-29): switching the terminal to a session's
-   tab/window clears THAT session's waiting/done/error pose (the per-session
-   analogue of acknowledge_all's click). Signal chain: terminal.ts enables
-   DEC 1004 focus reporting in #attachInput (disables in stop() +
-   emergency restore) and consumes CSI I/O in the stdin handler (they must
-   never reach the editor as keystrokes), dispatching via module-level
-   `onActiveTerminalFocusChange()` — runtime extensions importing
-   `@oh-my-pi/pi-tui` observe the SAME module instance the running TUI
-   dispatches to (bundled-module loader uses literal `import()` of the
-   canonical specifier; verified wire-level). pet-bridge sends `{"t":"focus"}`
-   on focus-in only (blur carries no action; reports arrive only on real
-   transitions — a session that never leaves its tab sees no events and needs
-   none); omp_pet.py apply_frame clears that conn's attention. kitty 0.48
-   delivers ESC[I/ESC[O on plain tab switches (verified with an isolated
-   kitty + own rc socket); terminals/multiplexers without 1004 stay silent.
-   New omp sessions only (extension loads at start) + daemon restart for
-   python changes.
+- clamp happen once on release; wlr-layer-shell margins apply only on ANCHORED
+  edges, so set_anchor must flip LEFT/TOP together with RIGHT/BOTTOM and margins
+  go on the matching pair. The omppet wrapper must readlink -f BASH_SOURCE:
+  symlink invocation (~/.local/bin/omppet) otherwise resolves omp_pet.py in
+  ~/.local/bin and dies.
+  PTY-verified live turn: bash + pet_poke round
+  trip, `/pet status` 在线, parallel-session badge matched /proc ground truth;
+  replay-verified all poses. Skins: `desktop-pet/skins.py` plugin module —
+  `--skin cat|image:<png>|frames:<dir>|live2d:<model-dir>` (persisted in
+  `~/.local/state/omp-pet.json`; bad asset/deps fall back to cat with a stderr
+  notice). image = one cutout PNG animated by the shared pose dict; frames =
+  `<state>-<n>.png` sequences with alias chain (done→idle etc.), ~~7fps; live2d =
+  live2d-py + GtkGLArea overlay (chrome drawn on a DrawingArea above GL),
+  optional per-model `motions.json` mapping pet states→motion/expression.
+  Launcher prefers `~/.local/share/omp-pet/venv/bin/python` when it can import
+  gi+live2d. Cairo gotcha: clip() consumes the path — pixbuf draw must end in
+  paint_with_alpha(), fill() after clip() is a no-op; PyCairo has NO
+  ctx.global_alpha; ImageSurface.create_for_data needs a WRITABLE buffer
+  (bytearray, not bytes). live2d mode RUNTIME-VERIFIED with Hiyori sample
+  (~~/.local/share/omp-pet/models/Hiyori + motions.json state→motion map):
+  build recipe = PyPI sdist (GitHub main branch lacks Live2D/CMakeLists) +
+  pre-place CubismSdkForNative zip into cubism_sdk_temp.zip + inject
+  `#include <cstdint>` into .hpp/.cpp only (NOT Glad .c/khrplatform.h —
+  <cstdint> is C++ and breaks the C build) + venv pip wheel; system python
+  3.14 has no cp314 wheel so venv is mandatory. Rendering goes through an
+  EGL pbuffer + OpenGL 2.1-compat context blitted to Cairo as premultiplied
+  BGRA — GtkGLArea CANNOT host Cubism (GDK only offers core/ES; Cubism
+  shaders are GLSL 120 → silent empty draw). ctypes c_int arrays reject
+  float sizes (BODY_BOX must be int()). KWin logical coords ≠ spectacle
+  physical pixels under 1.5× scale — locate windows by color-clustering the
+  screenshot, not by geometry math.
 
-   Background-session hierarchy (2026-08-29, second half): task subagents
-   re-bind pet-bridge's factory in the PARENT process (executor forwards
-   preloadedPreparedExtensions; hasUI=false — their approvals auto-deny),
-   so every background task used to bridge as a FLAT sibling session whose
-   done/error pose could never be cleared (no tab to switch to). Bridge now
-   marks hello with `bg: !ctx.hasUI` (both initial and reconnect identify)
-   and bg bridges never subscribe to focus. omp_pet.py: bg views have
-   attention=None (never poses/bubbles; panel-visible ambient state only —
-   done/error show as "后台 · 完成/出错" rows), primary() prefers foreground
-   sessions for the working pose (bg working shows only when no fg session
-   runs), total_live() counts foreground pids only (bg views share the
-   parent's pid — the ×N badge no longer inflates during task fan-outs),
-   and supervision_rows nests bg views under the same-pid foreground view
-   (↳ + dim, sorted by recency; orphan bg — print runs, dropped parent conn
-   — get a top-level 后台 row). Note: ALL task subagents run in-process
-   ("isolation" is git-worktree isolation, not process isolation). Verified:
-   daemon model driver (attention gating, nesting, badge, primary
-   preference), bun fake-pi driver (hello bg flag both ways + bg settle),
-   PTY focus tests re-run green.
+Tab-focus auto-ack (2026-08-29): switching the terminal to a session's
+tab/window clears THAT session's waiting/done/error pose (the per-session
+analogue of acknowledge_all's click). Signal chain: terminal.ts enables
+DEC 1004 focus reporting in #attachInput (disables in stop() +
+emergency restore) and consumes CSI I/O in the stdin handler (they must
+never reach the editor as keystrokes), dispatching via module-level
+`onActiveTerminalFocusChange()` — runtime extensions importing
+`@oh-my-pi/pi-tui` observe the SAME module instance the running TUI
+dispatches to (bundled-module loader uses literal `import()` of the
+canonical specifier; verified wire-level). pet-bridge sends `{"t":"focus"}`
+on focus-in only (blur carries no action; reports arrive only on real
+transitions — a session that never leaves its tab sees no events and needs
+none); omp_pet.py apply_frame clears that conn's attention. kitty 0.48
+delivers ESC[I/ESC[O on plain tab switches (verified with an isolated
+kitty + own rc socket); terminals/multiplexers without 1004 stay silent.
+New omp sessions only (extension loads at start) + daemon restart for
+python changes.
+
+Background-session hierarchy (2026-08-29, second half): task subagents
+re-bind pet-bridge's factory in the PARENT process (executor forwards
+preloadedPreparedExtensions; hasUI=false — their approvals auto-deny),
+so every background task used to bridge as a FLAT sibling session whose
+done/error pose could never be cleared (no tab to switch to). Bridge now
+marks hello with `bg: !ctx.hasUI` (both initial and reconnect identify)
+and bg bridges never subscribe to focus. omp_pet.py: bg views have
+attention=None (never poses/bubbles; panel-visible ambient state only —
+done/error show as "后台 · 完成/出错" rows), primary() prefers foreground
+sessions for the working pose (bg working shows only when no fg session
+runs), total_live() counts foreground pids only (bg views share the
+parent's pid — the ×N badge no longer inflates during task fan-outs),
+and supervision_rows nests bg views under the same-pid foreground view
+(↳ + dim, sorted by recency; orphan bg — print runs, dropped parent conn
+— get a top-level 后台 row). Note: ALL task subagents run in-process
+("isolation" is git-worktree isolation, not process isolation). Verified:
+daemon model driver (attention gating, nesting, badge, primary
+preference), bun fake-pi driver (hello bg flag both ways + bg settle),
+PTY focus tests re-run green.
 
 13. `fix(tui)` kitty per-screen graphics store retransmit — kitty 0.48.2 keeps
-   one graphics store per screen buffer: `a=t` data sent on the main screen is
-   ENOENT to alt-screen placements (and vice versa; neither store is destroyed
-   by the switch). Resume floods transmit images on main, so the session-nav
-   viewer (fullscreen overlay on the alt buffer) bound placeholders to nothing —
-   empty frames, no terminal error, because `encodeKittyVirtualPlacement`
-   hardcodes q=2 which on kitty 0.48.2 suppresses even error replies (q=1
-   reports errors, no-q reports errors; verified empirically). Fix (0a6703c):
-   ImageBudget tracks transmitted ids per screen (`#transmittedMain/Alt` +
-   `#screen` flipped by TUI on 1049h/1049l in `#doRender`); ids first sent on
-   the other screen re-transmit once per crossing; purges/forgets clear both
-   ledgers; no re-send when the target store already has the data (main-screen
-   repaint after an overlay round-trip costs nothing). Viewer's first open
-   re-sends ~1.5 MB (376×4096 chunk chain) — a visible sub-second delay is
-   expected and correct. Diagnostics kept: OMP_IMG_DEBUG=1 upgrades q=2→q=1 on
-   all graphics commands (kittyQuietFlag) + kimg: logger.debug lines in
-   image.ts render/emit paths. Debug recipe that cracked it: minimized-kitty
-   instance running a python tty probe (DSR sanity + q=1 graphics commands,
-   replies file-logged — q=2 silence masks ENOENT), capture-slice bisection
-   (full stream blank vs chain+tail renders), popup windows sized in cells
-   (`--override initial_window_width=110c`) with rc-socket focus + spectacle -a,
-   user as visual oracle. PTY pyte traps: pyte lacks APC/colon-SGR support
-   (prints payload tails as text — artifact, not evidence); pyte cell data can
-   be multi-char (combining diacritics) — width checks must handle len>1.
+    one graphics store per screen buffer: `a=t` data sent on the main screen is
+    ENOENT to alt-screen placements (and vice versa; neither store is destroyed
+    by the switch). Resume floods transmit images on main, so the session-nav
+    viewer (fullscreen overlay on the alt buffer) bound placeholders to nothing —
+    empty frames, no terminal error, because `encodeKittyVirtualPlacement`
+    hardcodes q=2 which on kitty 0.48.2 suppresses even error replies (q=1
+    reports errors, no-q reports errors; verified empirically). Fix (0a6703c):
+    ImageBudget tracks transmitted ids per screen (`#transmittedMain/Alt` +
+    `#screen` flipped by TUI on 1049h/1049l in `#doRender`); ids first sent on
+    the other screen re-transmit once per crossing; purges/forgets clear both
+    ledgers; no re-send when the target store already has the data (main-screen
+    repaint after an overlay round-trip costs nothing). Viewer's first open
+    re-sends ~1.5 MB (376×4096 chunk chain) — a visible sub-second delay is
+    expected and correct. Diagnostics kept: OMP_IMG_DEBUG=1 upgrades q=2→q=1 on
+    all graphics commands (kittyQuietFlag) + kimg: logger.debug lines in
+    image.ts render/emit paths. Debug recipe that cracked it: minimized-kitty
+    instance running a python tty probe (DSR sanity + q=1 graphics commands,
+    replies file-logged — q=2 silence masks ENOENT), capture-slice bisection
+    (full stream blank vs chain+tail renders), popup windows sized in cells
+    (`--override initial_window_width=110c`) with rc-socket focus + spectacle -a,
+    user as visual oracle. PTY pyte traps: pyte lacks APC/colon-SGR support
+    (prints payload tails as text — artifact, not evidence); pyte cell data can
+    be multi-char (combining diacritics) — width checks must handle len>1.
 
 14. `feat(tui)` read-only Workspace Inspector — `workspace-inspector/`
-   (component.ts, index.ts, git-snapshot.ts). Ported to the native vcs binding
-   in the v18.0.9 merge (ae8456d): `vcs.git(cwd)` handle;
-   statusPorcelain/head/numstat/diffText/diffNoIndex/logOnelines/showCommit;
-   the old `allowFailure` diff option became caught `VcsError` (unborn HEAD →
-   empty diff/numstat); branch label `head.branch ?? head.refName ?? "HEAD"`.
-   Module-level smoke verified status/head/numstat/history/commitDiff plus
-   modified (diffText) and untracked (diffNoIndex) paths.
+    (component.ts, index.ts, git-snapshot.ts). Ported to the native vcs binding
+    in the v18.0.9 merge (ae8456d): `vcs.git(cwd)` handle;
+    statusPorcelain/head/numstat/diffText/diffNoIndex/logOnelines/showCommit;
+    the old `allowFailure` diff option became caught `VcsError` (unborn HEAD →
+    empty diff/numstat); branch label `head.branch ?? head.refName ?? "HEAD"`.
+    Module-level smoke verified status/head/numstat/history/commitDiff plus
+    modified (diffText) and untracked (diffNoIndex) paths.
 15. `feat(tui)` bash-mode Ctrl+R command history search — with a `!` / `!!`
-   prefix in the composer, Ctrl+R opens a "Command History" picker over the
-   user's shell history (HISTFILE / zsh extended format with backslash
-   multiline continuation, bash fallback; 4MB tail cap + mtime cache in
-   `session/shell-history.ts`) merged with the session's `!` / `!!`
-   commands from the branch (omp-run commands never enter the shell history —
-   non-interactive shell). Session-sourced rows carry an accent `omp` tag;
-   the typed fragment seeds the query; selection preserves the `!` / `!!`
-   prefix. HistorySearchComponent generalized to a `HistorySearchSource`
-   interface (HistoryStorage satisfies it structurally) + title/initialQuery
-   options; dispatch branch in selector-controller.showHistorySearch. Tests:
-   test/shell-history.test.ts (16); PTY-verified with fake + real HISTFILE.
+    prefix in the composer, Ctrl+R opens a "Command History" picker over the
+    user's shell history (HISTFILE / zsh extended format with backslash
+    multiline continuation, bash fallback; 4MB tail cap + mtime cache in
+    `session/shell-history.ts`) merged with the session's `!` / `!!`
+    commands from the branch (omp-run commands never enter the shell history —
+    non-interactive shell). Session-sourced rows carry an accent `omp` tag;
+    the typed fragment seeds the query; selection preserves the `!` / `!!`
+    prefix. HistorySearchComponent generalized to a `HistorySearchSource`
+    interface (HistoryStorage satisfies it structurally) + title/initialQuery
+    options; dispatch branch in selector-controller.showHistorySearch. Tests:
+    test/shell-history.test.ts (16); PTY-verified with fake + real HISTFILE.
 16. `feat(tui)` bash-mode Tab completion + history ghost text —
-   `modes/bash-autocomplete.ts` wraps the base autocomplete provider
-   (stacked below extension factories in #applyAutocompleteProvider): Tab on
-   the first token completes PATH executables + shell aliases (one-shot
-   `zsh -ic 'alias -L'`, 300ms Tab budget, 5s kill cap; `-g`/`-s` aliases
-   skipped; real output has the `alias ` prefix), later/path-like tokens get
-   cwd-anchored path completion (own implementation — the prompt-action
-   wrapper never exposed getForceFileSuggestions, so bare-path Tab completion
-   doesn't exist upstream; dirs get trailing `/` + no space, files a space).
-   Ghost text suggests the newest matching history command (same merged
-   source as patch 15, preloaded at construction so the first render has it),
-   accepted with →; pi-tui gained a `getInsertableHint` provider contract so
-   only insertable ghosts are accepted (slash-arg hints stay display-only).
-   Tests: test/bash-autocomplete.test.ts (17); PTY-verified 6/6 (ghost render,
-   → accept, popup, apply+execute, file completion, alias completion).
+    `modes/bash-autocomplete.ts` wraps the base autocomplete provider
+    (stacked below extension factories in #applyAutocompleteProvider): Tab on
+    the first token completes PATH executables + shell aliases (one-shot
+    `zsh -ic 'alias -L'`, 300ms Tab budget, 5s kill cap; `-g`/`-s` aliases
+    skipped; real output has the `alias ` prefix), later/path-like tokens get
+    cwd-anchored path completion (own implementation — the prompt-action
+    wrapper never exposed getForceFileSuggestions, so bare-path Tab completion
+    doesn't exist upstream; dirs get trailing `/` + no space, files a space).
+    Ghost text suggests the newest matching history command (same merged
+    source as patch 15, preloaded at construction so the first render has it),
+    accepted with →; pi-tui gained a `getInsertableHint` provider contract so
+    only insertable ghosts are accepted (slash-arg hints stay display-only).
+    Tests: test/bash-autocomplete.test.ts (17); PTY-verified 6/6 (ghost render,
+    → accept, popup, apply+execute, file completion, alias completion).
 17. `fix(ai)` Claude Code cloak seam + relay `device_id` enrichment — real CC
-   always pairs `session_id` with a non-empty `device_id` in the JSON
-   `metadata.user_id` envelope, and sub2api `claude_code_only` groups reject
-   envelopes missing it (503 "this group only allows Claude clients"), so an
-   OAuth-shaped caller supplying session-stable JSON now gets one filled in from
-   the install id (scoped by the envelope's own `account_uuid`) rather than
-   having the whole id regenerated, which would churn backend session
-   attribution (commit fc0c59d). The helper lives in fork-local
-   `packages/ai/src/providers/claude-code-cloak.ts`, NOT inside upstream's
-   ~4.4k-line `providers/anthropic.ts`, which keeps only a one-line import plus
-   a three-line call site in `resolveAnthropicMetadataUserId` — cloak conflict
-   surface there dropped 27 → 4 lines. The device-id deriver is injected instead
-   of imported to avoid an import cycle back into `anthropic.ts` (which owns
-   `deriveClaudeDeviceId`); compiled-binary cycles risk TDZ. Also threaded an
-   optional `modelHeaders` through `AnthropicAuthConfig` /
-   `buildAnthropicSearchHeaders` so a caller reusing a configured model's
-   transport can forward relay headers on non-streaming Messages requests.
-   Future body-shape cloak divergences belong in that module. Rationale for NOT
-   minting an `Api` kind for CC-cloaked Messages (considered and rejected
-   2026-08-29): `buildCompat`'s `default: return undefined` would silently drop
-   the whole `AnthropicCompat` (14 fields incl. `allowAnthropicHeaderOverrides`,
-   `streamIdleTimeoutMs`, `supportsCacheRetention`), and `model-thinking.ts`'s
-   `needsDisplay` / `getAnthropicAdaptiveEfforts` hard-gate on
-   `anthropic-messages` | `bedrock-converse-stream`, so opus ≥4.7 would lose
-   adaptive thinking display even with explicit `thinking.efforts` — silent
-   degradation across 152 comparison sites, all upstream. If the cloak ever needs
-   a first-class flag, add an `AnthropicCompat` field (beside
-   `escapeBuiltinToolNames` / `allowAnthropicHeaderOverrides`), which is 1 field
-   + 1 resolver default and also splits `isOAuth`'s two meanings (credential
-   mechanism vs fingerprint persona). Tests: `test/anthropic-alignment.test.ts`.
+    always pairs `session_id` with a non-empty `device_id` in the JSON
+    `metadata.user_id` envelope, and sub2api `claude_code_only` groups reject
+    envelopes missing it (503 "this group only allows Claude clients"), so an
+    OAuth-shaped caller supplying session-stable JSON now gets one filled in from
+    the install id (scoped by the envelope's own `account_uuid`) rather than
+    having the whole id regenerated, which would churn backend session
+    attribution (commit fc0c59d). The helper lives in fork-local
+    `packages/ai/src/providers/claude-code-cloak.ts`, NOT inside upstream's
+    ~4.4k-line `providers/anthropic.ts`, which keeps only a one-line import plus
+    a three-line call site in `resolveAnthropicMetadataUserId` — cloak conflict
+    surface there dropped 27 → 4 lines. The device-id deriver is injected instead
+    of imported to avoid an import cycle back into `anthropic.ts` (which owns
+    `deriveClaudeDeviceId`); compiled-binary cycles risk TDZ. Also threaded an
+    optional `modelHeaders` through `AnthropicAuthConfig` /
+    `buildAnthropicSearchHeaders` so a caller reusing a configured model's
+    transport can forward relay headers on non-streaming Messages requests.
+    Future body-shape cloak divergences belong in that module. Rationale for NOT
+    minting an `Api` kind for CC-cloaked Messages (considered and rejected
+    2026-08-29): `buildCompat`'s `default: return undefined` would silently drop
+    the whole `AnthropicCompat` (14 fields incl. `allowAnthropicHeaderOverrides`,
+    `streamIdleTimeoutMs`, `supportsCacheRetention`), and `model-thinking.ts`'s
+    `needsDisplay` / `getAnthropicAdaptiveEfforts` hard-gate on
+    `anthropic-messages` | `bedrock-converse-stream`, so opus ≥4.7 would lose
+    adaptive thinking display even with explicit `thinking.efforts` — silent
+    degradation across 152 comparison sites, all upstream. If the cloak ever needs
+    a first-class flag, add an `AnthropicCompat` field (beside
+    `escapeBuiltinToolNames` / `allowAnthropicHeaderOverrides`), which is 1 field
+
+- 1 resolver default and also splits `isOAuth`'s two meanings (credential
+  mechanism vs fingerprint persona). Tests: `test/anthropic-alignment.test.ts`.
+
 18. `fix(ai)` relay prompt-cache restored by scoping the `cch` attestation —
-   the CC billing header lives in `system[0]` and its `cch` was
-   `xxHash64(whole body)`, so it changed every turn and invalidated the entire
-   cached prefix on any endpoint that forwards the block as ordinary system
-   text. Official `api.anthropic.com` is immune (its edge strips the block
-   before the cache layer, which is why real CC gets away with a per-request
-   value), but every relay pays full `cache_creation` on every request.
-   Fork-local fix in `providers/claude-code-cloak.ts`
-   (`selectClaudeCchHashRegion`): off-official endpoints hash only the
-   session-stable region — from `"system":[` to end of body, clipped at
-   `"messages":[` if key order ever inverts — so `cch` changes exactly when the
-   cached prefix does. `patchCch` / `wrapFetchForCch` take a `stableCch` flag;
-   both call sites gate on `!isOfficialAnthropicApiUrl` (streaming
-   `anthropic.ts`, and hosted search `web/search/providers/anthropic.ts`).
-   Upstream declined the same report (anthropics/claude-code#68900, closed not
-   planned). Omitting the block — what `CLAUDE_CODE_ATTRIBUTION_HEADER=0` does
-   in real CC, and what claude-code-router/braintrust-lingua do — is NOT
-   available here: `claude_code_only` groups reject CC-scoped credentials whose
-   request lacks it, and the gist-documented placement contract requires it to
-   be `system[0]` with no `cache_control`. Safe because such relays validate the
-   header's *shape*, not the hash (they cannot recompute it without the seed) —
-   wire-verified: a deliberately bogus constant `cch` still served fine.
-   Live A/B through a forwarding capture proxy, same prompt, same 5-call tool
-   loop, before/after binaries: 6 distinct `cch` → 1 constant `cch`, 0/6 → 4/6
-   cache hits, 329,463 → 109,827 cache-write tokens, 80.8s → 43.4s wall, ≈61%
-   cheaper per session at catalog rates. Second, independent breaker found and
-   deliberately NOT addressed: cross-session hits never happen because the
-   relay routes by `metadata.user_id.session_id` to different upstream accounts
-   (proved by pinning `cch` at the proxy and observing two runs with
-   byte-identical `system`/`tools`/`msg[0]` still miss) — that is relay-side,
-   not ours. Tests: `test/anthropic-cch-cache-stability.test.ts` (stability
-   across turns, invalidation on system/tools change, official-endpoint
-   fidelity, 5-hex wire shape, API-key passthrough).
+    the CC billing header lives in `system[0]` and its `cch` was
+    `xxHash64(whole body)`, so it changed every turn and invalidated the entire
+    cached prefix on any endpoint that forwards the block as ordinary system
+    text. Official `api.anthropic.com` is immune (its edge strips the block
+    before the cache layer, which is why real CC gets away with a per-request
+    value), but every relay pays full `cache_creation` on every request.
+    Fork-local fix in `providers/claude-code-cloak.ts`
+    (`selectClaudeCchHashRegion`): off-official endpoints hash only the
+    session-stable region — from `"system":[` to end of body, clipped at
+    `"messages":[` if key order ever inverts — so `cch` changes exactly when the
+    cached prefix does. `patchCch` / `wrapFetchForCch` take a `stableCch` flag;
+    both call sites gate on `!isOfficialAnthropicApiUrl` (streaming
+    `anthropic.ts`, and hosted search `web/search/providers/anthropic.ts`).
+    Upstream declined the same report (anthropics/claude-code#68900, closed not
+    planned). Omitting the block — what `CLAUDE_CODE_ATTRIBUTION_HEADER=0` does
+    in real CC, and what claude-code-router/braintrust-lingua do — is NOT
+    available here: `claude_code_only` groups reject CC-scoped credentials whose
+    request lacks it, and the gist-documented placement contract requires it to
+    be `system[0]` with no `cache_control`. Safe because such relays validate the
+    header's _shape_, not the hash (they cannot recompute it without the seed) —
+    wire-verified: a deliberately bogus constant `cch` still served fine.
+    Live A/B through a forwarding capture proxy, same prompt, same 5-call tool
+    loop, before/after binaries: 6 distinct `cch` → 1 constant `cch`, 0/6 → 4/6
+    cache hits, 329,463 → 109,827 cache-write tokens, 80.8s → 43.4s wall, ≈61%
+    cheaper per session at catalog rates. Second, independent breaker found and
+    deliberately NOT addressed: cross-session hits never happen because the
+    relay routes by `metadata.user_id.session_id` to different upstream accounts
+    (proved by pinning `cch` at the proxy and observing two runs with
+    byte-identical `system`/`tools`/`msg[0]` still miss) — that is relay-side,
+    not ours. Tests: `test/anthropic-cch-cache-stability.test.ts` (stability
+    across turns, invalidation on system/tools change, official-endpoint
+    fidelity, 5-hex wire shape, API-key passthrough).
 19. `feat(ai)` provider-declared Anthropic betas via `compat.extraBetas` — a
-   relay can require a beta the generated chain never carries: anyrouter 400s
-   every opus-class request ("1m 上下文已经全量可用，请启用 1m 上下文后重试")
-   without `context-1m-2025-08-07`, which upstream deliberately never advertises
-   because official OAuth subscriptions have no long-context credit and hard-429
-   on beta-gated 1M models regardless of prompt size (#7238). Wire-measured on
-   one relay, three spellings: a models.yml `headers: { anthropic-beta: … }`
-   entry is DEAD (the key is in `enforcedHeaderKeys`, stripped in BOTH cloak and
-   api-key modes — 10 betas / 2 betas, no 1M); `compat.allowAnthropicHeaderOverrides`
-   does deliver it but `mergeHeaders` is whole-value replacement per key, so the
-   10-beta cloak chain collapses to 1, losing `oauth-2025-04-20` and
-   `effort-2025-11-24`; `compat.extraBetas` unions through the existing
-   `buildBetaHeader` dedupe — 11 betas, full chain + 1M, 400 gone. Field lives on
-   `AnthropicCompat` (catalog `types.ts`, defaulted `[]` in `buildAnthropicCompat`,
-   declared in the STRICT models.yml schema bundle beside the other
-   anthropic-messages compat flags) and is unioned inside
-   `buildAnthropicClientOptions`, NOT at the stream call site, so every client
-   build carries it; the `github-copilot` early-return branch is excluded on
-   purpose (that proxy rejects Anthropic betas outright). Hosted search builds
-   its own headers and never sees `model.compat`, so a relay that gates chat
-   gates search too: threaded `AnthropicSearchTransport.extraBetas` →
-   `AnthropicAuthConfig.extraBetas` → unioned with `web-search-2025-03-05`.
-   Residual anyrouter 503/429 is upstream capacity, not request shape — plain
-   curl bypassing omp entirely, no cloak, only that beta, returns 503 while the
-   beta-specific 400 is gone; the codex-side sibling reports
-   "当前模型 … 负载已经达到上限" WITH a request id, i.e. shape accepted. Trap: a
-   compat field declared in the wrong schema block makes
-   `ModelsConfigFile.tryLoad()` return an issue whose `message` is `undefined` —
-   diagnose by locating the right block, not by reading the error. Tests:
-   `test/anthropic-alignment.test.ts` (union keeps the chain, 1M still absent by
-   default), `test/web/search/provider-chain.test.ts` (transport carries
-   provider betas).
+    relay can require a beta the generated chain never carries: anyrouter 400s
+    every opus-class request ("1m 上下文已经全量可用，请启用 1m 上下文后重试")
+    without `context-1m-2025-08-07`, which upstream deliberately never advertises
+    because official OAuth subscriptions have no long-context credit and hard-429
+    on beta-gated 1M models regardless of prompt size (#7238). Wire-measured on
+    one relay, three spellings: a models.yml `headers: { anthropic-beta: … }`
+    entry is DEAD (the key is in `enforcedHeaderKeys`, stripped in BOTH cloak and
+    api-key modes — 10 betas / 2 betas, no 1M); `compat.allowAnthropicHeaderOverrides`
+    does deliver it but `mergeHeaders` is whole-value replacement per key, so the
+    10-beta cloak chain collapses to 1, losing `oauth-2025-04-20` and
+    `effort-2025-11-24`; `compat.extraBetas` unions through the existing
+    `buildBetaHeader` dedupe — 11 betas, full chain + 1M, 400 gone. Field lives on
+    `AnthropicCompat` (catalog `types.ts`, defaulted `[]` in `buildAnthropicCompat`,
+    declared in the STRICT models.yml schema bundle beside the other
+    anthropic-messages compat flags) and is unioned inside
+    `buildAnthropicClientOptions`, NOT at the stream call site, so every client
+    build carries it; the `github-copilot` early-return branch is excluded on
+    purpose (that proxy rejects Anthropic betas outright). Hosted search builds
+    its own headers and never sees `model.compat`, so a relay that gates chat
+    gates search too: threaded `AnthropicSearchTransport.extraBetas` →
+    `AnthropicAuthConfig.extraBetas` → unioned with `web-search-2025-03-05`.
+    Residual anyrouter 503/429 is upstream capacity, not request shape — plain
+    curl bypassing omp entirely, no cloak, only that beta, returns 503 while the
+    beta-specific 400 is gone; the codex-side sibling reports
+    "当前模型 … 负载已经达到上限" WITH a request id, i.e. shape accepted. Trap: a
+    compat field declared in the wrong schema block makes
+    `ModelsConfigFile.tryLoad()` return an issue whose `message` is `undefined` —
+    diagnose by locating the right block, not by reading the error. Tests:
+    `test/anthropic-alignment.test.ts` (union keeps the chain, 1M still absent by
+    default), `test/web/search/provider-chain.test.ts` (transport carries
+    provider betas).
 20. `fix(tui)` draft-image preview strip follows the active composer shape —
-   v18.0.10 added the `band` composer (`sideBorders: false`,
-   `sideChromeWidth() === 0`) and made it the schema default, which exposed a
-   latent bug in the fork's leading-rows hook: it hardcoded `box.vertical` +
-   `paddingX` on BOTH sides while padding the text to `contentAreaWidth`, so on
-   every borderless shape the strip came out `width + 2` cells and misaligned
-   against the frameless text rows. It now renders through
-   `style.renderRow({ …chromeCtx, gutter: <blanked>, isLastRow: false })` exactly
-   like a content row, and the `#borderVisible` gate is gone because
-   `#effectiveStyle()` already substitutes `borderlessComposerStyle` when the
-   border is hidden — so previews survive in borderless mode instead of
-   vanishing. The prompt gutter is blanked, not repeated: its `╰─ ` cue belongs
-   to the input line but its cells still belong to the content budget. Verified
-   with a throwaway driver over all 8 shapes (box/band/borderless/rule/field/
-   rail/pi/claude): strip present, every row ≤ width, box keeps `│ … │`, band and
-   friends render flush. Note for future confusion: cindy's own config pins
-   `composer.shape: box` in `~/.omp/agent/config.yml` (NOT `settings.json`, and
-   the `settings` table in `agent.db` is empty), so the band default never
-   reached her — the fix is for shape switching and the borderless shapes.
+    v18.0.10 added the `band` composer (`sideBorders: false`,
+    `sideChromeWidth() === 0`) and made it the schema default, which exposed a
+    latent bug in the fork's leading-rows hook: it hardcoded `box.vertical` +
+    `paddingX` on BOTH sides while padding the text to `contentAreaWidth`, so on
+    every borderless shape the strip came out `width + 2` cells and misaligned
+    against the frameless text rows. It now renders through
+    `style.renderRow({ …chromeCtx, gutter: <blanked>, isLastRow: false })` exactly
+    like a content row, and the `#borderVisible` gate is gone because
+    `#effectiveStyle()` already substitutes `borderlessComposerStyle` when the
+    border is hidden — so previews survive in borderless mode instead of
+    vanishing. The prompt gutter is blanked, not repeated: its `╰─ ` cue belongs
+    to the input line but its cells still belong to the content budget. Verified
+    with a throwaway driver over all 8 shapes (box/band/borderless/rule/field/
+    rail/pi/claude): strip present, every row ≤ width, box keeps `│ … │`, band and
+    friends render flush. Note for future confusion: cindy's own config pins
+    `composer.shape: box` in `~/.omp/agent/config.yml` (NOT `settings.json`, and
+    the `settings` table in `agent.db` is empty), so the band default never
+    reached her — the fix is for shape switching and the borderless shapes.
 
-   Merge adjudications (v18.0.9 → v18.0.10, 41 upstream commits / 159 files):
-   the only textual conflict was `event-controller.ts`'s import block, where
-   upstream deleted `interruptHint` (definition and call site — the interrupt cue
-   moved into the new status line, `setWorkingMessage(trimmed)`) right beside the
-   fork's `work-usage` imports; resolution keeps ours minus the now-dead import.
-   Everything else auto-merged, including two overlaps worth knowing: (a)
-   upstream's `→`-accepts-completion (`#acceptWordCompletion`, end of LINE) and
-   the fork's `→`-accepts-provider-ghost (`#getInsertableHint`, end of BUFFER)
-   form a fallback chain rather than double-inserting, and the fork's hook is
-   still required because history ghosts come from the provider, not the built-in
-   word completion; (b) `turn-recovery.ts` / `agent-loop.ts` grew only additive
-   helpers (`toolReplayStart`, `hasAbortedToolCallTail`, `unpairedToolCallTail`),
-   so pet-bridge's `auto_retry_end` → ERROR settle is unaffected — though the new
-   idle "F5 to Retry" state is not yet a pose the daemon knows.
-   NATIVES ARE A HARD PREREQUISITE for this tag: `execReplace` (`/restart`) and
-   `VcsGitRepo.mergeBase` (`/review` PR mode) are new and BOTH call sites are
-   unguarded, so v18.0.9 `.node` files give a degraded `/restart` and a
-   `TypeError` on `/review`.
-21. `fix(ai)` Anthropic user turns always serialize as content blocks —
-   `applyPromptCaching` can only attach `cache_control` to a block, so a
-   string-content user message was rewritten into `[{type:"text",…}]` while it
-   held the rolling cache anchor and serialized back to a bare string once the
-   window moved past it. Every user turn therefore rewrote a byte in the middle
-   of the cached prefix, truncating the reusable region there.
-   `convertAnthropicMessages` now emits block form unconditionally (the
-   synthetic `Continue.` pad stays a string — upstream tests pin it and
-   `applyPromptCaching`'s pad detection compares against that exact string), and
-   the now-dead string branch in `applyPromptCaching` is gone.
-   MEASURED WORTH, stated plainly because it is smaller than it looks: on a
-   ~96 KB body, `system` (55,980 B) + `tools` (39,854 B) are 99% of the prompt
-   and were ALREADY byte-identical across turns, so the flip only truncated the
-   *messages* region — 386 B on turn 1→2, 25 B after. Live A/B (old vs new
-   binary, same 3-call loop, same relay): shape flips 1 → 0, reusable leading
-   messages 0/1 → 1/1, total prompt tokens unchanged. It is a correctness fix,
-   NOT the reason a relay session shows five-digit cache writes.
-   Blast radius accepted deliberately: this changes the wire for every
-   `anthropic-messages` backend. A single text block is the API's documented
-   equivalent of string content and token counts are identical, but four
-   upstream tests asserted the old string shape and were updated
-   (`anthropic-mid-conversation-system` ×2, `anthropic-prefill`,
-   `anthropic-alignment`, `issue-967-vision-guard`) — that is rebase conflict
-   surface. Tests: two cases in `anthropic-cch-cache-stability.test.ts` assert a
-   user turn serializes identically anchored vs interior, and that every
-   interior turn stays byte-stable as a loop grows.
+Merge adjudications (v18.0.9 → v18.0.10, 41 upstream commits / 159 files):
+the only textual conflict was `event-controller.ts`'s import block, where
+upstream deleted `interruptHint` (definition and call site — the interrupt cue
+moved into the new status line, `setWorkingMessage(trimmed)`) right beside the
+fork's `work-usage` imports; resolution keeps ours minus the now-dead import.
+Everything else auto-merged, including two overlaps worth knowing: (a)
+upstream's `→`-accepts-completion (`#acceptWordCompletion`, end of LINE) and
+the fork's `→`-accepts-provider-ghost (`#getInsertableHint`, end of BUFFER)
+form a fallback chain rather than double-inserting, and the fork's hook is
+still required because history ghosts come from the provider, not the built-in
+word completion; (b) `turn-recovery.ts` / `agent-loop.ts` grew only additive
+helpers (`toolReplayStart`, `hasAbortedToolCallTail`, `unpairedToolCallTail`),
+so pet-bridge's `auto_retry_end` → ERROR settle is unaffected — though the new
+idle "F5 to Retry" state is not yet a pose the daemon knows.
+NATIVES ARE A HARD PREREQUISITE for this tag: `execReplace` (`/restart`) and
+`VcsGitRepo.mergeBase` (`/review` PR mode) are new and BOTH call sites are
+unguarded, so v18.0.9 `.node` files give a degraded `/restart` and a
+`TypeError` on `/review`. 21. `fix(ai)` Anthropic user turns always serialize as content blocks —
+`applyPromptCaching` can only attach `cache_control` to a block, so a
+string-content user message was rewritten into `[{type:"text",…}]` while it
+held the rolling cache anchor and serialized back to a bare string once the
+window moved past it. Every user turn therefore rewrote a byte in the middle
+of the cached prefix, truncating the reusable region there.
+`convertAnthropicMessages` now emits block form unconditionally (the
+synthetic `Continue.` pad stays a string — upstream tests pin it and
+`applyPromptCaching`'s pad detection compares against that exact string), and
+the now-dead string branch in `applyPromptCaching` is gone.
+MEASURED WORTH, stated plainly because it is smaller than it looks: on a
+~96 KB body, `system` (55,980 B) + `tools` (39,854 B) are 99% of the prompt
+and were ALREADY byte-identical across turns, so the flip only truncated the
+_messages_ region — 386 B on turn 1→2, 25 B after. Live A/B (old vs new
+binary, same 3-call loop, same relay): shape flips 1 → 0, reusable leading
+messages 0/1 → 1/1, total prompt tokens unchanged. It is a correctness fix,
+NOT the reason a relay session shows five-digit cache writes.
+Blast radius accepted deliberately: this changes the wire for every
+`anthropic-messages` backend. A single text block is the API's documented
+equivalent of string content and token counts are identical, but four
+upstream tests asserted the old string shape and were updated
+(`anthropic-mid-conversation-system` ×2, `anthropic-prefill`,
+`anthropic-alignment`, `issue-967-vision-guard`) — that is rebase conflict
+surface. Tests: two cases in `anthropic-cch-cache-stability.test.ts` assert a
+user turn serializes identically anchored vs interior, and that every
+interior turn stays byte-stable as a loop grows.
 
-   WHAT THIS DID NOT EXPLAIN, and the evidence, so nobody re-runs it: cindy's
-   screenshots showed omp writing five-digit cache tokens per request while real
-   Claude Code wrote three-digit. Both clients point at the SAME relay
-   (`~/.claude/settings.json` sets `ANTHROPIC_BASE_URL=https://api.zzzcoding.org`),
-   so "CC is on official Anthropic" is false. The dominant cause is the relay,
-   not request shape: a BYTE-IDENTICAL body replayed against it scored 4/10 cache
-   hits at ~13:00 and 0/10 at ~15:20 the same day, and real Claude Code measured
-   through its own session JSONL at ~15:40 got 0/5 hits with 17,978–20,768
-   cache-write tokens per request — i.e. five-digit writes too. Anchor placement
-   is also a dead end: adding CC-style static breakpoints on `system` and the
-   last tool moved 11,964 tokens from `cache_creation` to plain `input` and left
-   the TOTAL prompt tokens bit-for-bit identical (46,854 either way), with 0 hits
-   both ways. The one durable client-side difference is prompt SIZE: omp ~46,900
-   tokens/request vs CC ~20,700 for the same task, so on any miss omp pays ~2.3×.
-   That is what shrinking the injected context attacks (see the AGENTS.md split
-   in this commit series), not breakpoint geometry.
-22. `fix(ai)` prompt-inclusive `input_tokens` on anthropic-wire relays —
-   relays synthesized from OpenAI-style backends (cindy's `elysiver.h-e.top`
-   — `elysiver-claude`/`ely-claude` providers serving glm-5.3-flash) answer
-   the Anthropic wire with `input_tokens` = the WHOLE prompt and
-   `cache_read_input_tokens` a subset of it (OpenAI `prompt_tokens`
-   dialect), while `runanytime.hxi.me` is Anthropic-correct (`input`
-   excludes the cache buckets; e.g. in=2092/cr=67072). omp's uniform
-   denominator `input+cacheRead+cacheWrite` (work-usage cache rate,
-   status-line `cache_hit`, `totalTokens`, context-overflow check) then
-   double-counted the cached portion: turn usage read `cache 49.5%` where
-   the relay dashboard showed 97.7% (= 59,904/61,293), `cost.input` billed
-   the full prompt alongside `cost.cacheRead`, and `totalTokens` ran ~2×.
-   Diagnosis signature: on the inclusive relay, persisted `cr` ≈ previous
-   request's full prompt and `in` ≈ `cr` + fresh; on exclusive relays `in`
-   is tiny while `cr` is huge. Fix follows patch 19's provider-declared
-   pattern instead of TS heuristics: new `compat.usageInputIncludesCache`
-   (catalog `AnthropicCompat` + resolve default `false` + models.yml schema
-   field), consumed by `uncachedAnthropicInputTokens()` at all three
-   wire→Usage sites in `anthropic.ts` (non-streaming/cache-refresh,
-   `message_start`, `message_delta`); the delta falls back to the buckets
-   `message_start` recorded when the delta omits them, so the subtraction
-   never re-applies or clamps to zero. OpenAI-wire accounting was already
-   correct (`calculateOpenAIUsageAccounting` subtracts) — untouched.
-   Config: `usageInputIncludesCache: true` on both elysiver anthropic
-   providers in `~/.omp/agent/models.yml`, added AFTER installing the new
-   binary — the models.yml schema rejects unknown compat keys, so
-   flag-first would have broken the sibling sessions' model refresh. Tests:
-   `anthropic usage input dialect` describe in
-   `anthropic-stream-envelope.test.ts` — subtraction, delta-omits-cache
-   fallback, and a no-flag control pinning exclusive pass-through. Live
-   A/B: old binary persisted `in=61293/cr=59904/tot=121224` per request;
-   new binary on the same relay persists `in=23336/cr=1344/tot=24698` —
-   local rate == relay dashboard rate by construction. History JSONL keeps
-   the inflated rows; only new requests are corrected.
+WHAT THIS DID NOT EXPLAIN, and the evidence, so nobody re-runs it: cindy's
+screenshots showed omp writing five-digit cache tokens per request while real
+Claude Code wrote three-digit. Both clients point at the SAME relay
+(`~/.claude/settings.json` sets `ANTHROPIC_BASE_URL=https://api.zzzcoding.org`),
+so "CC is on official Anthropic" is false. The dominant cause is the relay,
+not request shape: a BYTE-IDENTICAL body replayed against it scored 4/10 cache
+hits at ~13:00 and 0/10 at ~15:20 the same day, and real Claude Code measured
+through its own session JSONL at ~15:40 got 0/5 hits with 17,978–20,768
+cache-write tokens per request — i.e. five-digit writes too. Anchor placement
+is also a dead end: adding CC-style static breakpoints on `system` and the
+last tool moved 11,964 tokens from `cache_creation` to plain `input` and left
+the TOTAL prompt tokens bit-for-bit identical (46,854 either way), with 0 hits
+both ways. The one durable client-side difference is prompt SIZE: omp ~46,900
+tokens/request vs CC ~20,700 for the same task, so on any miss omp pays ~2.3×.
+That is what shrinking the injected context attacks (see the AGENTS.md split
+in this commit series), not breakpoint geometry. 22. `fix(ai)` prompt-inclusive `input_tokens` on anthropic-wire relays —
+relays synthesized from OpenAI-style backends (cindy's `elysiver.h-e.top`
+— `elysiver-claude`/`ely-claude` providers serving glm-5.3-flash) answer
+the Anthropic wire with `input_tokens` = the WHOLE prompt and
+`cache_read_input_tokens` a subset of it (OpenAI `prompt_tokens`
+dialect), while `runanytime.hxi.me` is Anthropic-correct (`input`
+excludes the cache buckets; e.g. in=2092/cr=67072). omp's uniform
+denominator `input+cacheRead+cacheWrite` (work-usage cache rate,
+status-line `cache_hit`, `totalTokens`, context-overflow check) then
+double-counted the cached portion: turn usage read `cache 49.5%` where
+the relay dashboard showed 97.7% (= 59,904/61,293), `cost.input` billed
+the full prompt alongside `cost.cacheRead`, and `totalTokens` ran ~2×.
+Diagnosis signature: on the inclusive relay, persisted `cr` ≈ previous
+request's full prompt and `in` ≈ `cr` + fresh; on exclusive relays `in`
+is tiny while `cr` is huge. Fix follows patch 19's provider-declared
+pattern instead of TS heuristics: new `compat.usageInputIncludesCache`
+(catalog `AnthropicCompat` + resolve default `false` + models.yml schema
+field), consumed by `uncachedAnthropicInputTokens()` at all three
+wire→Usage sites in `anthropic.ts` (non-streaming/cache-refresh,
+`message_start`, `message_delta`); the delta falls back to the buckets
+`message_start` recorded when the delta omits them, so the subtraction
+never re-applies or clamps to zero. OpenAI-wire accounting was already
+correct (`calculateOpenAIUsageAccounting` subtracts) — untouched.
+Config: `usageInputIncludesCache: true` on both elysiver anthropic
+providers in `~/.omp/agent/models.yml`, added AFTER installing the new
+binary — the models.yml schema rejects unknown compat keys, so
+flag-first would have broken the sibling sessions' model refresh. Tests:
+`anthropic usage input dialect` describe in
+`anthropic-stream-envelope.test.ts` — subtraction, delta-omits-cache
+fallback, and a no-flag control pinning exclusive pass-through. Live
+A/B: old binary persisted `in=61293/cr=59904/tot=121224` per request;
+new binary on the same relay persists `in=23336/cr=1344/tot=24698` —
+local rate == relay dashboard rate by construction. History JSONL keeps
+the inflated rows; only new requests are corrected.
 
 23. `feat(web)` Grok relay web-search channel — turns the wong relay
-   (`https://wzw.pp.ua/v1`) into a first-class `grok` websearch provider.
-   Probe summary that shaped it (2026-09-05, curl wire-level):
-   grok-4.3 executes real hosted search (`web_search_call` output items,
-   `usage.num_server_side_tools_used>0`, `url_citation` annotations,
-   98.9% stable prefix cache, `allowed_domains` honored most of the time);
-   grok-4.5/4.6 on the same relay accept the tool schema but flatten it
-   (`used=0`) while the answer claims "I performed a targeted web search" —
-   a hallucination hazard; `grok-4.20-multi-agent-0309` also searches for
-   real but at 21× tokens / 2× latency with polluted usage (identical
-   requests return input_tokens 33K→57K→24K), so 4.3 is the channel default.
-   Implementation: the xai provider's Responses wire+parser moved verbatim
-   into a shared `grok-responses.ts` core (xai keeps its official-auth stack,
-   grok-4.5 pin, and effort=low); new `providers/grok.ts` resolves a
-   declarable triple — base URL, wire model, credential — where each slot is
-   `providers.webSearchGrok{BaseUrl,Model,Provider}` settings over
-   `GROK_SEARCH_{BASE_URL,MODEL,PROVIDER}` env, and the credential defaults
-   to the apiKey/headers of the declared models.yml provider (wong:
-   baseUrl+key+claude-cli UA gate all reused; search needs no new secret).
-   The shared core enforces a real-search gate: completed responses with
-   `num_server_side_tools_used=0`, or no web_search_call/citations/annotation
-   evidence, reject as 502 so the chain advances instead of surfacing
-   fabricated citations — this also protects the official xai path. Live
-   config: `webSearchOrder: [grok, codex]` in `~/.omp/agent/config.yml`.
-   Verified end-to-end via `omp-patched q web-search` (forced provider and
-   chain default; HN #1 matched the firebaseio ground truth; site: mapped
-   onto allowed_domains) plus 15 grok-channel contract tests and the 31
-   migrated xai tests, all green.
+    (`https://wzw.pp.ua/v1`) into a first-class `grok` websearch provider.
+    Probe summary that shaped it (2026-09-05, curl wire-level):
+    grok-4.3 executes real hosted search (`web_search_call` output items,
+    `usage.num_server_side_tools_used>0`, `url_citation` annotations,
+    98.9% stable prefix cache, `allowed_domains` honored most of the time);
+    grok-4.5/4.6 on the same relay accept the tool schema but flatten it
+    (`used=0`) while the answer claims "I performed a targeted web search" —
+    a hallucination hazard; `grok-4.20-multi-agent-0309` also searches for
+    real but at 21× tokens / 2× latency with polluted usage (identical
+    requests return input_tokens 33K→57K→24K), so 4.3 is the channel default.
+    Implementation: the xai provider's Responses wire+parser moved verbatim
+    into a shared `grok-responses.ts` core (xai keeps its official-auth stack,
+    grok-4.5 pin, and effort=low); new `providers/grok.ts` resolves a
+    declarable triple — base URL, wire model, credential — where each slot is
+    `providers.webSearchGrok{BaseUrl,Model,Provider}` settings over
+    `GROK_SEARCH_{BASE_URL,MODEL,PROVIDER}` env, and the credential defaults
+    to the apiKey/headers of the declared models.yml provider (wong:
+    baseUrl+key+claude-cli UA gate all reused; search needs no new secret).
+    The shared core enforces a real-search gate: completed responses with
+    `num_server_side_tools_used=0`, or no web_search_call/citations/annotation
+    evidence, reject as 502 so the chain advances instead of surfacing
+    fabricated citations — this also protects the official xai path. Live
+    config: `webSearchOrder: [grok, codex]` in `~/.omp/agent/config.yml`.
+    Verified end-to-end via `omp-patched q web-search` (forced provider and
+    chain default; HN #1 matched the firebaseio ground truth; site: mapped
+    onto allowed_domains) plus 15 grok-channel contract tests and the 31
+    migrated xai tests, all green.
 
 24. `fix(mnemopi)` stop rebuilding FTS mirrors on every bank open —
-   `initBeam` called `rebuildFtsMirrors` unconditionally: DELETE all
-   `fts_working/fts_episodes/fts_facts` rows, then re-INSERT every
-   working/episodic/fact row through `cjkBigramize` in JS (~490ms on the
-   24MB oh-my-pi bank, measured 2026-09-06). Paid by EVERY `new Mnemopi()`
-   — and in the coding agent by `createAgentSession`'s awaited memory
-   backend start (autolearn enabled), so the first status bar render sat
-   ~500ms behind schedule. Mirrors are already maintained incrementally
-   (resyncFts* at every write site, DELETE triggers for removals), so an
-   up-to-date bank now only pays the two COUNT scans in
-   `ftsMirrorsOutOfSync`; the rebuild runs only for legacy raw-indexed
-   banks (`em_au`/`wm_ai`/`facts_ai` trigger detection) or count drift
-   from a crash between a content write and its resync. Regression tests
-   pin both sides (in-sync reopen preserves a mirror marker; drift
-   rebuilds). PTY probe: first status frame 1.305s → 0.909s.
+    `initBeam` called `rebuildFtsMirrors` unconditionally: DELETE all
+    `fts_working/fts_episodes/fts_facts` rows, then re-INSERT every
+    working/episodic/fact row through `cjkBigramize` in JS (~490ms on the
+    24MB oh-my-pi bank, measured 2026-09-06). Paid by EVERY `new Mnemopi()`
+    — and in the coding agent by `createAgentSession`'s awaited memory
+    backend start (autolearn enabled), so the first status bar render sat
+    ~500ms behind schedule. Mirrors are already maintained incrementally
+    (resyncFts* at every write site, DELETE triggers for removals), so an
+    up-to-date bank now only pays the two COUNT scans in
+    `ftsMirrorsOutOfSync`; the rebuild runs only for legacy raw-indexed
+    banks (`em_au`/`wm_ai`/`facts_ai` trigger detection) or count drift
+    from a crash between a content write and its resync. Regression tests
+    pin both sides (in-sync reopen preserves a mirror marker; drift
+    rebuilds). PTY probe: first status frame 1.305s → 0.909s.
 
 25. `feat(cli)` prewarm git status scan so counts paint in the first
-   frame — the status bar's staged/unstaged/untracked counts were fetched
-   lazily at first paint; the cold `statusSummary` (index load + worktree
-   lstat storm, 141ms measured warm-cache on this repo) plus a repaint
-   while `InteractiveMode.init:hooks` still owned the event loop put the
-   `*N` counts ~350ms after the branch label, every startup. Interactive
-   startups now fire `prewarmVcsStatusScan` (main.ts, after settings init,
-   gated on `git.enabled`) — parallel with session construction, on the
-   natives blocking pool — and park the result in a one-shot slot keyed
-   by repository root (`takePrewarmedVcsStatus`, 1.5s TTL, foreign roots
-   rejected). The status line's first `#getStatus` adopts it, so the
-   counts render in the FIRST status frame (measured: counts lag 347ms →
-   0ms, stable across 3 runs). Print/RPC/ACP hosts skip the scan. Note
-   the natives `vcs.repo()` is per-call (no handle memoization), so the
-   prewarm's real value is the result handoff, not cache warming.
+    frame — the status bar's staged/unstaged/untracked counts were fetched
+    lazily at first paint; the cold `statusSummary` (index load + worktree
+    lstat storm, 141ms measured warm-cache on this repo) plus a repaint
+    while `InteractiveMode.init:hooks` still owned the event loop put the
+    `*N` counts ~350ms after the branch label, every startup. Interactive
+    startups now fire `prewarmVcsStatusScan` (main.ts, after settings init,
+    gated on `git.enabled`) — parallel with session construction, on the
+    natives blocking pool — and park the result in a one-shot slot keyed
+    by repository root (`takePrewarmedVcsStatus`, 1.5s TTL, foreign roots
+    rejected). The status line's first `#getStatus` adopts it, so the
+    counts render in the FIRST status frame (measured: counts lag 347ms →
+    0ms, stable across 3 runs). Print/RPC/ACP hosts skip the scan. Note
+    the natives `vcs.repo()` is per-call (no handle memoization), so the
+    prewarm's real value is the result handoff, not cache warming.
 
 26. `fix(mnemopi)` embedding reconcile destroyed corpora and burned quota
-   — two compounding bugs behind the perpetual
-   `resuming interrupted embedding rebuild, count=240` log line (every
-   launch since the 2026-09-05 gemini-embedding-2 switch, zero rows ever
-   landing in `memory_embeddings`):
-   (a) **Destructive wipe without a replacement.** The mismatch branch
-   wiped all stored vectors whenever the active model string was
-   non-empty — but an option-less open (diagnostics, one-shot CLIs, my
-   own throwaway probes) silently falls back to the bundled fastembed
-   default and claims it as active, wiping the gemini corpus and
-   re-embedding under bge-small (wrong dims); the next configured open
-   wipes those again — ping-pong (also triggered historically by
-   bge-base↔bge-small default flips). The missing-row re-embed compounded
-   it via INSERT OR REPLACE by memory_id. `embeddingReplacementAvailable`
-   (explicit model/provider or env, plus key configured for API models)
-   now makes option-less opens fully inert — the documented
-   "never destroyed without a replacement" contract, finally enforced.
-   (b) **Re-enqueue burn.** Rebuild batches are all-or-nothing (128 rows,
-   ~90s at 700ms API pacing), so one-shot sessions always exit before the
-   first batch lands and every launch re-fires the same doomed requests
-   (~28 per invocation). The enqueue timestamp is persisted in a new
-   `mnemopi_meta` table; re-enqueues within a 15-minute cooldown are
-   suppressed. Long sessions heal within themselves; interrupted rebuilds
-   recover on the next window. Verified live: option-less open 242-row
-   gemini corpus preserved (was: wiped + re-embedded as bge-small);
-   cooldown active → 0 pending / expired → re-enqueue; the reference bank
-   drained to 242/242 gemini rows, 0 missing, and fresh probe launches
-   log zero rebuild lines. 3 new regression tests, 484 total green.
+    — two compounding bugs behind the perpetual
+    `resuming interrupted embedding rebuild, count=240` log line (every
+    launch since the 2026-09-05 gemini-embedding-2 switch, zero rows ever
+    landing in `memory_embeddings`):
+    (a) **Destructive wipe without a replacement.** The mismatch branch
+    wiped all stored vectors whenever the active model string was
+    non-empty — but an option-less open (diagnostics, one-shot CLIs, my
+    own throwaway probes) silently falls back to the bundled fastembed
+    default and claims it as active, wiping the gemini corpus and
+    re-embedding under bge-small (wrong dims); the next configured open
+    wipes those again — ping-pong (also triggered historically by
+    bge-base↔bge-small default flips). The missing-row re-embed compounded
+    it via INSERT OR REPLACE by memory_id. `embeddingReplacementAvailable`
+    (explicit model/provider or env, plus key configured for API models)
+    now makes option-less opens fully inert — the documented
+    "never destroyed without a replacement" contract, finally enforced.
+    (b) **Re-enqueue burn.** Rebuild batches are all-or-nothing (128 rows,
+    ~90s at 700ms API pacing), so one-shot sessions always exit before the
+    first batch lands and every launch re-fires the same doomed requests
+    (~28 per invocation). The enqueue timestamp is persisted in a new
+    `mnemopi_meta` table; re-enqueues within a 15-minute cooldown are
+    suppressed. Long sessions heal within themselves; interrupted rebuilds
+    recover on the next window. Verified live: option-less open 242-row
+    gemini corpus preserved (was: wiped + re-embedded as bge-small);
+    cooldown active → 0 pending / expired → re-enqueue; the reference bank
+    drained to 242/242 gemini rows, 0 missing, and fresh probe launches
+    log zero rebuild lines. 3 new regression tests, 484 total green.
 
 27. `fix(ai)` let provider-pinned codex identity headers reach the wire —
-   `createCodexHeaders` unconditionally overwrote `originator` and
-   `User-Agent` with omp's own Codex identity, so the models.yml
-   `User-Agent: codex_cli_rs/0.45.0` pins used by the codex-wire relay
-   providers (sub2api.zmingu, muyuan, zzzcoding, elysiver, runanytime,
-   abrdns, wzw, anwzw — 8 providers) were merged into requestHeaders and
-   then clobbered before fetch; relays that gate on official-client UA
-   prefixes (sub2api `codex_cli_only`) would 403 the omp/<version> UA the
-   wire actually carried. Both headers are now set-if-absent, matching the
-   caller-wins rule `withInferenceUserAgent` enforces at the transport
-   layer and `applyCodexResidencyHeader` documents in the same function;
-   unpinned providers keep omp's identity exactly as before. Found as an
-   uncommitted leftover from the 2026-09-05 relay-setup session (18:50),
-   verified statically (merge order at openai-codex-responses.ts:1447 →
-   createCodexHeaders → fetchWithRetry, no later clobber; Headers.has
-   case-insensitivity covers the mixed-case yml keys) plus regression
-   tests that fail pre-change and pass post-change.
+    `createCodexHeaders` unconditionally overwrote `originator` and
+    `User-Agent` with omp's own Codex identity, so the models.yml
+    `User-Agent: codex_cli_rs/0.45.0` pins used by the codex-wire relay
+    providers (sub2api.zmingu, muyuan, zzzcoding, elysiver, runanytime,
+    abrdns, wzw, anwzw — 8 providers) were merged into requestHeaders and
+    then clobbered before fetch; relays that gate on official-client UA
+    prefixes (sub2api `codex_cli_only`) would 403 the omp/<version> UA the
+    wire actually carried. Both headers are now set-if-absent, matching the
+    caller-wins rule `withInferenceUserAgent` enforces at the transport
+    layer and `applyCodexResidencyHeader` documents in the same function;
+    unpinned providers keep omp's identity exactly as before. Found as an
+    uncommitted leftover from the 2026-09-05 relay-setup session (18:50),
+    verified statically (merge order at openai-codex-responses.ts:1447 →
+    createCodexHeaders → fetchWithRetry, no later clobber; Headers.has
+    case-insensitivity covers the mixed-case yml keys) plus regression
+    tests that fail pre-change and pass post-change.
 
+28. `feat(ai)` user-editable hot-reloaded retry rules — new
+    `packages/ai/src/error/user-retry-rules.ts` loads
+    `~/.omp/agent/retry-rules.json` (env override
+    `OMP_RETRY_RULES_FILE`) lazily with an mtime+size cache, so relay
+    flakes can be reclassified without rebuilding the binary:
+    `retryablePatterns` / `nonRetryablePatterns` (case-insensitive regex
+    sources over error messages; kill switch checked first) bracket
+    `isProviderRetryableError` above usage-limit and the 4xx short-circuit,
+    `codexRetryableCodes` + the same patterns feed
+    `isRetryableCodexFailureEvent`, and `maxRetries.{providerStream,codex,
+   openaiHttp}` retune the anthropic provider loop (was `const 10`), the
+    codex provider/websocket budgets (were `const 5`, env
+    `PI_CODEX_WEBSOCKET_RETRY_BUDGET` still outranks the file), and the
+    openai-http transport attempts (was `const 6`). Malformed or oversized
+    files degrade to "no rules" with a logger.warn — classification never
+    breaks. Motivated by two same-day incidents: `unknown certificate
+   verification error` / Codex `invalid_prompt` needed code (committed as
+    2b6c7e4 with static rules), and the relay `503 No active API keys
+   available for this group` pool-rotation wait (retry, longer budget —
+    cindy's live file pins the pattern and raises providerStream to 20).
+    Tests: test/user-retry-rules.test.ts (file-driven classification both
+    directions, budgets, hot reload, malformed degradation, precedence).
 
+29. `feat(tui)` per-session usage segment — the status line gains a
+    `session_usage` segment (processing time, prompt/output tokens,
+    cache-hit rate, tok/s) that belongs to the *session*, not the machine:
+    a brand-new session stays hidden until its first billed request, and a
+    resumed session (`-r`, picker, `-c`) shows its full prior totals and
+    keeps adding. cindy corrected the first cut — v1 was a machine-wide
+    `usage_totals` ledger in agent.db with a one-time stats.db history
+    import ("开个新会话怎么都能有历史？新会话肯定是空的，resume
+    上去才累积") — that whole layer (table, watermark, import, live fold
+    in `AgentSession`) is deleted; v2 derives the segment from the branch
+    the view already loads: `StatusLineComponent.#getSessionUsage()` runs
+    `buildSessionUsageTimeline` (patch 7's replay: assistant
+    `duration`/usage + toolCall/toolResult timestamps) over
+    `sessionManager.getBranch()`, memoized on session id + branch length,
+    so it follows the focused session and costs nothing between appends.
+    Semantics carried over from v1's measuring: tok/s is weighted
+    Σoutput/Σmodel-time (a mean of per-request rates reads ~4x high); the
+    cache rate keeps work-usage's reported-only predicate; `null`-not-zero
+    for unmeasured values. Migration on this machine: dropped the
+    `usage_totals` table and both meta markers from the live agent.db.
+    Tests: test/status-line-session-usage.test.ts (render parts, options,
+    placeholder, and the branch-replay contract: empty branch → hidden,
+    persisted durations restore, later works accumulate).
 
 ## Merge adjudications (v18.0.10 → v18.1.6 → v18.1.10, 2026-09-04)
 
@@ -668,20 +713,20 @@ survive; the adjudications that matter:
    `classifyModel("openai", …)?.family === "gpt"`. Wire order unchanged.
 9. **NATIVES ARE A HARD PREREQUISITE (v18.1.10)** — 15 new symbols
    (`EditSession/Store`, `PowerAssertion`, `editInspect/Grammar/Description/
-   DiffString/AutoGeneratedMessage`, `hashlineCountOps/FileHash/FormatHeader/
-   FormatNumberedLines/StripPrefixes`, `extractInlineSloppyRegions`,
+DiffString/AutoGeneratedMessage`, `hashlineCountOps/FileHash/FormatHeader/
+FormatNumberedLines/StripPrefixes`, `extractInlineSloppyRegions`,
    `notebookToEditableText`) + sentinel `__piNativesV18_1_10`. The sentinel
    gate hard-throws on mismatch, and `editDescription` is called unguarded on
    the tool-description path — stale v18.0.10 `.node` binaries crash session
    creation with `TypeError: editDescription is not a function`. Fresh
    `.node` committed in `packages/natives/native/` (materialized via the
    official v18.1.10 binary + isolated HOME `--smoke-test`).
-10. **inspect_image removal (18.1.9)** — no fork code referenced it; five
-    managed skills migrated to `read <image>?q=<question>` (identical
-    vision-QA code lineage: same model cascade, thinking routing, timeout).
-11. **lsp navigation divergence** — fork's `navigation.ts`
-    `queryLspLocationResults` consolidation kept; upstream's inline
-    `normalizeLocationResult` import in tool.ts dropped as redundant.
+10.   **inspect_image removal (18.1.9)** — no fork code referenced it; five
+      managed skills migrated to `read <image>?q=<question>` (identical
+      vision-QA code lineage: same model cascade, thinking routing, timeout).
+11.   **lsp navigation divergence** — fork's `navigation.ts`
+      `queryLspLocationResults` consolidation kept; upstream's inline
+      `normalizeLocationResult` import in tool.ts dropped as redundant.
 
 Verification matrix: `bun run check:ts` exit 0 (tsgo all workspaces, oxlint
 1.80 clean); 210/210 fork contract tests + zh [1210] driver 6/6; 75/75
@@ -739,3 +784,124 @@ rebuilt and installed. Also exposed while debugging: a usage-less
 assistant message crashes `work-usage.ts` `usageIsBilled` at session load
 (synthetic sessions only — real assistant turns all carry usage); latent,
 left as-is.
+
+## Tool-result images billed as base64 text (2026-09-10)
+
+The `elysiver-claude/glm-5.3-flash` Anthropic-compatible relay treats images
+nested inside `tool_result.content` as text rather than vision input. The
+affected session reached 803,169 input tokens even after soft compaction:
+the retained 962×572 PNG was 806,440 bytes, and its base64 alone tokenized
+to 770,981 GLM tokens. A smaller 830×460 PNG accounted for 110,499 tokens,
+matching the session's repeated approximately 110K jumps. These are actual
+provider usage values, not an inflated local image estimate.
+
+`packages/ai/src/providers/anthropic.ts` now uses the existing error-image
+hoist for successful tool results too: all `tool_result` blocks remain first,
+followed by top-level image groups in the same user message. A call-id text
+block identifies each group so parallel results remain attributable. This
+uses a common Anthropic-valid representation rather than a relay-name branch;
+original images, URL/file sources, session history, and pixel quality remain
+unchanged. `show_image` returns original bytes, but recompression alone would
+only reduce the damage, not repair this text-versus-vision mismatch.
+
+The local tokenizer also omitted image budgets for user, developer, assistant,
+and shell-execution messages. Those roles now use the same visual-image
+estimate as tool results; developer text is counted as well. Base64 is never
+counted as ordinary text to compensate for a broken upstream representation.
+
+Live A/B used the same 2,752-byte PNG and 4,556-byte request: nested images
+cost 2,752 input tokens and produced no answer before the output cap; moving
+only the image to the user-message top level cost 304 tokens and correctly
+read the code and colored shapes. The final source implementation, including
+call-id labels, cost 320 tokens and produced the same correct visual answer.
+Focused regressions cover successful parallel results, error results, URL
+sources, many-image resizing, and image accounting across message roles.
+
+Replaying the original 806,440-byte PNG unchanged through the corrected source
+produced a 1,076,225-byte HTTP request but only 941 input tokens; the response
+identified the mpv interface. Request bytes and visual tokens are distinct.
+
+Validation: 203 focused tests passed; AI and agent package typechecks passed.
+
+Source verified; no compiled binary installed by this investigation.
+
+## Rewind/session-nav quick jump + click-to-rewind; WORK-row outline fold (2026-09-12)
+
+Two UX additions to the esc-esc rewind selector plus a latent fold bug they
+flushed out, and matching jump keys for the session-nav extension:
+
+1. **`ctrl+shift+home` / `ctrl+shift+end` in the rewind selector** jump the
+   dotted outline to the first/last selectable target of the active column
+   (plain home/end remain viewport-scroll-only, as before). Kitty delivers
+   these as `CSI 1;6H/F` ("shift+ctrl+home"), which matched nothing before.
+2. **Left click rewinds** — session-picker parity. `composeOutlineColumn` now
+   returns a per-line `hit` map (line → owning target); the selector rebuilds
+   per-line click regions every render (`row - 3 + scrollOffset`, same mapping
+   as `/copy`), including branch-strip columns (column x-windows under the
+   camera) and prefix rows above a fork. Clicking chrome/blank rows is inert.
+   Footer hint updated: `⌃⇧home/end jump · enter/click rewind`.
+3. **session-nav (`alt+u`)** picker and viewer accept `ctrl+shift+home/end`
+   (first/last item; scroll to ends) alongside plain home/end.
+4. **Fold fix**: `createWorkUsageRowBlock` (patch 7) never registered in the
+   `usageRowBlocks` WeakSet, so WORK rows became standalone outline targets —
+   breaking the tool-result fold ("rewind keeps its tool output") and the
+   `tr1`-fold contract tests at fork HEAD. Now marked via
+   `markUsageRowBlock`, folding like model usage rows. This fixed 2
+   pre-existing red tests (`rewind-selector.test.ts`) and removes WORK rows
+   as phantom rewind/copy targets.
+
+Files: `rewind-selector.ts, transcript-outline.ts, usage-row.ts, work-usage.ts,
+test/rewind-selector.test.ts, extensions/session-nav.ts`.
+
+Verification: 10/10 rewind-selector tests, 26/26 usage-row/copy-selector tests,
+10/10 keybindings-selector-navigation (isolated HEAD worktree, since the shared
+tree had another agent's transpile-broken model-registry WIP). Real-binary PTY
+probe against a mock provider (fresh `--profile`, isolated `--session-dir`):
+esc-esc → `ctrl+shift+home` moves outline to 1/4 + scrolls top; SGR click on
+"second question" rewinds (transcript truncated, draft restored, old path kept
+as sibling branch); alt+u picker/viewer handle both new sequences. Not
+installed: omp-patched was rebuilt by a concurrent agent at 17:40; this patch
+rides the next clean fork build.
+
+## models.yml multi-key pools per provider (2026-09-12)
+
+`providers.<name>.apiKeys` (string[]) declares a key pool; `apiKeyRotation`
+selects `first-fill` (default, omitted field) or `round-robin`. `apiKey` and
+`apiKeys` are mutually exclusive; `apiKeyRotation` without `apiKeys` is a
+schema error; a non-empty pool satisfies the "apiKey required" custom-model
+validation.
+
+Design: rather than a parallel mechanism, keys are synced as `api_key`
+credential rows with `source:"config"` into the existing AuthStorage pool in
+agent.db (`auth_credentials`), immediately after the single-key config
+override leg of `getApiKey` (config-pinned keys must keep beating broker
+OAuth). This reuses the entire existing machinery for free: usage-limit
+classification (401/403/quota bodies incl. Chinese variants), in-turn sibling
+rotation, persisted `auth_credential_blocks` (60 s default backoff without a
+server reset time — conservative by design), and session-sticky bookkeeping.
+Selection policy lives in `#selectApiKeyCredential` as a `poolPolicy`
+parameter: first-fill walks config order and skips blocked keys (prompt-cache
+friendly — everyone stays on key 1 until it is actually exhausted); round-robin
+advances per resolve. Pool sync reconciles by exact key value so row ids — and
+the blocks/stickiness keyed to them — survive models.yml reloads; providers
+dropped from the config are pruned via `pruneConfigApiKeyPools` after each
+load (store-row enumeration, so pools configured before a restart are also
+caught). OAuth identity surfaces (getOAuthAccess/account_uuid/listOAuthAccounts)
+treat a pool like a single config override and stay suppressed. Pool entries
+may be command-backed (`!cmd`), resolved at load and on the 401 force-refresh
+path; resolved values are what get stored so block attribution matches the
+wire bearer.
+
+Files: `packages/ai/src/auth-storage.ts`, `packages/ai/src/auth/sqlite-credential-store.ts`,
+`packages/coding-agent/src/config/{models-config-schema-bundle,models-config,model-registry}.ts`.
+
+Verification: 8 pi-ai tests (first-fill/rotation/persisted blocks/reconcile
+identity/precedence/prune incl. pre-restart pools) + 5 registry tests (schema
+wiring, rotation through `registry.getApiKey`, `!cmd` entries, mutual-exclusion
+errors) all pass; both packages typecheck clean for the touched files. Live
+binary smoke against a mock OpenAI-compat relay in an isolated HOME: run 1
+served `sk-alpha` → six 429 backoffs → usage-limit burn → same-turn switch to
+`sk-beta` → answer; an immediately following fresh process went straight to
+`sk-beta` (persisted block). A later run retried `sk-alpha` after the 60 s
+default block expired and re-rotated — intended conservative behavior when the
+relay reports no reset window.

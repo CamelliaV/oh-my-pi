@@ -4,6 +4,8 @@
 import { type } from "@oh-my-pi/omptype";
 import { MAIN_AGENT_ID } from "../registry/agent-registry";
 import { createEvalCustomTools, describeEvalTools } from "../task/eval-tools";
+import { createQueuedSubagentProgress, publishSubagentProgress } from "../task/execution-progress";
+import { transitionSubagentExecution } from "../task/execution-state";
 import {
 	buildStructuredSubagentRecoveryHint,
 	reserveStructuredSubagentId,
@@ -187,6 +189,7 @@ export async function runEvalAgent(args: unknown, options: EvalAgentBridgeOption
 		? createEvalCustomTools(options.session, await describeEvalTools(options.session, parsed.tools, options.signal))
 		: undefined;
 
+	let queued: AgentProgress | undefined;
 	try {
 		const policy = await resolveEffectiveSubagentPolicy({
 			session: options.session,
@@ -204,6 +207,16 @@ export async function runEvalAgent(args: unknown, options: EvalAgentBridgeOption
 		}
 		const id = await reserveStructuredSubagentId(options.session, { label: parsed.label });
 		const ownerId = options.session.getAgentId?.() ?? MAIN_AGENT_ID;
+		queued = createQueuedSubagentProgress({
+			id,
+			agent: policy.agentName,
+			agentSource: policy.agent.source,
+			task: parsed.prompt,
+			description: parsed.label,
+			modelRole: policy.modelRole,
+		});
+		publishSubagentProgress(options.session, queued, { detached: false });
+		const queuedExecution = queued.execution;
 		manager.register(
 			"task",
 			id,
@@ -214,6 +227,7 @@ export async function runEvalAgent(args: unknown, options: EvalAgentBridgeOption
 					const execution = await runStructuredSubagent({
 						session: options.session,
 						invocationKind: "eval",
+						execution: queuedExecution,
 						assignment: parsed.prompt,
 						...(parsed.agent !== undefined ? { agent: parsed.agent } : {}),
 						...(Object.hasOwn(parsed, "schema") ? { outputSchema: parsed.schema } : {}),
@@ -237,6 +251,14 @@ export async function runEvalAgent(args: unknown, options: EvalAgentBridgeOption
 					});
 					return result.text;
 				} catch (error) {
+					if (queued) {
+						queued = {
+							...(latestProgress ?? queued),
+							status: signal.aborted ? "aborted" : "failed",
+							execution: transitionSubagentExecution(latestProgress?.execution ?? queued.execution!, signal.aborted ? "cancelled" : "failed", error instanceof Error ? error.message : String(error)),
+						};
+						publishSubagentProgress(options.session, queued, { detached: false });
+					}
 					if (error instanceof StructuredSubagentError) throw new ToolError(error.message);
 					throw error;
 				}
@@ -245,6 +267,10 @@ export async function runEvalAgent(args: unknown, options: EvalAgentBridgeOption
 		);
 		return { id, agent: policy.agentName };
 	} catch (error) {
+		if (queued?.execution) {
+			queued = { ...queued, status: "failed", execution: transitionSubagentExecution(queued.execution, "failed", error instanceof Error ? error.message : String(error)) };
+			publishSubagentProgress(options.session, queued, { detached: false });
+		}
 		if (error instanceof StructuredSubagentError) throw new ToolError(error.message);
 		throw error;
 	}

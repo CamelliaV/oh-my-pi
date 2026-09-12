@@ -3,6 +3,7 @@ import type { Usage } from "@oh-my-pi/pi-ai";
 import { $env } from "@oh-my-pi/pi-utils";
 import type { AgentSessionEvent } from "../session/agent-session";
 import type { ConfiguredThinkingLevel, TaskEffort } from "../thinking";
+import type { SubagentExecutionState } from "./execution-state";
 import type { NestedRepoPatch } from "./worktree";
 
 /** Source of an agent definition */
@@ -76,6 +77,7 @@ export interface SubagentProgressPayload {
 	sessionFile?: string;
 	/** See {@link SubagentLifecyclePayload.detached}. */
 	detached?: boolean;
+	execution?: SubagentExecutionState;
 }
 
 /** Payload emitted on TASK_SUBAGENT_EVENT_CHANNEL */
@@ -101,6 +103,7 @@ export interface SubagentLifecyclePayload {
 	 * unset — surfaces like the subagent HUD only list detached spawns.
 	 */
 	detached?: boolean;
+	execution?: SubagentExecutionState;
 }
 
 /** Display cap for a normalized one-line label (roster line, registry `displayName`, prompt field). */
@@ -453,6 +456,8 @@ export interface AgentProgress {
 	resolvedModel?: string;
 	/** True when {@link resolvedModel} is the target of an active retry fallback (not the originally configured model). Lets observer-only UIs (collab guests, Agent Hub rows with no live session) flag the fallback and keep the provider. */
 	resolvedModelIsFallback?: boolean;
+	/** Orthogonal task phase/state; coarse status remains the process lifecycle. */
+	execution?: SubagentExecutionState;
 	/** Data extracted by registered subprocess tool handlers (keyed by tool name) */
 	extractedToolData?: Record<string, unknown[]>;
 	/**
@@ -524,6 +529,8 @@ export interface SingleResult {
 	resolvedModel?: string;
 	/** True when {@link resolvedModel} is the target of an active retry fallback. Mirrors {@link AgentProgress.resolvedModelIsFallback} onto the settled result. */
 	resolvedModelIsFallback?: boolean;
+	/** Orthogonal task phase/state carried into result summaries and recovery. */
+	execution?: SubagentExecutionState;
 	error?: string;
 	aborted?: boolean;
 	abortReason?: string;

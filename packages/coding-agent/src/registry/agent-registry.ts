@@ -11,6 +11,7 @@
 
 import { logger } from "@oh-my-pi/pi-utils";
 import type { AgentSession } from "../session/agent-session";
+import type { SubagentExecutionState } from "../task/execution-state";
 import { oneLineLabel } from "../task/types";
 
 export const MAIN_AGENT_ID = "Main";
@@ -61,6 +62,8 @@ export interface AgentHistorySummary {
 	resolvedModelIsFallback?: boolean;
 	metrics?: AgentMetricsSummary;
 	readOnly?: boolean;
+	/** Durable task execution phase and recovery history. */
+	execution?: SubagentExecutionState;
 	/** Durable task output artifact, when the executor wrote one. */
 	outputPath?: string;
 	/** Captured isolated-worktree patch, when patch capture succeeded. */

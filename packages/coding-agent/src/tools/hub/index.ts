@@ -64,6 +64,7 @@ import {
 	messagingRenderResult,
 	normalizeIrcTimeoutMs,
 } from "./messaging";
+import { executeResume } from "./resume";
 import {
 	DEFAULT_HUB_LIST_LIMIT,
 	type HubDetails,
@@ -79,10 +80,10 @@ export * from "./types";
 
 const hubSchema = type({
 	op: type(
-		"'send' | 'wait' | 'inbox' | 'list' | 'jobs' | 'cancel' | 'start' | 'ps' | 'logs' | 'stop' | 'restart' | 'describe'",
+		"'send' | 'resume' | 'wait' | 'inbox' | 'list' | 'jobs' | 'cancel' | 'start' | 'ps' | 'logs' | 'stop' | 'restart' | 'describe'",
 	).describe("hub operation"),
-	"to?": type("string").describe('send: recipient agent id or "all"'),
-	"message?": type("string").describe("send: message body"),
+	"to?": type("string").describe('send/resume: recipient agent id; send also accepts "all"'),
+	"message?": type("string").describe("send: message body; resume: continuation instructions"),
 	"replyTo?": type("string").describe("send: message id being answered"),
 	"await?": type("boolean").describe('send: wait for the recipient\'s reply (invalid with to:"all")'),
 	"from?": type("string").describe("wait: only accept a message from this agent id"),
@@ -299,6 +300,8 @@ export class HubTool implements AgentTool<typeof hubSchema, HubDetails> {
 				if (!messaging) return hubErrorResult("Peer messaging is unavailable in this session.", { op: "send" });
 				return executeSend(messaging, params, signal);
 			}
+			case "resume":
+				return executeResume(this.session, params, signal);
 			case "inbox": {
 				const messaging = this.#messaging();
 				if (!messaging) return hubErrorResult("Peer messaging is unavailable in this session.", { op: "inbox" });

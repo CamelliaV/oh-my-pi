@@ -7,6 +7,7 @@
 import type { AgentToolResult } from "@oh-my-pi/pi-agent-core";
 import type { AsyncJobType } from "../../async";
 import type { IrcDeliveryReceipt, IrcMessage } from "../../irc/bus";
+import type { SubagentExecutionState } from "../../task/execution-state";
 import type { StructuredSubagentOutput } from "../../task/types";
 import type { LaunchParams, LaunchToolDetails } from "./launch";
 
@@ -17,6 +18,7 @@ import type { LaunchParams, LaunchToolDetails } from "./launch";
  */
 export type HubOp =
 	| "send"
+	| "resume"
 	| "wait"
 	| "inbox"
 	| "list"
@@ -122,6 +124,8 @@ export interface CoordinationDetails {
 	cancelled?: { id: string; status: CancelStatus }[];
 	/** Running subagents not represented by a job row in this result. */
 	agents?: AgentActivitySnapshot[];
+	/** Actual queued/started state of an explicit continuation request. */
+	execution?: SubagentExecutionState;
 }
 
 /** Hub result details: coordination snapshots or launch (process) state. */

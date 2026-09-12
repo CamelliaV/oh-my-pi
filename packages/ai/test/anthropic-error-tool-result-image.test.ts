@@ -3,10 +3,9 @@ import { convertAnthropicMessages } from "@oh-my-pi/pi-ai/providers/anthropic";
 import type { AssistantMessage, Model, ModelSpec, ToolResultMessage, UserMessage } from "@oh-my-pi/pi-ai/types";
 import { buildModel } from "@oh-my-pi/pi-catalog/build";
 
-// Anthropic rejects images inside error tool results:
-//   "messages.N.content.0.tool_result: all content must be type `text` if `is_error` is true"
-// The converter must keep error tool_result content text-only and re-attach the
-// images after the tool_result run in the same user message.
+// Tool-result images must reach vision decoders, never a relay's text-only tool
+// output converter. Anthropic also rejects nested images when is_error is true.
+// Keep the complete result run first, then attach each call's images by call id.
 
 const baseModel: Omit<ModelSpec<"anthropic-messages">, "provider" | "baseUrl"> = {
 	api: "anthropic-messages",
@@ -81,7 +80,7 @@ function lastUserBlocks(messages: Parameters<typeof convertAnthropicMessages>[0]
 	return blocks;
 }
 
-describe("anthropic error tool_result image hoisting", () => {
+describe("anthropic tool_result image hoisting", () => {
 	it("keeps error tool_result content text-only and hoists the image after it", () => {
 		const blocks = lastUserBlocks([
 			user,
@@ -133,16 +132,27 @@ describe("anthropic error tool_result image hoisting", () => {
 		expect(types.indexOf("image")).toBeGreaterThan(lastResult);
 	});
 
-	it("leaves images inside successful tool_results untouched", () => {
-		const blocks = lastUserBlocks([
-			user,
-			assistantWithCalls(["toolu_ok"]),
-			toolResult("toolu_ok", { isError: false, text: "screenshot", image: true }),
-		]);
+	it("keeps successful parallel image results out of tool text and associated with their calls", () => {
+		const first = toolResult("toolu_a", { isError: false, text: "first screenshot", image: true });
+		const second = toolResult("toolu_b", { isError: false, image: true });
+		const secondImage = second.content[0];
+		if (secondImage.type !== "image") throw new Error("Expected image fixture");
+		secondImage.url = "https://images.example.com/second.png";
+		const blocks = lastUserBlocks([user, assistantWithCalls(["toolu_a", "toolu_b"]), first, second]);
 
-		const result = blocks.find(b => b.type === "tool_result");
-		const content = result?.content as Array<Record<string, unknown>>;
-		expect(content.some(b => b.type === "image")).toBe(true);
-		expect(blocks.filter(b => b.type === "image").length).toBe(0);
+		const results = blocks.filter(block => block.type === "tool_result");
+		expect(results.map(block => block.tool_use_id)).toEqual(["toolu_a", "toolu_b"]);
+		expect(blocks.slice(0, results.length)).toEqual(results);
+		for (const result of results) {
+			const content = result.content as Array<Record<string, unknown>>;
+			expect(content.every(block => block.type === "text")).toBe(true);
+			expect(JSON.stringify(content)).not.toContain(PNG_DATA);
+		}
+		const imageIndices = blocks.flatMap((block, index) => (block.type === "image" ? [index] : []));
+		expect(imageIndices).toHaveLength(2);
+		expect(blocks[imageIndices[0] - 1]).toEqual({ type: "text", text: "toolu_a" });
+		expect(blocks[imageIndices[1] - 1]).toEqual({ type: "text", text: "toolu_b" });
+		expect(blocks[imageIndices[0]].source).toMatchObject({ type: "base64", data: PNG_DATA });
+		expect(blocks[imageIndices[1]].source).toEqual({ type: "url", url: secondImage.url });
 	});
 });

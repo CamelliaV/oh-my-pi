@@ -1041,7 +1041,11 @@ export async function recall(
 	return finalResults;
 }
 
-function diversifyByCoverage(results: readonly RecallResult[], tokens: readonly string[], topK: number): RecallResult[] {
+function diversifyByCoverage(
+	results: readonly RecallResult[],
+	tokens: readonly string[],
+	topK: number,
+): RecallResult[] {
 	const selected: RecallResult[] = [];
 	const covered = new Set<string>();
 	const pool = [...results];

@@ -415,7 +415,7 @@ export class WikiStore {
 					});
 				}
 			}
-			await this.#commit(db, [...writes.values()], mutation.op, state);
+			await this.#commit(db, [...writes.values()], mutation.op === "forget" ? "invalidate" : mutation.op, state);
 			return {
 				status: mutation.op === "update" ? "updated" : mutation.op === "forget" ? "deleted" : "invalidated",
 				affectedPages: [...affected].sort(),
@@ -452,7 +452,8 @@ export class WikiStore {
 			const writes: WikiRecord[] = [];
 			const affectedPages = new Set<string>();
 			if (current.type === "page") {
-				if (historical.type !== "page") throw new Error("Wiki revision type changed");
+				if (historical.type !== "page" || !("sources" in historical.record))
+					throw new Error("Wiki revision type changed");
 				for (const ref of historical.record.sources) {
 					const source = state.records.get(ref.id);
 					if (
@@ -467,6 +468,8 @@ export class WikiStore {
 					value: { ...historical.record, revision: current.value.revision + 1, status: "active", updatedAt: now },
 				});
 			} else {
+				if (historical.type !== "source" || !("content" in historical.record))
+					throw new Error("Wiki revision type changed");
 				writes.push({
 					type: "source",
 					processedRevision: 0,

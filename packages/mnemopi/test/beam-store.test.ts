@@ -469,9 +469,13 @@ describe("memory mutation provenance", () => {
 
 			expect(sleep(beam)).toMatchObject({ items_consolidated: 2 });
 			expect(
-				(await recallEnhanced(beam, "guitar", 10, { includeFacts: true, queryEmbedding: null, includeWorking: false })).some(
-					row => row.content.includes("guitar") && !row.content.includes("Paris"),
-				),
+				(
+					await recallEnhanced(beam, "guitar", 10, {
+						includeFacts: true,
+						queryEmbedding: null,
+						includeWorking: false,
+					})
+				).some(row => row.content.includes("guitar") && !row.content.includes("Paris")),
 			).toBe(true);
 			expect(await recallEnhanced(beam, "Paris", 10, { includeFacts: true, queryEmbedding: null })).toEqual([]);
 		});

@@ -280,14 +280,22 @@ describe("WikiStore", () => {
 		await store.open();
 		try {
 			const source = await store.capture({ content: "Both related facts must publish together" });
-			await publish(store, [draft("w-first", [source], "First related fact"), draft("w-second", [source], "Second related fact")], [source]);
+			await publish(
+				store,
+				[draft("w-first", [source], "First related fact"), draft("w-second", [source], "Second related fact")],
+				[source],
+			);
 			const directory = `.wiki-txn-${crypto.randomUUID()}`;
 			await fs.mkdir(path.join(root, directory));
 			const entries = [];
 			for (const id of ["w-first", "w-second"]) {
 				const content = await Bun.file(path.join(root, "pages", `${id}.md`)).text();
 				await Bun.write(path.join(root, directory, `${id}.md`), content);
-				entries.push({ target: `pages/${id}.md`, staged: `${id}.md`, sha256: new Bun.CryptoHasher("sha256").update(content).digest("hex") });
+				entries.push({
+					target: `pages/${id}.md`,
+					staged: `${id}.md`,
+					sha256: new Bun.CryptoHasher("sha256").update(content).digest("hex"),
+				});
 			}
 			await Bun.write(path.join(root, ".wiki-transaction.json"), JSON.stringify({ format: 1, directory, entries }));
 			const blocked = path.join(root, "pages", "w-second.md");
@@ -301,7 +309,9 @@ describe("WikiStore", () => {
 			expect((await store.snapshot()).pages.map(page => page.id)).toEqual(["w-first", "w-second"]);
 			expect((await store.snapshot()).pending).toEqual([]);
 			expect((await store.search("related fact")).map(page => page.id).sort()).toEqual(["w-first", "w-second"]);
-		} finally { store.close(); }
+		} finally {
+			store.close();
+		}
 	});
 
 	it("rejects root and record escapes and isolates read, publication, mutation, and clear by root", async () => {

@@ -137,7 +137,7 @@ export class UserMessageComponent extends Container implements ReactionTarget {
 				maxRows: caps.maxHeightCells ?? 20,
 				maxImages: 8,
 				requestRender: () => {
-										this.#blockVersion++;
+					this.#blockVersion++;
 					requestRepaint?.();
 				},
 			});

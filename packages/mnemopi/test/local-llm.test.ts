@@ -61,7 +61,8 @@ describe("local LLM TypeScript port", () => {
 		const started = Promise.withResolvers<void>();
 		const pending = Promise.withResolvers<string | null>();
 		const memory = new Mnemopi({
-			dbPath: tempDbPath(), noEmbeddings: true,
+			dbPath: tempDbPath(),
+			noEmbeddings: true,
 			llm: async (_prompt, options) => {
 				options?.signal?.addEventListener("abort", () => pending.resolve(null), { once: true });
 				started.resolve();
@@ -69,7 +70,9 @@ describe("local LLM TypeScript port", () => {
 			},
 		});
 		try {
-			const response = withMnemopiRuntimeOptions(memory.runtimeOptions, () => complete("choose context", 0, { signal: controller.signal }));
+			const response = withMnemopiRuntimeOptions(memory.runtimeOptions, () =>
+				complete("choose context", 0, { signal: controller.signal }),
+			);
 			await started.promise;
 			controller.abort();
 			expect(await response).toBeNull();

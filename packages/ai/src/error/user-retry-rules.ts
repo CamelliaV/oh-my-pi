@@ -84,9 +84,7 @@ function compilePatternList(value: unknown, problems: string[]): RegExp[] {
 	if (value.length > MAX_PATTERNS) {
 		problems.push(`too many patterns (${value.length}); using first ${MAX_PATTERNS}`);
 	}
-	return sources
-		.map(source => compilePattern(source, problems))
-		.filter((re): re is RegExp => re !== undefined);
+	return sources.map(source => compilePattern(source, problems)).filter((re): re is RegExp => re !== undefined);
 }
 
 function compileCodeList(value: unknown, problems: string[]): Set<string> {
@@ -132,7 +130,10 @@ function parseRules(text: string): UserRetryRules {
 	}
 	const root = parsed as Record<string, unknown>;
 	const maxRetries =
-		root.maxRetries !== undefined && root.maxRetries !== null && typeof root.maxRetries === "object" && !Array.isArray(root.maxRetries)
+		root.maxRetries !== undefined &&
+		root.maxRetries !== null &&
+		typeof root.maxRetries === "object" &&
+		!Array.isArray(root.maxRetries)
 			? (root.maxRetries as Record<string, unknown>)
 			: {};
 	const rules: UserRetryRules = {

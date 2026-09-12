@@ -44,7 +44,10 @@ export async function selectRecallContext(
 	try {
 		const response = await withTimeout(
 			withMnemopiRuntimeOptions({ ...runtime, llm: { ...runtime.llm, maxTokens: SELECTION_MAX_TOKENS } }, () =>
-				complete(rendered, 0, { maxTokens: SELECTION_MAX_TOKENS, signal: AbortSignal.timeout(SELECTION_TIMEOUT_MS) }),
+				complete(rendered, 0, {
+					maxTokens: SELECTION_MAX_TOKENS,
+					signal: AbortSignal.timeout(SELECTION_TIMEOUT_MS),
+				}),
 			),
 			SELECTION_TIMEOUT_MS,
 			"Memory relevance selection timed out",

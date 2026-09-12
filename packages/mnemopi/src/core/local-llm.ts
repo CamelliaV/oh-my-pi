@@ -362,7 +362,9 @@ export async function callRemoteLlm(
 				method: "POST",
 				headers,
 				body,
-				signal: options.signal ? AbortSignal.any([options.signal, AbortSignal.timeout(60000)]) : AbortSignal.timeout(60000),
+				signal: options.signal
+					? AbortSignal.any([options.signal, AbortSignal.timeout(60000)])
+					: AbortSignal.timeout(60000),
 				fetch: fetchImpl,
 			});
 			if (res.status === 401) {
@@ -469,7 +471,10 @@ export async function complete(
 	options: CompleteOptions = {},
 ): Promise<string | null> {
 	if (configuredLlmWillHandleCall()) {
-		const raw = await callConfiguredCompletion(prompt, temperature, { ...options, maxTokens: options.maxTokens ?? llmMaxTokens() });
+		const raw = await callConfiguredCompletion(prompt, temperature, {
+			...options,
+			maxTokens: options.maxTokens ?? llmMaxTokens(),
+		});
 		return raw === null ? null : cleanOutput(raw) || null;
 	}
 	const [attempted, hostText] = await tryHostLlm(prompt, llmMaxTokens(), temperature);

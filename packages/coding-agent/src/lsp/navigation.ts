@@ -9,7 +9,8 @@ import {
 	REFERENCES_RETRY_COUNT,
 	REFERENCES_RETRY_DELAY_MS,
 } from "./diagnostics";
-import { getConfig, getLspServerForFile, isProjectAwareLspServer } from "./servers";
+import { getConfig } from "./config";
+import { getLspServerForFile, isProjectAwareLspServer } from "./servers";
 import type { Location, LocationLink, LspClient, ServerConfig } from "./types";
 import { fileToUri, resolveSymbolColumn, uriToFile } from "./utils";
 

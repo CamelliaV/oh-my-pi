@@ -36,9 +36,9 @@ describe("user retry rules file", () => {
 	it("rescues an otherwise-terminal relay error via retryablePatterns", () => {
 		writeRules({ retryablePatterns: ["No active API keys available"] });
 		// Without user rules this exact wording (no status attached) is terminal.
-		expect(isProviderRetryableError(new Error('503 {"error":{"message":"No active API keys available for this group"}}'))).toBe(
-			true,
-		);
+		expect(
+			isProviderRetryableError(new Error('503 {"error":{"message":"No active API keys available for this group"}}')),
+		).toBe(true);
 	});
 
 	it("kills a default-retryable error via nonRetryablePatterns, and the kill switch outranks the opt-in", () => {
@@ -96,7 +96,9 @@ describe("user retry rules file", () => {
 			retryablePatterns: ["relay flake message"],
 		});
 		expect(isRetryableCodexFailureEvent({ error: { code: "RELAY_SPECIFIC_CODE" } })).toBe(true);
-		expect(isRetryableCodexFailureEvent({ error: { code: "bad_request", message: "relay flake message" } })).toBe(true);
+		expect(isRetryableCodexFailureEvent({ error: { code: "bad_request", message: "relay flake message" } })).toBe(
+			true,
+		);
 		writeRules({ nonRetryablePatterns: ["please retry your request"] });
 		// Built-in retryable message wording, suppressed by the kill switch.
 		expect(isRetryableCodexFailureEvent({ message: "Please retry your request shortly" })).toBe(false);

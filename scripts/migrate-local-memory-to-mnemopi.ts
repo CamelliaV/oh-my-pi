@@ -27,10 +27,13 @@ const MNEMOPI_DIR = path.join(MEMORIES_DIR, "mnemopi");
 const APPLY = process.argv.includes("--apply");
 const STAGING = "/tmp/mnemopi-migration";
 
-
 /** omp per-project bank id: mnemopi/config.ts:189 projectBankSegment. */
 function projectBankSegment(projectRoot: string): string {
-	const project = path.basename(projectRoot).replace(/[^a-zA-Z0-9_-]+/g, "-").replace(/^-+|-+$/g, "") || "default";
+	const project =
+		path
+			.basename(projectRoot)
+			.replace(/[^a-zA-Z0-9_-]+/g, "-")
+			.replace(/^-+|-+$/g, "") || "default";
 	const name = `${project}-${Bun.hash(projectRoot).toString(36)}`;
 	if (name.length <= 64) return name;
 	const hash = Bun.hash(name).toString(36);
@@ -216,7 +219,9 @@ let total = 0;
 for (const r of reports) {
 	total += r.entries;
 	const root = r.projectRoot ?? "?";
-	console.log(`${r.dir}\n  root: ${root}\n  bank: ${r.bank ?? "-"}\n  entries: ${r.entries}${r.skipped.length ? `\n  skipped: ${r.skipped.join("; ")}` : ""}`);
+	console.log(
+		`${r.dir}\n  root: ${root}\n  bank: ${r.bank ?? "-"}\n  entries: ${r.entries}${r.skipped.length ? `\n  skipped: ${r.skipped.join("; ")}` : ""}`,
+	);
 }
 console.log(`\nTotal entries: ${total}${sharedRows.length ? ` (+${sharedRows.length} shared-bank)` : ""}`);
 if (!APPLY) console.log(`Staging JSON: ${STAGING}/ (dry-run wrote nothing to mnemopi)`);

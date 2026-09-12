@@ -2212,6 +2212,12 @@ export class EventController {
 	async #handleAutoRetryStart(event: Extract<AgentSessionEvent, { type: "auto_retry_start" }>): Promise<void> {
 		this.#retryPending = true;
 		this.#trackRetrySupersededAssistantComponent(this.#lastAssistantComponent);
+		// Keep tracked components' errors hidden during the retry window. They were
+		// pinned at message_end; ensure they stay pinned so the banner is the only
+		// visible error surface until auto_retry_end applies the final marker.
+		for (const component of this.#retrySupersededAssistantQueue) {
+			component.setErrorPinned(true);
+		}
 		// A retry supersedes the just-failed turn: its assistant + tool calls are
 		// pruned from context and re-streamed. Remove the cards that a synthetic
 		// aborted/error completion settled in place at message_end so the retry's
@@ -2290,6 +2296,14 @@ export class EventController {
 			(appliedRetryUpdate || (event.retryErrors?.length ?? 0) > 0)
 		) {
 			this.ctx.clearPinnedError();
+		}
+		// On exhausted failure, unpin any remaining tracked components so their
+		// errors become visible. Success path already called applyRetryRecovery
+		// which unpins via setErrorPinned(false).
+		if (!event.success) {
+			for (const component of this.#retrySupersededAssistantQueue) {
+				component.setErrorPinned(false);
+			}
 		}
 		this.#clearRetrySupersededAssistantComponents();
 		if (!event.success) {

@@ -447,7 +447,7 @@ describe("AgentSession retry recovery", () => {
 						retryRecovery: retryRecovery(testCase.recovery, testCase.note),
 					}),
 				),
-			).toEqual({ kind: "compact-recovered", text: testCase.note, isError: false });
+			).toEqual({ kind: "none" });
 		}
 
 		expect(

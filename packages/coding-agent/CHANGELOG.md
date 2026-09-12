@@ -4,9 +4,14 @@
 
 ### Added
 
+- New `session_usage` status-line segment showing the current session's cumulative processing time, input/output tokens, cache-hit rate, and throughput, replayed from the persisted session history — a resumed session shows its full prior totals and keeps adding, while a brand-new session stays hidden until its first billed request (included in the `default`, `full`, and `nerd` presets; reorder or drop it via `statusLine.leftSegments`/`rightSegments`, tune parts with `statusLine.segmentOptions.sessionUsage`).
 - Web search result cards now report elapsed time and answer throughput (`tok/s`) in the header and Metadata section; a fallback chain also shows how long each failed attempt took. Unmeasured values are omitted rather than shown as zero.
 - Added `lazy: true` support for MCP server configs: a lazily-held server is never connected at startup; the manager mounts one lightweight `mcp__<server>_gateway` device per held server (one prompt line instead of a full tool catalog), and dispatching to it connects the server on demand — real tools replace the gateway through the existing tools-changed refresh, with auth failures surfacing `/mcp` guidance. The user-level `enabledServers` allowlist bypasses the hold.
 - Hosted Anthropic web search now follows the running model when the standalone provider cannot reach it: for a Claude model served over a custom Messages endpoint, the `anthropic` search provider is promoted ahead of the configured chain and reuses that model's own transport (base URL, provider credential, request model id, Claude Code cloak, provider headers), so a relay can serve hosted search instead of being skipped for lack of official Anthropic credentials. Official `api.anthropic.com` models and an explicit `ANTHROPIC_SEARCH_API_KEY`/`ANTHROPIC_SEARCH_BASE_URL` keep the existing chain and the cheap `ANTHROPIC_SEARCH_MODEL` default.
+
+### Changed
+
+- Retry error displays now collapse during retries and hide completely after recovery: while an auto-retry is in progress, failed attempts no longer render individual error rows in the transcript (the banner and status loader already show the retry count and error), and successfully recovered attempts leave no visible trace instead of showing a dim "error; retried" note per attempt.
 ## [18.1.10] - 2026-09-04
 
 ### Changed

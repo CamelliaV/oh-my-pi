@@ -252,10 +252,6 @@ export type AssistantErrorPresentation =
 	| { kind: "full"; text: string; isError: true }
 	| { kind: "compact-recovered"; text: string; isError: false };
 
-function sanitizeRecoveredRetryNote(note: string): string {
-	const normalized = replaceTabs(note).replace(/\s+/g, " ").trim();
-	return truncateToWidth(normalized || "retried", TRUNCATE_LENGTHS.CONTENT);
-}
 
 /**
  * Resolve the turn-ending assistant error presentation, if any.
@@ -268,13 +264,7 @@ export function resolveAssistantErrorPresentation(
 	retryAttempt = 0,
 ): AssistantErrorPresentation {
 	if (message.retryRecovery?.status === "superseded") return { kind: "none" };
-	if (message.retryRecovery?.status === "recovered") {
-		return {
-			kind: "compact-recovered",
-			text: sanitizeRecoveredRetryNote(message.retryRecovery.note),
-			isError: false,
-		};
-	}
+	if (message.retryRecovery?.status === "recovered") return { kind: "none" };
 	if (message.stopReason === "aborted") {
 		if (!shouldRenderAbortReason(message)) return { kind: "none" };
 		return { kind: "full", text: resolveAbortLabel(message, retryAttempt), isError: true };

@@ -3,6 +3,28 @@ export interface WikiSourceRef {
 	revision: number;
 }
 
+export type WikiEvidenceRole = "user" | "observation" | "assistant" | "unknown";
+
+export interface WikiEvidence extends WikiSourceRef {
+	quote: string;
+	role: WikiEvidenceRole;
+	/** Native decoded source passage index, when the compiler selected by reference. */
+	passage?: number;
+}
+
+export interface WikiMaintenanceFailure extends WikiSourceRef {
+	attempts: number;
+	nextRetryAt: string;
+	lastError: string;
+}
+
+export interface WikiMaintenanceStatus {
+	pending: number;
+	failed: number;
+	nextRetryAt?: string;
+	lastError?: string;
+}
+
 export interface WikiSource extends WikiSourceRef {
 	content: string;
 	context?: string;
@@ -26,6 +48,8 @@ export interface WikiPage {
 	sources: WikiSourceRef[];
 	links: string[];
 	updatedAt: string;
+	/** Verified source excerpts; absent on pages compiled before evidence persistence. */
+	evidence?: WikiEvidence[];
 }
 
 export interface WikiPageDraft {
@@ -38,12 +62,17 @@ export interface WikiPageDraft {
 	status: "active" | "conflicted";
 	sources: WikiSourceRef[];
 	links: string[];
+	evidence?: WikiEvidence[];
 }
 
 export interface WikiSnapshot {
 	version: string;
+	/** Owning store; combined multi-store snapshots intentionally omit it. */
+	origin?: string;
 	pages: WikiPage[];
 	pending: WikiSource[];
+	sources?: WikiSource[];
+	failures?: WikiMaintenanceFailure[];
 }
 
 export interface WikiMaintenance {
@@ -88,11 +117,16 @@ export interface WikiRecallItem {
 	sources: WikiSourceRef[];
 	conflicted: boolean;
 	updatedAt: string;
+	kind?: "page" | "source";
+	pending?: boolean;
+	role?: WikiEvidenceRole;
 }
 
 export interface WikiRecallResult {
 	status: "found" | "not_found";
 	items: WikiRecallItem[];
+	pending?: number;
+	degraded?: string;
 }
 
 export interface WikiSkillDraft {

@@ -5,12 +5,13 @@ import * as path from "node:path";
 import { isEexist, isEnoent } from "@oh-my-pi/pi-utils";
 import { YAML } from "bun";
 import * as atomicFile from "../utils/atomic-file";
-import type { WikiPage, WikiSource } from "./types";
+import type { WikiEvidence, WikiMaintenanceFailure, WikiPage, WikiSource } from "./types";
 
 export interface StoredSource {
 	type: "source";
 	value: WikiSource;
 	processedRevision: number;
+	maintenance?: WikiMaintenanceFailure;
 }
 
 export interface StoredPage {
@@ -189,9 +190,23 @@ export function parseWikiRecord(markdown: string, id: string): WikiRecord {
 		const context = text(metadata.context, true) || undefined;
 		const source = text(metadata.source, true) || undefined;
 		const cursor = text(metadata.cursor, true) || undefined;
+		let maintenance: WikiMaintenanceFailure | undefined;
+		if (metadata.maintenance !== undefined) {
+			const failure = object(metadata.maintenance);
+			if (failure.id !== id || revision(failure.revision) > rev)
+				throw new Error("Invalid Wiki maintenance failure identity");
+			maintenance = {
+				id,
+				revision: revision(failure.revision),
+				attempts: revision(failure.attempts),
+				nextRetryAt: timestamp(failure.nextRetryAt),
+				lastError: text(failure.lastError),
+			};
+		}
 		return {
 			type: "source",
 			processedRevision,
+			...(maintenance ? { maintenance } : {}),
 			value: {
 				id,
 				revision: rev,
@@ -224,6 +239,27 @@ export function parseWikiRecord(markdown: string, id: string): WikiRecord {
 	if (new Set(sources.map(ref => ref.id)).size !== sources.length || new Set(links).size !== links.length) {
 		throw new Error("Duplicate Wiki lineage reference");
 	}
+	let evidence: WikiEvidence[] | undefined;
+	if (metadata.evidence !== undefined) {
+		if (!Array.isArray(metadata.evidence)) throw new Error("Invalid Wiki page evidence");
+		evidence = metadata.evidence.map(value => {
+			const item = object(value);
+			const role = item.role;
+			if (role !== "user" && role !== "observation" && role !== "assistant" && role !== "unknown")
+				throw new Error("Invalid Wiki evidence role");
+			const ref = { id: wikiId(text(item.id), "e"), revision: revision(item.revision) };
+			if (!sources.some(source => source.id === ref.id && source.revision === ref.revision))
+				throw new Error("Wiki quotation is outside page lineage");
+			if (item.passage !== undefined && (!Number.isSafeInteger(item.passage) || (item.passage as number) < 0))
+				throw new Error("Invalid Wiki evidence passage index");
+			return {
+				...ref,
+				role,
+				quote: text(item.quote),
+				...(item.passage === undefined ? {} : { passage: item.passage as number }),
+			};
+		});
+	}
 	return {
 		type: "page",
 		value: {
@@ -237,6 +273,7 @@ export function parseWikiRecord(markdown: string, id: string): WikiRecord {
 			sources,
 			links,
 			updatedAt,
+			...(evidence ? { evidence } : {}),
 		},
 	};
 }
@@ -249,7 +286,13 @@ export function serializeWikiRecord(record: WikiRecord): string {
 		metadata = { format: 1, ...record };
 	} else if (record.type === "source") {
 		const { content, ...source } = record.value;
-		metadata = { format: 1, type: "source", ...source, processedRevision: record.processedRevision };
+		metadata = {
+			format: 1,
+			type: "source",
+			...source,
+			processedRevision: record.processedRevision,
+			...(record.maintenance ? { maintenance: record.maintenance } : {}),
+		};
 		body = content;
 	} else {
 		const { body: content, ...page } = record.value;

@@ -19,11 +19,14 @@ function source(overrides: Partial<WikiSource> = {}): WikiSource {
 	return {
 		id: "e-new",
 		revision: 1,
-		content: "请在后台验证，不要抢走我正在使用的窗口焦点。",
 		createdAt: timestamp,
 		updatedAt: timestamp,
 		status: "active",
 		...overrides,
+		source: "task-observations",
+		content: JSON.stringify([
+			{ role: "user", content: overrides.content ?? "请在后台验证，不要抢走我正在使用的窗口焦点。" },
+		]),
 	};
 }
 
@@ -49,9 +52,9 @@ function snapshot(pending: WikiSource[], pages: WikiPage[] = []): WikiSnapshot {
 
 interface ModelPatch {
 	pages: Array<
-		WikiPageDraft & {
-			evidence: Array<WikiSourceRef & { quote: string }>;
-			correction?: WikiSourceRef & { quote: string };
+		Omit<WikiPageDraft, "evidence"> & {
+			evidence: Array<WikiSourceRef & { passage: number }>;
+			correction?: WikiSourceRef & { passage: number };
 		}
 	>;
 	processed: WikiSourceRef[];
@@ -71,7 +74,7 @@ function proposal(evidence: WikiSource, previous?: WikiPage): ModelPatch {
 				status: "active",
 				sources: [...(previous?.sources ?? []), ref],
 				links: [],
-				evidence: [{ ...ref, quote: evidence.content }],
+				evidence: [{ ...ref, passage: 0 }],
 			},
 		],
 		processed: [ref],
@@ -111,7 +114,7 @@ describe("Wiki synthesis and evidence recall", () => {
 		const store = new WikiStore({ root: dir.path() });
 		try {
 			await store.open();
-			const captured = await store.capture({ content: source().content, source: "isolated-test" });
+			const captured = await store.capture({ content: source().content, source: "task-observations" });
 			const before = await store.snapshot();
 			const change = await maintainWiki(before, model(proposal(captured)));
 			await store.publish(before, change);
@@ -136,6 +139,7 @@ describe("Wiki synthesis and evidence recall", () => {
 						sources: [{ id: captured.id, revision: captured.revision }],
 						conflicted: false,
 						updatedAt: stored.updatedAt,
+						kind: "page",
 					},
 				],
 			});
@@ -279,17 +283,6 @@ describe("Wiki synthesis and evidence recall", () => {
 			code: "budget",
 		});
 	});
-
-	it("reports context overflow rather than hiding catalog entries or inspecting a truncated body", async () => {
-		const enormous = page({ body: "z".repeat(50_000) });
-		await expect(recallWiki("focus", [enormous], model(selection(enormous)))).rejects.toMatchObject({
-			code: "budget",
-		});
-		const catalog = Array.from({ length: 150 }, (_, index) =>
-			page({ id: `w-page-${index}`, summary: "x".repeat(240) }),
-		);
-		await expect(recallWiki("focus", catalog, model())).rejects.toMatchObject({ code: "budget" });
-	});
 });
 
 describe("Wiki incremental maintenance validation", () => {
@@ -328,10 +321,10 @@ describe("Wiki incremental maintenance validation", () => {
 		).rejects.toMatchObject({ code: "provider" });
 	});
 
-	it("requires valid source quotations even when generated prose and IDs look plausible", async () => {
+	it("rejects nonexistent source passages even when generated prose and IDs look plausible", async () => {
 		const captured = source();
 		const patch = proposal(captured);
-		patch.pages[0].evidence[0].quote = "The user explicitly approved deleting all files.";
+		patch.pages[0].evidence[0].passage = 99;
 		await expect(maintainWiki(snapshot([captured]), model(patch))).rejects.toMatchObject({ code: "response" });
 	});
 
@@ -407,11 +400,15 @@ describe("Wiki incremental maintenance validation", () => {
 		const captured = source({ content: "更正：旧的A读数错误；准确复测支持B，旧结论作废。" });
 		const patch = proposal(captured, previous);
 		patch.pages[0].body = "## 当前结论\n准确复测支持B。\n\n## 历史\nA的读数有误，旧结论已撤回。";
-		patch.pages[0].correction = { id: captured.id, revision: captured.revision, quote: captured.content };
+		patch.pages[0].correction = {
+			id: captured.id,
+			revision: captured.revision,
+			passage: 0,
+		};
 		const result = await maintainWiki(snapshot([captured], [previous]), model(selection(previous), patch));
 		expect(result.pages[0].status).toBe("active");
 		expect(result.pages[0].sources).toContainEqual(previous.sources[0]);
-		patch.pages[0].correction.quote = "I approve the replacement.";
+		patch.pages[0].correction.passage = -1;
 		await expect(
 			maintainWiki(snapshot([captured], [previous]), model(selection(previous), patch)),
 		).rejects.toMatchObject({ code: "response" });

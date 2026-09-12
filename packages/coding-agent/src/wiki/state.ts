@@ -6,13 +6,15 @@ import wikiInstructions from "../prompts/wiki/instructions.md" with { type: "tex
 import { redactSecretFields, redactSecrets } from "../secrets/redact";
 import type { AgentSession } from "../session/agent-session";
 import type { WikiConfig } from "./config";
-import { maintainWiki } from "./maintain";
+import { wikiSourceEvidence } from "./evidence";
+import { maintainWiki, WikiMaintenanceError } from "./maintain";
 import type { WikiUsage } from "./model";
 import { recallWiki } from "./recall";
 import { WikiSkills } from "./skills";
 import { WikiStore } from "./store";
 import type {
 	WikiComplete,
+	WikiMaintenanceStatus,
 	WikiMutation,
 	WikiMutationResult,
 	WikiPage,
@@ -26,6 +28,8 @@ const maintenanceJobs = new Map<string, Promise<void>>();
 const MAX_TURN_CHARS = 12_000;
 const MAX_OBSERVATION_CHARS = 2000;
 const MEMORY_TOOL_NAMES = new Set(["retain", "recall", "reflect", "memory_edit", "learn", "manage_skill"]);
+const MAX_AUTOMATIC_ATTEMPTS = 3;
+const RETRY_DELAY_MS = 5000;
 
 export function getWikiState(session?: AgentSession): WikiState | undefined {
 	return session ? states.get(session) : undefined;
@@ -38,7 +42,7 @@ export function setWikiState(session: AgentSession, state?: WikiState): WikiStat
 	return previous;
 }
 
-/** Capture observed task data, never provider reasoning or recalled-memory feedback. */
+/** Keep user corrections even without tool use; assistant speech remains explicitly attributed. */
 export function wikiTurnEvidence(
 	messages: readonly AgentMessage[],
 	redact: (text: string) => string = redactSecrets,
@@ -47,7 +51,6 @@ export function wikiTurnEvidence(
 	if (start < 0) return undefined;
 	const records: Array<{ role: string; content: string; tool?: string; error?: boolean }> = [];
 	let remaining = MAX_TURN_CHARS;
-	let hasObservation = false;
 	for (const message of messages.slice(start)) {
 		if (message.role !== "user" && message.role !== "assistant" && message.role !== "toolResult") continue;
 		if (message.role === "toolResult" && MEMORY_TOOL_NAMES.has(message.toolName)) continue;
@@ -64,15 +67,12 @@ export function wikiTurnEvidence(
 		);
 		remaining -= captured.length;
 		if (message.role === "toolResult") {
-			hasObservation = true;
 			records.push({ role: "toolResult", tool: message.toolName, error: message.isError, content: captured });
 		} else {
 			records.push({ role: message.role, content: captured });
 		}
 	}
-	// Plain conversations use explicit retain/learn. Automatic sources require
-	// actual observations, not an assistant claiming that its work succeeded.
-	return hasObservation && records.some(record => record.role === "assistant") ? JSON.stringify(records) : undefined;
+	return records.some(record => record.role === "user") ? JSON.stringify(records) : undefined;
 }
 
 export class WikiState {
@@ -92,6 +92,9 @@ export class WikiState {
 	#cache = new Map<string, WikiRecallResult>();
 	#seenTurns = new Set<string>();
 	#opening = new Map<string, Promise<void>>();
+	#automatic = false;
+	#maintenanceTimer?: NodeJS.Timeout;
+	#maintenanceRuns = new Set<Promise<void>>();
 
 	constructor(options: {
 		session: AgentSession;
@@ -127,13 +130,16 @@ export class WikiState {
 
 	attach(automatic: boolean): void {
 		this.#unsubscribe?.();
+		this.#automatic = automatic && this.config.autoMaintain;
+		this.#clearMaintenanceTimer();
 		if (!automatic) return;
 		this.#unsubscribe = this.session.subscribe(event => {
 			if (event.type !== "agent_end" || event.isTerminal === false || !this.config.autoRetain || this.#disposed)
 				return;
 			const content = wikiTurnEvidence(event.messages, text => this.redact(text));
 			if (!content) return;
-			const cursor = `${this.session.sessionId}:${Bun.hash(content).toString(16)}`;
+			const userTimestamp = event.messages.findLast(message => message.role === "user")?.timestamp;
+			const cursor = `${this.session.sessionId}:${userTimestamp ?? 0}:${Bun.hash(content).toString(16)}`;
 			if (this.#seenTurns.has(cursor)) return;
 			this.#seenTurns.add(cursor);
 			this.#captureChain = this.#captureChain
@@ -147,10 +153,9 @@ export class WikiState {
 					this.#seenTurns.delete(cursor);
 					this.#report(error);
 				});
-			if (this.config.autoMaintain)
-				void this.#captureChain.then(() => this.maintain()).catch(error => this.#report(error));
+			if (this.#automatic) this.#scheduleMaintenance(0);
 		});
-		if (this.config.autoMaintain) void this.maintain().catch(error => this.#report(error));
+		if (this.#automatic) this.#scheduleMaintenance(0);
 	}
 
 	async #store(root: string): Promise<WikiStore> {
@@ -173,6 +178,10 @@ export class WikiState {
 				: input.scope === "project"
 					? this.config.projectRoot
 					: this.config.root;
+		if (input.source === "task-observations")
+			throw new Error("Native Wiki observation provenance is reserved for automatic capture");
+		if (root !== this.config.root && !(this.config.includeGlobal && root === this.config.globalRoot))
+			throw new Error("The requested Wiki write scope is not readable in this session");
 		const captured = await (
 			await this.#store(root)
 		).capture(
@@ -186,7 +195,7 @@ export class WikiState {
 			),
 		);
 		this.#invalidate();
-		if (this.config.autoMaintain) void this.maintain().catch(error => this.#report(error));
+		if (this.#automatic) this.#scheduleMaintenance(0);
 		return captured;
 	}
 
@@ -201,38 +210,135 @@ export class WikiState {
 			version: snapshots.map(snapshot => snapshot.version).join(":"),
 			pages: [...pages.values()],
 			pending: snapshots.flatMap(snapshot => snapshot.pending),
+			sources: snapshots.flatMap(snapshot => snapshot.sources ?? snapshot.pending),
+			failures: snapshots.flatMap(snapshot => snapshot.failures ?? []),
 		};
 	}
 
-	async maintain(): Promise<void> {
-		if (this.#disposed) return;
+	maintain(force = true): Promise<void> {
+		if (this.#disposed) return Promise.resolve();
+		const run = this.#maintain(force);
+		this.#maintenanceRuns.add(run);
+		void run.then(
+			() => this.#maintenanceRuns.delete(run),
+			() => this.#maintenanceRuns.delete(run),
+		);
+		return run;
+	}
+
+	async #maintain(force: boolean): Promise<void> {
 		await this.#captureChain;
-		for (const [root, store] of this.#stores) {
-			const active = maintenanceJobs.get(root);
-			if (active) {
-				await active;
-				continue;
+		try {
+			for (const [root, store] of this.#stores) {
+				// Another session may have taken its snapshot before our newest capture.
+				while (maintenanceJobs.has(root)) {
+					await maintenanceJobs.get(root)?.catch(() => {});
+					this.#shutdown.signal.throwIfAborted();
+				}
+				const job = this.#drainStore(store, force);
+				maintenanceJobs.set(root, job);
+				try {
+					await job;
+				} finally {
+					if (maintenanceJobs.get(root) === job) maintenanceJobs.delete(root);
+				}
 			}
-			const job = (async () => {
-				const snapshot = await store.snapshot();
-				if (!snapshot.pending.length) return;
-				const change = await maintainWiki(snapshot, this.#complete, {
+			await this.skills.reconcile((await this.snapshot()).pages);
+			const status = await this.maintenanceStatus();
+			this.lastError = status.lastError;
+			if (force && status.failed)
+				throw new Error(`${status.failed} Wiki source(s) remain failed: ${status.lastError}`);
+		} finally {
+			if (this.#automatic && !this.#shutdown.signal.aborted) await this.#schedulePendingMaintenance();
+		}
+	}
+
+	async #drainStore(store: WikiStore, force: boolean): Promise<void> {
+		const initial = await store.snapshot();
+		const now = Date.now();
+		const failures = new Map((initial.failures ?? []).map(failure => [failure.id, failure]));
+		const eligible = initial.pending.filter(source => {
+			const failure = failures.get(source.id);
+			return (
+				force || !failure || (failure.attempts < MAX_AUTOMATIC_ATTEMPTS && Date.parse(failure.nextRetryAt) <= now)
+			);
+		});
+		const selected = force ? eligible : eligible.slice(0, this.config.batchSize);
+		for (const source of selected) {
+			this.#shutdown.signal.throwIfAborted();
+			const snapshot = await store.snapshot();
+			if (!snapshot.pending.some(current => current.id === source.id && current.revision === source.revision))
+				continue;
+			try {
+				const change = await maintainWiki({ ...snapshot, pending: [source] }, this.#complete, {
 					limit: this.config.batchSize,
 					signal: this.#shutdown.signal,
 				});
+				if (!change.processed.some(ref => ref.id === source.id && ref.revision === source.revision))
+					throw new WikiMaintenanceError("response", "Wiki maintenance made no progress on the supplied source");
 				this.#shutdown.signal.throwIfAborted();
 				await store.publish(snapshot, change);
 				this.#invalidate();
-				this.lastError = undefined;
-			})();
-			maintenanceJobs.set(root, job);
-			try {
-				await job;
-			} finally {
-				if (maintenanceJobs.get(root) === job) maintenanceJobs.delete(root);
+			} catch (error) {
+				this.#shutdown.signal.throwIfAborted();
+				const message = this.#errorMessage(error);
+				const attempts = failures.get(source.id)?.attempts ?? 0;
+				const nextRetryAt = new Date(Date.now() + RETRY_DELAY_MS * 2 ** Math.min(attempts, 6)).toISOString();
+				await store.markMaintenanceFailure(source, message, nextRetryAt);
+				this.#report(error);
+				// A failing source never prevents later evidence, including corrections, from being considered.
 			}
 		}
-		await this.skills.reconcile((await this.snapshot()).pages);
+	}
+
+	async maintenanceStatus(): Promise<WikiMaintenanceStatus> {
+		const snapshot = await this.snapshot();
+		const failures = snapshot.failures ?? [];
+		const next = failures
+			.filter(failure => failure.attempts < MAX_AUTOMATIC_ATTEMPTS)
+			.sort((a, b) => a.nextRetryAt.localeCompare(b.nextRetryAt))[0];
+		return {
+			pending: snapshot.pending.length,
+			failed: failures.length,
+			...(next ? { nextRetryAt: next.nextRetryAt } : {}),
+			...(failures.length
+				? {
+						lastError: failures
+							.map(
+								failure =>
+									`${failure.id}: ${failure.lastError}${failure.attempts >= MAX_AUTOMATIC_ATTEMPTS ? " (automatic retries paused; /memory sync retries)" : ""}`,
+							)
+							.join("; "),
+					}
+				: {}),
+		};
+	}
+
+	#clearMaintenanceTimer(): void {
+		clearTimeout(this.#maintenanceTimer);
+		this.#maintenanceTimer = undefined;
+	}
+
+	#scheduleMaintenance(delay: number): void {
+		if (!this.#automatic || this.#disposed || this.#shutdown.signal.aborted) return;
+		this.#clearMaintenanceTimer();
+		this.#maintenanceTimer = setTimeout(() => {
+			this.#maintenanceTimer = undefined;
+			void this.maintain(false).catch(error => this.#report(error));
+		}, delay);
+		this.#maintenanceTimer.unref();
+	}
+
+	async #schedulePendingMaintenance(): Promise<void> {
+		const snapshot = await this.snapshot();
+		const failures = new Map((snapshot.failures ?? []).map(failure => [failure.id, failure]));
+		let next = Number.POSITIVE_INFINITY;
+		for (const source of snapshot.pending) {
+			const failure = failures.get(source.id);
+			if (!failure) next = 0;
+			else if (failure.attempts < MAX_AUTOMATIC_ATTEMPTS) next = Math.min(next, Date.parse(failure.nextRetryAt));
+		}
+		if (Number.isFinite(next)) this.#scheduleMaintenance(Math.max(100, next - Date.now()));
 	}
 
 	async read(id: string): Promise<WikiPage | WikiSource | null> {
@@ -302,6 +408,8 @@ export class WikiState {
 			signal: combined,
 			limit,
 			maxChars: this.config.contextTokenLimit * 4,
+			sources: snapshot.sources ?? snapshot.pending,
+			pending: snapshot.pending,
 		});
 		const current = await this.snapshot();
 		if (current.version !== snapshot.version)
@@ -320,7 +428,7 @@ export class WikiState {
 			throw new Error(
 				"Wiki evidence exceeds the configured context budget; open its page directly or increase wiki.contextTokenLimit",
 			);
-		const bounded: WikiRecallResult = { status: items.length ? "found" : "not_found", items };
+		const bounded: WikiRecallResult = { ...result, status: items.length ? "found" : "not_found", items };
 		if (this.#cache.size >= 32) this.#cache.delete(this.#cache.keys().next().value!);
 		this.#cache.set(key, bounded);
 		this.lastRecall = bounded;
@@ -343,17 +451,28 @@ export class WikiState {
 
 	async instructions(): Promise<string> {
 		const snapshot = await this.snapshot();
+		const sources = new Map((snapshot.sources ?? []).map(source => [source.id, source]));
 		const preferences: string[] = [];
-		for (const page of snapshot.pages) {
+		for (const page of snapshot.pages.toSorted((a, b) => b.updatedAt.localeCompare(a.updatedAt))) {
 			if (page.kind !== "preference" || page.status !== "active") continue;
-			const text = `${page.title}: ${page.body} (memory://${page.id}, revision ${page.revision})`;
-			if (
-				this.session.agent.tokenizer.checkTokenBudget(
-					[...preferences, text],
-					Math.min(500, this.config.contextTokenLimit),
-				).fits
-			)
-				preferences.push(text);
+			for (const evidence of page.evidence ?? []) {
+				const source = sources.get(evidence.id);
+				if (
+					!source ||
+					source.revision !== evidence.revision ||
+					evidence.role !== "user" ||
+					wikiSourceEvidence(source, evidence.quote, evidence.passage)?.role !== "user"
+				)
+					continue;
+				const text = `${evidence.quote} (memory://${source.id}, revision ${source.revision})`;
+				if (
+					this.session.agent.tokenizer.checkTokenBudget(
+						[...preferences, text],
+						Math.min(500, this.config.contextTokenLimit),
+					).fits
+				)
+					preferences.push(text);
+			}
 		}
 		return prompt.render(wikiInstructions, { preferences: this.redact(preferences.join("\n")) });
 	}
@@ -378,9 +497,13 @@ export class WikiState {
 	}
 
 	async clear(): Promise<void> {
+		this.#clearMaintenanceTimer();
 		this.#shutdown.abort();
 		await this.#captureChain;
-		await Promise.allSettled([...this.#stores.keys()].map(root => maintenanceJobs.get(root)));
+		await Promise.allSettled([
+			...this.#maintenanceRuns,
+			...[...this.#stores.keys()].map(root => maintenanceJobs.get(root)),
+		]);
 		for (const store of this.#stores.values()) await store.clear();
 		await this.skills.clear();
 		this.#shutdown = new AbortController();
@@ -388,6 +511,8 @@ export class WikiState {
 	}
 
 	async dispose(): Promise<void> {
+		this.#automatic = false;
+		this.#clearMaintenanceTimer();
 		this.#unsubscribe?.();
 		this.#unsubscribe = undefined;
 		this.#shutdown.abort();
@@ -395,7 +520,10 @@ export class WikiState {
 		this.#disposed = true;
 		try {
 			await withTimeout(
-				Promise.allSettled([...this.#stores.keys()].map(root => maintenanceJobs.get(root))),
+				Promise.allSettled([
+					...this.#maintenanceRuns,
+					...[...this.#stores.keys()].map(root => maintenanceJobs.get(root)),
+				]),
 				this.config.timeoutMs + 1000,
 				"Wiki maintenance cancellation timed out",
 			);
@@ -406,18 +534,44 @@ export class WikiState {
 		}
 	}
 
+	#errorMessage(error: unknown): string {
+		const messages: string[] = [];
+		const seen = new Set<unknown>();
+		let current = error;
+		while (current !== undefined && !seen.has(current) && messages.length < 5) {
+			seen.add(current);
+			messages.push(current instanceof Error ? current.message : String(current));
+			current = current instanceof Error ? current.cause : undefined;
+		}
+		return truncate(this.redact(messages.join(": ")), 2000);
+	}
+
 	#report(error: unknown): void {
 		if (this.#shutdown.signal.aborted) return;
-		this.lastError = this.redact(error instanceof Error ? error.message : String(error));
+		this.lastError = this.#errorMessage(error);
 		logger.warn("Wiki memory background operation failed", { error: this.lastError });
 	}
 }
 
 export function formatWikiRecall(result: WikiRecallResult): string {
-	return result.items
-		.map(
-			item =>
-				`### ${item.title}\n${item.content}\n\nPage: memory://${item.id} (revision ${item.revision}, ${item.updatedAt})${item.conflicted ? " — conflicting evidence" : ""}\nSources: ${item.sources.map(source => `memory://${source.id} (revision ${source.revision})`).join(", ")}`,
-		)
-		.join("\n\n");
+	const health = [
+		result.pending
+			? `${result.pending} source(s) are not yet compiled; source excerpts below remain uncompiled evidence.`
+			: "",
+		result.degraded ? `Wiki maintenance/retrieval warning: ${result.degraded}` : "",
+	].filter(Boolean);
+	const excerpts = result.items.map(
+		item =>
+			`### ${item.title}\n${item.content}\n\n${item.kind === "source" ? `Source (${item.role ?? "unknown"}${item.pending ? ", pending compilation" : ""})` : "Derived page"}: memory://${item.id} (revision ${item.revision}, ${item.updatedAt})${item.conflicted ? " — conflicting evidence" : ""}\nSources: ${item.sources.map(source => `memory://${source.id} (revision ${source.revision})`).join(", ")}`,
+	);
+	return [
+		...health,
+		...(excerpts.length
+			? excerpts
+			: [
+					result.pending
+						? "No matching excerpt found in the current search; pending evidence exists."
+						: "No supporting Wiki evidence found.",
+				]),
+	].join("\n\n");
 }

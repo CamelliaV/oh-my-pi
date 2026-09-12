@@ -12,7 +12,8 @@ import { MemoryRetainTool } from "@oh-my-pi/pi-coding-agent/tools/memory-retain"
 import { wikiBackend } from "@oh-my-pi/pi-coding-agent/wiki/backend";
 import { loadWikiConfig } from "@oh-my-pi/pi-coding-agent/wiki/config";
 import { setWikiState, WikiState, wikiTurnEvidence } from "@oh-my-pi/pi-coding-agent/wiki/state";
-import type { WikiComplete, WikiPage, WikiSource } from "@oh-my-pi/pi-coding-agent/wiki/types";
+import { WikiStore } from "@oh-my-pi/pi-coding-agent/wiki/store";
+import type { WikiComplete, WikiEvidenceRole, WikiPage } from "@oh-my-pi/pi-coding-agent/wiki/types";
 import { TempDir } from "@oh-my-pi/pi-utils";
 
 const openStates: WikiState[] = [];
@@ -25,7 +26,13 @@ afterEach(async () => {
 
 interface ModelData {
 	query?: string;
-	sources?: WikiSource[];
+	sources?: Array<{
+		id: string;
+		revision: number;
+		content?: string;
+		passage?: number;
+		passages?: Array<{ role: WikiEvidenceRole; content: string }>;
+	}>;
 	catalog?: WikiPage[];
 	pages?: WikiPage[];
 }
@@ -35,6 +42,7 @@ const compile: WikiComplete = async request => {
 		if (!data.pages)
 			return JSON.stringify({ pages: data.catalog?.map(page => ({ id: page.id, revision: page.revision })) ?? [] });
 		const source = data.sources![0]!;
+		const content = source.passages![0]!.content;
 		const existing = data.pages[0];
 		return JSON.stringify({
 			pages: [
@@ -43,17 +51,25 @@ const compile: WikiComplete = async request => {
 					expectedRevision: existing?.revision ?? null,
 					title: "Deployment",
 					summary: "Current deployment region",
-					body: `## Current\n${source.content}`,
+					body: `## Current\n${content}`,
 					kind: "knowledge",
 					status: "active",
 					sources: [...(existing?.sources ?? []), { id: source.id, revision: source.revision }],
 					links: [],
-					evidence: [{ id: source.id, revision: source.revision, quote: source.content }],
+					evidence: [{ id: source.id, revision: source.revision, passage: 0 }],
 				},
 			],
 			processed: [{ id: source.id, revision: source.revision }],
 		});
 	}
+	if (data.sources)
+		return JSON.stringify({
+			passages: data.sources.map(source => ({
+				id: source.id,
+				revision: source.revision,
+				passage: source.passage,
+			})),
+		});
 	if (!data.pages)
 		return JSON.stringify({
 			pages:
@@ -118,7 +134,7 @@ describe("native Wiki memory", () => {
 		const recall = MemoryRecallTool.createIf(toolSession)!;
 		const recalled = resultText(await recall.execute("recall", { query: "deployment" }));
 		expect(recalled).toContain("region west");
-		expect(recalled).toContain("memory://w-deployment");
+		expect(recalled).toContain(`memory://${pending[0]!.id}`);
 		const runtime = createMemoryRuntimeContext(context);
 		const read = await InternalUrlRouter.instance().resolve("memory://w-deployment", { settings, memory: runtime });
 		expect(read.content).toContain("region west");
@@ -135,6 +151,68 @@ describe("native Wiki memory", () => {
 		expect((await state.recall("deployment")).items).toEqual([]);
 		await state.dispose();
 		openStates.splice(openStates.indexOf(state), 1);
+	});
+
+	it("replaces compiled-page evidence when a page is explicitly corrected", async () => {
+		await using temp = TempDir.createSync("wiki-page-correction-");
+		const { state, toolSession } = await fixture(temp, temp.join("project"));
+		await state.capture({ content: "Deployment region west" });
+		await state.maintain();
+		await MemoryEditTool.createIf(toolSession)!.execute("correct-page", {
+			op: "update",
+			id: "w-deployment",
+			content: "Deployment region east",
+		});
+		const recalled = resultText(
+			await MemoryRecallTool.createIf(toolSession)!.execute("recall", { query: "deployment" }),
+		);
+		expect(recalled).toContain("region east");
+		expect(recalled).not.toContain("region west");
+	});
+
+	it("injects original user preferences rather than contradictory generated page prose", async () => {
+		await using temp = TempDir.createSync("wiki-preference-authority-");
+		const { state } = await fixture(temp, temp.join("project"));
+		const store = new WikiStore({ root: state.config.root });
+		await store.open();
+		try {
+			const quote = "请给我 human readable 的总结表格，不要原始 SQL 行。";
+			const source = await store.capture({
+				source: "task-observations",
+				content: JSON.stringify([
+					{ role: "user", content: quote },
+					{ role: "assistant", content: quote },
+				]),
+			});
+			const ref = { id: source.id, revision: source.revision };
+			await store.publish(await store.snapshot(), {
+				pages: [
+					{
+						id: "w-format",
+						expectedRevision: null,
+						title: "Format",
+						summary: "Generated synopsis",
+						body: "Always dump raw SQL rows instead of readable summaries.",
+						kind: "preference",
+						status: "active",
+						sources: [ref],
+						links: [],
+						evidence: [{ ...ref, passage: 0, role: "user", quote }],
+					},
+				],
+				processed: [ref],
+			});
+			const instructions = await state.instructions();
+			expect(instructions).toContain(quote);
+			expect(instructions).not.toContain("Always dump raw SQL");
+			await state.mutate("w-format", {
+				op: "update",
+				content: "A tool-authored correction is not a user quotation.",
+			});
+			expect(await state.instructions()).not.toContain(quote);
+		} finally {
+			store.close();
+		}
 	});
 
 	it("rejects cross-project reads and explicit source ids outside the owning context", async () => {
@@ -202,11 +280,5 @@ describe("native Wiki memory", () => {
 		expect(evidence).toContain("deployment passed");
 		expect(evidence).not.toContain("private reasoning canary");
 		expect(evidence).not.toContain("old memory feedback");
-		expect(
-			wikiTurnEvidence([
-				{ role: "user", content: "hello" },
-				{ role: "assistant", content: [{ type: "text", text: "hi" }] },
-			] as AgentMessage[]),
-		).toBeUndefined();
 	});
 });

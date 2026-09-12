@@ -1,6 +1,6 @@
 # Autonomous Memory
 
-Oh My Pi supports five memory modes. Memory is disabled by default; select one backend via `/settings` or `config.yml`:
+Oh My Pi supports six memory modes. Memory is disabled by default; select one backend via `/settings` or `config.yml`:
 
 | `memory.backend` | Storage and behavior                                                   | Guide                                                   |
 | ---------------- | ---------------------------------------------------------------------- | ------------------------------------------------------- |
@@ -9,6 +9,7 @@ Oh My Pi supports five memory modes. Memory is disabled by default; select one b
 | `hindsight`      | Remote, bank-scoped Hindsight memory                                   | [Hindsight](#hindsight-remote-backend)                  |
 | `mnemopi`        | Local Mnemopi SQLite memory                                            | [Mnemopi memory backend](./mnemosyne-memory-backend.md) |
 | `sharpshooter`   | Friction-gated project decision files (architecture/product/style), consolidated in the background | —                           |
+| `wiki`           | Role-preserving original sources, derived topic pages, and recoverable background maintenance | [Native Wiki](#native-wiki-backend) |
 
 Enable the local summary pipeline:
 
@@ -126,6 +127,43 @@ If the requested memory role is not configured, memory model resolution falls ba
 | `memories.phase1InputTokenLimit`      | `4000`  | Per-session extraction input cap                                                                                                         |
 | `memories.fallbackTokenLimit`         | `16000` | Model token budget used when the model has no finite declared context window                                                             |
 | `memories.summaryInjectionTokenLimit` | `5000`  | Shared approximate token cap for the summary and captured lessons injected into the system prompt                                        |
+
+## Native Wiki backend
+
+```yaml
+memory:
+  backend: wiki
+wiki:
+  scope: project
+  includeGlobal: true
+  model: "@smol"
+  autoRetain: true
+  autoMaintain: true
+  autoRecall: false
+```
+
+Wiki exposes `retain`, `recall`, `reflect`, and `memory_edit`; `learn` is also available when auto-learning is enabled. Tool eligibility follows the selected backend's capabilities. Restricted sessions still receive only their explicitly granted tools.
+
+### Original evidence and derived knowledge
+
+- Automatic capture includes settled user turns even when no tools ran, so plain-language corrections and preferences are not lost. User statements, assistant statements, and tool observations retain their speaker roles. Reasoning and direct memory-tool results are excluded.
+- Sources are stored before compilation and can be recalled while pending. Generated pages guide discovery but are not independent evidence: production recall returns original source passages with role, revision, and pending labels.
+- The model selects source passage indices; the runtime copies the exact original text. It does not depend on a model reproducing whitespace or punctuation in quotations.
+- A preference page requires original user evidence. Automatically injected preferences use validated user quotations, not generated page prose. Plain tool-authored retains and corrections do not acquire user authority merely by claiming it.
+- Newer explicit user corrections take precedence over older assistant recommendations. Source references preserve history; current page evidence need not repeat superseded instructions.
+- `memory://root` shows derived pages, pending sources, and maintenance health. `memory://<id>` reads the original source or a clearly labelled derived page. Updating or forgetting sources still invalidates dependent pages.
+
+### Maintenance and recovery
+
+The top-level session processes evidence in chronological order, one source per publication so a malformed response cannot block unrelated sources. Automatic work runs in bounded slices (`wiki.maintenanceBatchSize`, default 8) and schedules remaining work while the session is alive. Concurrent captures do not discard a compilation whose input evidence is unchanged.
+
+Failures persist alongside their source revision, including the cause chain, attempt count, and retry time. Automatic retries use backoff and pause after three failed attempts. `/memory sync` explicitly retries failed sources and drains its pending snapshot; a remaining failure is reported rather than called a successful consolidation. Closing the session cancels its worker; reopening resumes eligible work without resetting failure history.
+
+`/memory stats`, `/memory diagnose`, `/memory queue`, and recall output distinguish pending work, failed maintenance, and a search with no matching evidence. `autoRecall: false` disables automatic query injection, not explicit recall or validated preference injection.
+
+Catalogs are inspected in bounded semantic batches instead of rejecting the whole wiki when its directory grows past one request. Individual requests, source compilation, and returned excerpts remain bounded. Very large sources that cannot fit a compilation request remain readable and explicitly failed rather than silently acknowledged.
+
+Existing source/page files remain readable. Older pages without persisted user evidence are not injected as preferences. No historical conversation backfill or deletion is performed automatically. A requested write scope outside the session's readable scopes is rejected instead of silently creating unreachable memory.
 
 ## Hindsight remote backend
 

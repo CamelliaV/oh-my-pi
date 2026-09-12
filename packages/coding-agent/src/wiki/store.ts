@@ -5,6 +5,7 @@ import { cjkBigramize } from "@oh-my-pi/pi-mnemopi/util/regex";
 import { getDbBusyTimeoutMs, isSqliteCorruptionError } from "@oh-my-pi/pi-utils";
 import { withFileLock } from "@oh-my-pi/pi-utils/file-lock";
 import { redactSecrets } from "../secrets/redact";
+import { wikiSourceEvidence } from "./evidence";
 import {
 	assertWikiFile,
 	ensureWikiDirectory,
@@ -20,6 +21,7 @@ import {
 import type {
 	WikiCaptureInput,
 	WikiMaintenance,
+	WikiMaintenanceFailure,
 	WikiMutation,
 	WikiMutationResult,
 	WikiPage,
@@ -133,12 +135,20 @@ export class WikiStore {
 	}
 
 	async snapshot(): Promise<WikiSnapshot> {
-		return this.#run(async (state, db) => {
-			const pending = db.query<{ id: string }, []>("SELECT id FROM sources WHERE pending = 1 ORDER BY id").all();
+		return this.#run(async state => {
+			const records = [...state.records.values()]
+				.filter((record): record is StoredSource => record.type === "source" && record.value.status === "active")
+				.sort((a, b) => a.value.createdAt.localeCompare(b.value.createdAt) || a.value.id.localeCompare(b.value.id));
+			const pending = records.filter(record => record.processedRevision !== record.value.revision);
 			return {
 				version: state.version,
+				origin: this.root,
 				pages: state.pages.map(page => this.#safePage(page)),
-				pending: pending.map(({ id }) => this.#safeSource((state.records.get(id) as StoredSource).value)),
+				sources: records.map(record => this.#safeSource(record.value)),
+				pending: pending.map(record => this.#safeSource(record.value)),
+				failures: pending.flatMap(record =>
+					record.maintenance?.revision === record.value.revision ? [{ ...record.maintenance }] : [],
+				),
 			};
 		});
 	}
@@ -154,10 +164,53 @@ export class WikiStore {
 		});
 	}
 
+	/** Processing failures survive restart without changing the evidence revision or its history. */
+	async markMaintenanceFailure(
+		ref: WikiSourceRef,
+		message: string,
+		nextRetryAt: string,
+	): Promise<WikiMaintenanceFailure | null> {
+		return this.#run(async (state, db) => {
+			const record = state.records.get(ref.id);
+			if (
+				record?.type !== "source" ||
+				record.value.status !== "active" ||
+				!sameRef(record.value, ref) ||
+				record.processedRevision === ref.revision
+			)
+				return null;
+			const failure: WikiMaintenanceFailure = {
+				...sourceRef(ref),
+				attempts: (record.maintenance?.revision === ref.revision ? record.maintenance.attempts : 0) + 1,
+				lastError: this.#text(message),
+				nextRetryAt,
+			};
+			await this.#commit(db, [{ ...record, maintenance: failure }], "publish", state);
+			return failure;
+		});
+	}
+
 	async publish(snapshot: WikiSnapshot, change: WikiMaintenance): Promise<void> {
 		return this.#run(async (state, db) => {
-			if (snapshot.version !== state.version)
-				throw new Error("Stale Wiki snapshot; take a new snapshot before publishing");
+			if (snapshot.version !== state.version) {
+				// A capture arriving during a model call must not invalidate unchanged input evidence.
+				const unchanged =
+					snapshot.origin === this.root &&
+					snapshot.sources !== undefined &&
+					snapshot.sources.every(source => {
+						const current = state.records.get(source.id);
+						return (
+							current?.type === "source" &&
+							JSON.stringify(this.#safeSource(current.value)) === JSON.stringify(source)
+						);
+					}) &&
+					snapshot.pages.length === state.pages.length &&
+					snapshot.pages.every(page => {
+						const current = state.pages.find(candidate => candidate.id === page.id);
+						return current && JSON.stringify(this.#safePage(current)) === JSON.stringify(page);
+					});
+				if (!unchanged) throw new Error("Stale Wiki snapshot; take a new snapshot before publishing");
+			}
 			const pages = new Map(state.pages.map(page => [page.id, page]));
 			const pending = [...state.records.values()].filter(
 				(record): record is StoredSource =>
@@ -167,7 +220,7 @@ export class WikiStore {
 			);
 			if (
 				snapshot.pages.length !== pages.size ||
-				snapshot.pending.length !== pending.length ||
+				snapshot.pending.length > pending.length ||
 				new Set(snapshot.pages.map(page => page.id)).size !== snapshot.pages.length ||
 				new Set(snapshot.pending.map(source => source.id)).size !== snapshot.pending.length ||
 				snapshot.pages.some(page => !pages.has(page.id) || pages.get(page.id)!.revision !== page.revision) ||
@@ -179,7 +232,7 @@ export class WikiStore {
 				throw new Error("Invalid Wiki maintenance");
 			const available = new Map<string, number>();
 			for (const page of state.pages) for (const ref of page.sources) available.set(ref.id, ref.revision);
-			for (const record of pending) available.set(record.value.id, record.value.revision);
+			for (const source of snapshot.pending) available.set(source.id, source.revision);
 			const drafts = new Map<string, WikiPageDraft>();
 			for (const draft of change.pages) {
 				this.#safeId(draft.id, "w");
@@ -232,6 +285,22 @@ export class WikiStore {
 				}
 				if (draft.status !== "active" && draft.status !== "conflicted")
 					throw new Error("Invalid Wiki draft status");
+				for (const evidence of draft.evidence ?? []) {
+					const source = state.records.get(evidence.id);
+					const verified =
+						source?.type === "source"
+							? wikiSourceEvidence(source.value, evidence.quote, evidence.passage)
+							: undefined;
+					if (
+						!verified ||
+						verified.revision !== evidence.revision ||
+						verified.role !== evidence.role ||
+						!draft.sources.some(ref => sameRef(ref, evidence))
+					)
+						throw new Error("Wiki page quotation does not match its source authority");
+				}
+				if (draft.kind === "preference" && !draft.evidence?.some(evidence => evidence.role === "user"))
+					throw new Error("Wiki preferences require quoted user evidence");
 				const value = this.#safePage({
 					id: draft.id,
 					revision: (stored?.type === "page" ? stored.value.revision : 0) + 1,
@@ -243,6 +312,7 @@ export class WikiStore {
 					sources: draft.sources.map(sourceRef),
 					links: [...draft.links],
 					updatedAt: now,
+					...(draft.evidence ? { evidence: draft.evidence } : {}),
 				});
 				this.#validateInlineReferences(value);
 				writes.push({ type: "page", value });
@@ -254,7 +324,7 @@ export class WikiStore {
 				}
 				processed.add(ref.id);
 				const record = state.records.get(ref.id) as StoredSource;
-				writes.push({ ...record, processedRevision: ref.revision });
+				writes.push({ type: "source", value: record.value, processedRevision: ref.revision });
 			}
 			await this.#commit(db, writes);
 		});
@@ -409,13 +479,14 @@ export class WikiStore {
 							body: content!,
 							summary: content!,
 							sources: [sourceRef(correction)],
+							evidence: [],
 							status: "active",
 							updatedAt: now,
 						},
 					});
 				}
 			}
-			await this.#commit(db, [...writes.values()], mutation.op, state);
+			await this.#commit(db, [...writes.values()], mutation.op === "forget" ? "invalidate" : mutation.op, state);
 			return {
 				status: mutation.op === "update" ? "updated" : mutation.op === "forget" ? "deleted" : "invalidated",
 				affectedPages: [...affected].sort(),
@@ -452,7 +523,7 @@ export class WikiStore {
 			const writes: WikiRecord[] = [];
 			const affectedPages = new Set<string>();
 			if (current.type === "page") {
-				if (historical.type !== "page") throw new Error("Wiki revision type changed");
+				if (!("body" in historical.record)) throw new Error("Wiki revision type changed");
 				for (const ref of historical.record.sources) {
 					const source = state.records.get(ref.id);
 					if (
@@ -467,6 +538,7 @@ export class WikiStore {
 					value: { ...historical.record, revision: current.value.revision + 1, status: "active", updatedAt: now },
 				});
 			} else {
+				if (!("content" in historical.record)) throw new Error("Wiki revision type changed");
 				writes.push({
 					type: "source",
 					processedRevision: 0,
@@ -586,6 +658,17 @@ export class WikiStore {
 			updatedAt: this.#text(page.updatedAt),
 			sources: page.sources.map(ref => ({ id: this.#safeId(ref.id, "e"), revision: ref.revision })),
 			links: page.links.map(id => this.#safeId(id, "w")),
+			...(page.evidence
+				? {
+						evidence: page.evidence.map(item => ({
+							id: this.#safeId(item.id, "e"),
+							revision: item.revision,
+							quote: this.#text(item.quote),
+							role: item.role,
+							...(item.passage === undefined ? {} : { passage: item.passage }),
+						})),
+					}
+				: {}),
 		};
 	}
 
@@ -635,7 +718,17 @@ export class WikiStore {
 	): Promise<void> {
 		const previous = before ?? (await readWikiDiskState(this.root));
 		const safe = writes.map((record): WikiRecord => {
-			if (record.type === "source") return { ...record, value: this.#safeSource(record.value) };
+			if (record.type === "source") {
+				const value = this.#safeSource(record.value);
+				return {
+					type: "source",
+					value,
+					processedRevision: record.processedRevision,
+					...(record.maintenance?.revision === value.revision
+						? { maintenance: { ...record.maintenance, lastError: this.#text(record.maintenance.lastError) } }
+						: {}),
+				};
+			}
 			if (record.type === "page") return { ...record, value: this.#safePage(record.value) };
 			return {
 				type: "forgotten",

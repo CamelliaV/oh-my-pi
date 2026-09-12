@@ -38,6 +38,7 @@ export class MemoryRetainTool implements AgentTool<typeof memoryRetainSchema> {
 		const memory = createToolMemoryRuntimeContext(this.session);
 		let stored = 0;
 		let queued = 0;
+		const backendMessages = new Set<string>();
 		try {
 			for (const item of params.items) {
 				const result = await memory.save({
@@ -51,18 +52,23 @@ export class MemoryRetainTool implements AgentTool<typeof memoryRetainSchema> {
 				}
 				if (result.queued) queued++;
 				else stored += result.stored;
+				if (result.message) backendMessages.add(result.message);
 			}
 		} catch (error) {
 			const reason = error instanceof Error ? error.message : String(error);
 			if (stored || queued)
-				throw new Error(`Retention failed after ${stored} stored and ${queued} queued: ${reason}`, {
-					cause: error,
-				});
+				throw new Error(
+					[`Retention failed after ${stored} stored and ${queued} queued: ${reason}`, ...backendMessages].join(
+						" ",
+					),
+					{ cause: error },
+				);
 			throw error instanceof Error ? error : new Error(reason);
 		}
 		const messages: string[] = [];
 		if (stored) messages.push(`${stored} ${stored === 1 ? "memory" : "memories"} stored.`);
 		if (queued) messages.push(`${queued} ${queued === 1 ? "memory" : "memories"} queued.`);
+		messages.push(...backendMessages);
 		return { content: [{ type: "text", text: messages.join(" ") }], details: { count: stored + queued } };
 	}
 }

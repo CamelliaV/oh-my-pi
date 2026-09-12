@@ -3,16 +3,26 @@ import { prompt, tryParseJson, untilAborted } from "@oh-my-pi/pi-utils";
 import maintainInput from "../prompts/wiki/maintain-input.md" with { type: "text" };
 import maintainSelectSystem from "../prompts/wiki/maintain-select-system.md" with { type: "text" };
 import maintainSystem from "../prompts/wiki/maintain-system.md" with { type: "text" };
-import type { WikiComplete, WikiMaintenance, WikiPage, WikiPageDraft, WikiSnapshot, WikiSource } from "./types";
+import { wikiBatches } from "./batches";
+import { wikiSourcePassages } from "./evidence";
+import type {
+	WikiComplete,
+	WikiEvidence,
+	WikiMaintenance,
+	WikiPage,
+	WikiPageDraft,
+	WikiSnapshot,
+	WikiSource,
+} from "./types";
 
 const MAX_INPUT_CHARS = 48_000;
-const MAX_CATALOG_CHARS = 20_000;
+const MAX_CATALOG_BATCH_CHARS = 20_000;
 const MAX_SOURCE_CHARS = 16_000;
 const MAX_AFFECTED_PAGES = 8;
 const PAGE_ID = /^w-[a-z0-9][a-z0-9-]{0,119}$/;
 const SOURCE_ID = /^e-[a-z0-9][a-z0-9-]{0,119}$/;
 const sourceRefSchema = type({ id: "string", revision: "number" });
-const quotationSchema = type({ id: "string", revision: "number", quote: "string" });
+const passageRefSchema = type({ id: "string", revision: "number", passage: "number" });
 const selectionSchema = type({ pages: sourceRefSchema.array() });
 const maintenanceSchema = type({
 	pages: type({
@@ -25,8 +35,8 @@ const maintenanceSchema = type({
 		status: "'active' | 'conflicted'",
 		sources: sourceRefSchema.array(),
 		links: "string[]",
-		evidence: quotationSchema.array(),
-		"correction?": quotationSchema,
+		evidence: passageRefSchema.array(),
+		"correction?": passageRefSchema,
 	}).array(),
 	processed: sourceRefSchema.array(),
 });
@@ -102,17 +112,40 @@ export async function maintainWiki(
 		summary: page.summary.slice(0, 240),
 		kind: page.kind,
 		status: page.status,
+		updatedAt: page.updatedAt,
 	}));
-	if (JSON.stringify(catalog).length > MAX_CATALOG_CHARS) {
-		throw new WikiMaintenanceError("budget", "Wiki catalog exceeds the bounded maintenance context");
+	let catalogBatches: (typeof catalog)[];
+	try {
+		catalogBatches = wikiBatches(catalog, MAX_CATALOG_BATCH_CHARS);
+	} catch (error) {
+		throw new WikiMaintenanceError("budget", "A Wiki catalog entry exceeds the maintenance context", {
+			cause: error,
+		});
 	}
 	const sources = [...batch.values()].map(source => ({
 		id: source.id,
 		revision: source.revision,
-		content: source.content,
+		passages: wikiSourcePassages(source),
 		context: source.context,
 		source: source.source,
+		createdAt: source.createdAt,
+		updatedAt: source.updatedAt,
 	}));
+	const sourceInputs = new Map(sources.map(source => [source.id, source]));
+	function resolveEvidence(ref: { id: string; revision: number; passage: number }): WikiEvidence | undefined {
+		if (!Number.isSafeInteger(ref.passage) || ref.passage < 0) return undefined;
+		const source = sourceInputs.get(ref.id);
+		if (!source || source.revision !== ref.revision) return undefined;
+		const selected = source.passages[ref.passage];
+		if (!selected?.content.trim()) return undefined;
+		return {
+			id: source.id,
+			revision: source.revision,
+			passage: ref.passage,
+			quote: selected.content,
+			role: selected.role,
+		};
+	}
 
 	async function ask(system: string, data: object, maxTokens: number) {
 		signal?.throwIfAborted();
@@ -137,27 +170,45 @@ export async function maintainWiki(
 		return parsed;
 	}
 
-	const affected = new Map<string, WikiPage>();
-	if (current.size > 0) {
+	async function select(candidates: typeof catalog): Promise<WikiPage[]> {
 		const selection = selectionSchema(
-			await ask(prompt.render(maintainSelectSystem), { sources, catalog, limit: MAX_AFFECTED_PAGES }, 1024),
+			await ask(
+				prompt.render(maintainSelectSystem),
+				{ sources, catalog: candidates, limit: MAX_AFFECTED_PAGES },
+				1024,
+			),
 		);
 		if (selection instanceof type.errors || selection.pages.length > MAX_AFFECTED_PAGES) {
 			throw new WikiMaintenanceError("response", "Wiki maintenance page selection has an invalid shape");
 		}
+		const available = new Set(candidates.map(page => page.id));
+		const selected = new Map<string, WikiPage>();
 		for (const ref of selection.pages) {
 			const page = current.get(ref.id);
-			if (!page || ref.revision !== page.revision || affected.has(ref.id)) {
-				throw new WikiMaintenanceError("response", "Wiki maintenance selected an unknown, stale, or repeated page");
+			if (!page || !available.has(ref.id) || ref.revision !== page.revision || selected.has(ref.id)) {
+				throw new WikiMaintenanceError("response", "Wiki maintenance selected an unseen, stale, or repeated page");
 			}
-			affected.set(page.id, page);
+			selected.set(page.id, page);
+		}
+		return [...selected.values()];
+	}
+
+	// Inspect every catalog batch; reduce only model-selected candidates, never a lexical prefix.
+	let candidates: WikiPage[] = [];
+	const catalogById = new Map(catalog.map(entry => [entry.id, entry]));
+	for (const catalogBatch of catalogBatches) {
+		candidates.push(...(await select(catalogBatch)));
+		if (candidates.length > MAX_AFFECTED_PAGES) {
+			candidates = await select(candidates.map(page => catalogById.get(page.id)!));
 		}
 	}
+	const affected = new Map(candidates.map(page => [page.id, page]));
+	const selectedCatalog = candidates.map(page => catalogById.get(page.id)!);
 
 	const patch = maintenanceSchema(
 		await ask(
 			prompt.render(maintainSystem),
-			{ sources, catalog, pages: [...affected.values()], limit: Math.min(limit, 32), maxChars },
+			{ sources, catalog: selectedCatalog, pages: candidates, limit: Math.min(limit, 32), maxChars },
 			Math.min(12_000, Math.max(1024, maxChars + 1024)),
 		),
 	);
@@ -218,45 +269,55 @@ export async function maintainWiki(
 		}
 
 		const cited = new Set<string>();
+		const resolvedEvidence: WikiEvidence[] = [];
 		for (const evidence of proposed.evidence) {
 			const source = batch.get(evidence.id);
+			const resolved = resolveEvidence(evidence);
 			if (
 				!source ||
 				source.revision !== evidence.revision ||
 				sourceRefs.get(evidence.id) !== evidence.revision ||
-				!evidence.quote.trim() ||
-				!source.content.includes(evidence.quote)
+				!resolved
 			) {
-				throw new WikiMaintenanceError("response", "Wiki maintenance supplied an unsupported evidence quotation");
+				throw new WikiMaintenanceError("response", "Wiki maintenance supplied an unsupported evidence passage");
 			}
 			cited.add(evidence.id);
+			resolvedEvidence.push(resolved);
 		}
 		let hasNewEvidence = false;
 		for (const [id, revision] of sourceRefs) {
 			if (!batch.has(id)) continue;
 			hasNewEvidence = true;
 			if (processed.get(id) !== revision || !cited.has(id)) {
-				throw new WikiMaintenanceError("response", "Wiki maintenance must quote and process every added source");
+				throw new WikiMaintenanceError("response", "Wiki maintenance must cite and process every added source");
 			}
 		}
 		if (!hasNewEvidence)
 			throw new WikiMaintenanceError("response", "Wiki maintenance patch has no supplied new evidence");
+		if (proposed.kind === "preference" && !resolvedEvidence.some(evidence => evidence.role === "user")) {
+			throw new WikiMaintenanceError("response", "Wiki preferences require a supplied original user passage");
+		}
 
 		if (proposed.correction) {
 			const correction = proposed.correction;
 			const source = batch.get(correction.id);
+			const resolved = resolveEvidence(correction);
 			if (
 				!previous ||
 				!source ||
 				correction.revision !== source.revision ||
 				sourceRefs.get(correction.id) !== correction.revision ||
-				!correction.quote.trim() ||
-				!source.content.includes(correction.quote)
+				!resolved ||
+				resolved.role === "assistant" ||
+				(proposed.kind === "preference" && resolved.role !== "user")
 			) {
 				throw new WikiMaintenanceError(
 					"response",
-					"Wiki maintenance conflict resolution lacks a supplied correction quotation",
+					"Wiki maintenance conflict resolution lacks a supplied correction passage",
 				);
+			}
+			if (!resolvedEvidence.some(evidence => evidence.id === resolved.id && evidence.passage === resolved.passage)) {
+				resolvedEvidence.push(resolved);
 			}
 		}
 		// A model may rewrite prose, but cannot quietly erase an established unresolved conflict.
@@ -270,6 +331,7 @@ export async function maintainWiki(
 			kind: proposed.kind,
 			status,
 			sources: proposed.sources.map(ref => ({ id: ref.id, revision: ref.revision })),
+			evidence: resolvedEvidence,
 			links: proposed.links,
 		});
 		draftIds.add(proposed.id);

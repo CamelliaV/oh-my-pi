@@ -25,9 +25,13 @@ the pet IS the notification channel):
     business, not a user notification.
 
 Interaction:
-  click = acknowledge ALL attention / pet the cat   drag = move (re-anchors)
-  switch to a session's terminal tab = acknowledge THAT session (auto)
-  right-click = context menu → 退出 (quit the daemon)
+  pointer hits the *drawn* silhouette (character + bubbles/status), not the
+  240×230 window box — empty pixels are click-through on Wayland. Hovering
+  the silhouette opens the supervision panel; leaving the silhouette hides
+  it (the painted panel is not an input target). click on the silhouette =
+  acknowledge ALL attention / pet; drag = move (re-anchors, full-window
+  capture for the gesture); switch to a session's terminal tab = acknowledge
+  THAT session (auto); right-click = context menu → 退出 (quit the daemon);
   pokes arrive from pet_poke tool, /pet command, alt+p → bubble + wiggle.
 
 Usage: omp_pet.py [--socket PATH] [--margin-x N] [--margin-y N] [--replay FILE]
@@ -50,7 +54,9 @@ import sys
 import threading
 import time
 
+import cairo
 import gi
+
 
 gi.require_version("Gdk", "4.0")
 gi.require_version("Gtk", "4.0")
@@ -62,6 +68,7 @@ import skins  # local: pet skin plugins (same directory)
 
 WIN_W, WIN_H = 240, 230
 FPS_MS = 80  # ~12fps — plenty for wag/blink/bubble pulse
+HIT_PAD = 4  # dilate the silhouette so hover isn't twitchy on hair edges
 IDLE_SLEEP_S = 180.0
 STATE_FILE = os.path.join(
     os.environ.get("XDG_STATE_HOME", os.path.expanduser("~/.local/state")), "omp-pet.json"
@@ -427,6 +434,27 @@ def rounded(ctx, x, y, w, h, r):  # noqa: ANN001
     ctx.close_path()
 
 
+def speech_path(ctx, x, y, w, h, r, tail_x, tail_h=7.0, tail_w=13.0):  # noqa: ANN001
+    """Rounded rect with a downward triangular tail. tail_x is relative to x."""
+    r = min(r, w / 2.0, h / 2.0)
+    tw = min(tail_w, w * 0.45)
+    tx = min(max(tail_x, r + tw / 2.0), w - r - tw / 2.0)
+    ctx.new_path()
+    ctx.move_to(x + r, y)
+    ctx.line_to(x + w - r, y)
+    ctx.arc(x + w - r, y + r, r, -math.pi / 2, 0)
+    ctx.line_to(x + w, y + h - r)
+    ctx.arc(x + w - r, y + h - r, r, 0, math.pi / 2)
+    ctx.line_to(x + tx + tw / 2.0, y + h)
+    ctx.line_to(x + tx, y + h + tail_h)
+    ctx.line_to(x + tx - tw / 2.0, y + h)
+    ctx.line_to(x + r, y + h)
+    ctx.arc(x + r, y + h - r, r, math.pi / 2, math.pi)
+    ctx.line_to(x, y + r)
+    ctx.arc(x + r, y + r, r, math.pi, 3 * math.pi / 2)
+    ctx.close_path()
+
+
 class PetArea(Gtk.DrawingArea):
     def __init__(self, model: PetModel, skin) -> None:
         super().__init__()
@@ -434,8 +462,10 @@ class PetArea(Gtk.DrawingArea):
         self.skin = skin
         self.last_state: str | None = None
         self.wiggle_until = 0.0
-        self.set_draw_func(self.on_draw)
-        GLib.timeout_add(FPS_MS, self.tick)
+        self._input_region: cairo.Region | None = None
+        # Input region cache: skip expensive silhouette render when pose+state unchanged
+        self._region_cache: dict[tuple, cairo.Region] = {}
+        self._last_region_key: tuple | None = None
 
     def tick(self) -> bool:
         on_tick = getattr(self.skin, "on_tick", None)
@@ -476,33 +506,145 @@ class PetArea(Gtk.DrawingArea):
         ctx.move_to(px, y)
         PangoCairo.show_layout(ctx, layout)
 
-    def _bubble(self, ctx, text, ax, ay, color, t, pulse=False):  # noqa: ANN001
-        scale = 1.0 + (0.05 * math.sin(t * 6) if pulse else 0.0)
+    def _layout(self, ctx, text, size, bold=False, max_w=None):  # noqa: ANN001
         layout = PangoCairo.create_layout(ctx)
         desc = Pango.FontDescription()
-        desc.set_size(int(12.5 * Pango.SCALE))
-        desc.set_weight(Pango.Weight.BOLD)
+        desc.set_size(int(size * Pango.SCALE))
+        if bold:
+            desc.set_weight(Pango.Weight.BOLD)
         layout.set_font_description(desc)
         layout.set_text(text, -1)
+        if max_w:
+            layout.set_width(int(max_w * Pango.SCALE))
+            layout.set_ellipsize(Pango.EllipsizeMode.END)
         lw, lh = layout.get_pixel_size()
-        pad_x, pad_y = 9.0, 5.0
-        w, h = (lw + pad_x * 2) * scale, (lh + pad_y * 2) * scale
-        bx = min(max(ax - w, 4), max(WIN_W - w - 4, 4))
-        by = max(ay - h, 2)
-        rounded(ctx, bx, by, w, h, 8)
-        ctx.set_source_rgba(*COL_BUBBLE_BG)
+        return layout, lw, lh
+
+    def _count_chip_geom(self, w: int, h: int, n: int) -> tuple[float, float, float, float]:
+        """Shoulder-anchored pill. Returns (x, y, bw, bh)."""
+        nstr = "99+" if n > 99 else str(n)
+        bw = 18.0 if len(nstr) == 1 else 10.0 + 7.0 * len(nstr)
+        bh = 18.0
+        cx, cy = w * 0.42, h * 0.60
+        return cx + 16.0, cy - 44.0 - bh / 2.0, bw, bh
+
+    def _draw_count_chip(self, ctx, w: int, h: int, n: int) -> None:  # noqa: ANN001
+        x, y, bw, bh = self._count_chip_geom(w, h, n)
+        nstr = "99+" if n > 99 else str(n)
+        rr = bh / 2.0
+        rounded(ctx, x + 0.7, y + 1.1, bw, bh, rr)
+        ctx.set_source_rgba(0.0, 0.0, 0.0, 0.28)
+        ctx.fill()
+        rounded(ctx, x, y, bw, bh, rr)
+        ctx.set_source_rgba(0.56, 0.40, 0.78, 0.95)
         ctx.fill_preserve()
-        ctx.set_source_rgba(*color)
-        ctx.set_line_width(1.8)
+        ctx.set_source_rgba(0.93, 0.91, 0.98, 0.42)
+        ctx.set_line_width(1.0)
+        ctx.stroke()
+        layout, lw, lh = self._layout(ctx, nstr, 10.0, bold=True)
+        ctx.set_source_rgba(*COL_BUBBLE_FG)
+        ctx.move_to(x + (bw - lw) / 2.0, y + (bh - lh) / 2.0 - 0.5)
+        PangoCairo.show_layout(ctx, layout)
+
+    def _toast_spec(self, state: str, view) -> tuple[str, str, str, tuple] | None:
+        if state == "done":
+            return "完成", (view.label if view else ""), "✓", COL_OK
+        if state == "error":
+            return "出错", (view.label if view else ""), "!", COL_ERR
+        if state == "waiting":
+            asking = view is not None and view.tool == "ask"
+            title = "等待回答" if asking else "等待审批"
+            return title, "", "?", COL_ASK
+        return None
+
+    def _toast_geom(self, ctx, w: int, h: int, title: str, subtitle: str):  # noqa: ANN001
+        disc, gap, pad_x, pad_y = 16.0, 7.0, 8.0, 6.5
+        title_l, tw, th = self._layout(ctx, title, 11.0, bold=True, max_w=128)
+        sub_l, sw, sh = (None, 0.0, 0.0)
+        if subtitle:
+            sub_l, sw, sh = self._layout(ctx, subtitle, 9.0, max_w=128)
+        text_w = max(tw, sw)
+        text_h = th + (2.5 + sh if subtitle else 0.0)
+        bw = pad_x + disc + gap + text_w + pad_x
+        bh = pad_y + max(disc, text_h) + pad_y
+        tail_h = 7.0
+        cx, cy = w * 0.42, h * 0.60
+        tip_x, tip_y = cx + 16.0, cy - 64.0
+        bx = min(max(tip_x - 20.0, 4.0), max(w - bw - 4.0, 4.0))
+        by = max(tip_y - tail_h - bh, 3.0)
+        tail_x = min(max(tip_x - bx, 14.0), bw - 14.0)
+        return bx, by, bw, bh, tail_x, tail_h, title_l, sub_l, disc, gap, pad_x, pad_y, tw, th, sw, sh
+
+    def _draw_toast(self, ctx, w: int, h: int, title: str, subtitle: str,
+                    glyph: str, color: tuple, t: float, pulse: bool) -> None:  # noqa: ANN001
+        (bx, by, bw, bh, tail_x, tail_h, title_l, sub_l, disc, gap,
+         pad_x, pad_y, tw, th, _sw, sh) = self._toast_geom(ctx, w, h, title, subtitle)
+        glow = 0.62 + 0.38 * (0.5 + 0.5 * math.sin(t * 5.2)) if pulse else 1.0
+        speech_path(ctx, bx + 1.0, by + 1.6, bw, bh, 10.0, tail_x, tail_h)
+        ctx.set_source_rgba(0.0, 0.0, 0.0, 0.30)
+        ctx.fill()
+        speech_path(ctx, bx, by, bw, bh, 10.0, tail_x, tail_h)
+        ctx.set_source_rgba(0.10, 0.08, 0.15, 0.90)
+        ctx.fill_preserve()
+        ctx.set_source_rgba(color[0], color[1], color[2], 0.38 + 0.34 * glow)
+        ctx.set_line_width(1.0)
+        ctx.stroke()
+        dx = bx + pad_x + disc / 2.0
+        dy = by + bh / 2.0
+        ctx.arc(dx, dy, disc / 2.0, 0, 2 * math.pi)
+        ctx.set_source_rgba(color[0], color[1], color[2], 0.50 + 0.50 * glow)
+        ctx.fill()
+        g_l, gw, gh = self._layout(ctx, glyph, 9.5, bold=True)
+        ctx.set_source_rgba(1.0, 1.0, 1.0, 0.96)
+        ctx.move_to(dx - gw / 2.0, dy - gh / 2.0 - 0.4)
+        PangoCairo.show_layout(ctx, g_l)
+        tx = bx + pad_x + disc + gap
+        ty = by + (bh - (th + (2.5 + sh if sub_l is not None else 0.0))) / 2.0
+        ctx.set_source_rgba(*COL_BUBBLE_FG)
+        ctx.move_to(tx, ty)
+        PangoCairo.show_layout(ctx, title_l)
+        if sub_l is not None:
+            ctx.set_source_rgba(*COL_DIM)
+            ctx.move_to(tx, ty + th + 2.5)
+            PangoCairo.show_layout(ctx, sub_l)
+
+    def _speech_geom(self, ctx, w: int, h: int, text: str, ay: float):  # noqa: ANN001
+        layout, tw, th = self._layout(ctx, text, 10.5, bold=True, max_w=140)
+        pad_x, pad_y, tail_h = 8.0, 5.0, 6.0
+        bw, bh = tw + pad_x * 2, th + pad_y * 2
+        cx = w * 0.42
+        bx = min(max(cx + 8.0, 4.0), max(w - bw - 4.0, 4.0))
+        by = max(ay - bh - tail_h, 4.0)
+        tail_x = min(max(cx + 12.0 - bx, 12.0), bw - 12.0)
+        return bx, by, bw, bh, tail_x, tail_h, layout, pad_x, pad_y
+
+    def _draw_speech(self, ctx, w: int, h: int, text: str, ay: float,
+                     color: tuple) -> None:  # noqa: ANN001
+        bx, by, bw, bh, tail_x, tail_h, layout, pad_x, pad_y = self._speech_geom(
+            ctx, w, h, text, ay)
+        speech_path(ctx, bx + 0.8, by + 1.3, bw, bh, 8.0, tail_x, tail_h)
+        ctx.set_source_rgba(0.0, 0.0, 0.0, 0.25)
+        ctx.fill()
+        speech_path(ctx, bx, by, bw, bh, 8.0, tail_x, tail_h)
+        ctx.set_source_rgba(0.10, 0.08, 0.15, 0.88)
+        ctx.fill_preserve()
+        ctx.set_source_rgba(color[0], color[1], color[2], 0.50)
+        ctx.set_line_width(1.0)
         ctx.stroke()
         ctx.set_source_rgba(*COL_BUBBLE_FG)
         ctx.move_to(bx + pad_x, by + pad_y)
         PangoCairo.show_layout(ctx, layout)
 
     def _draw_panel(self, ctx, w: int, h: int) -> None:  # noqa: ANN001
-        rows = self.model.supervision_rows()[:8]
+        rows = self.model.supervision_rows()
         pad = 6.0
-        ph = 30.0 + 16.0 * len(rows) + pad
+        max_visible = 8
+        total_rows = len(rows)
+        # Scrollable panel: show up to max_visible rows with overflow indicator
+        visible_rows = rows[:max_visible]
+        has_overflow = total_rows > max_visible
+        
+        ph = 30.0 + 16.0 * len(visible_rows) + (14.0 if has_overflow else 0.0) + pad
         rounded(ctx, pad, pad, w - pad * 2, min(ph, h - pad * 2), 10)
         ctx.set_source_rgba(0.08, 0.07, 0.12, 0.93)
         ctx.fill_preserve()
@@ -513,7 +655,7 @@ class PetArea(Gtk.DrawingArea):
         self._text(ctx, f"会话监管 · {total}", w / 2, 12, 11.5, COL_BUBBLE_FG,
                    align_center=True, bold=True)
         y = 34.0
-        for glyph, label, detail, nested in rows:
+        for glyph, label, detail, nested in visible_rows:
             color = COL_OK if glyph == "✓" else COL_ERR if glyph == "✗" else (
                 COL_ASK if glyph == "?" else COL_DIM
             )
@@ -526,6 +668,12 @@ class PetArea(Gtk.DrawingArea):
             self._text(ctx, detail, w - 14, y, 9.5, COL_DIM,
                        align_right=True, max_w=w * 0.44)
             y += 16.0
+        
+        if has_overflow:
+            # Overflow indicator: dimmed "+" with count
+            overflow_count = total_rows - max_visible
+            self._text(ctx, f"+ {overflow_count} 更多…", w / 2, y, 9.5, COL_DIM,
+                       align_center=True)
 
     def draw_overlay(self, _area, ctx, w: int, h: int, _data=None) -> None:  # noqa: ANN001
         """Chrome-only draw func for the GtkOverlay layer above a GL body."""
@@ -537,6 +685,7 @@ class PetArea(Gtk.DrawingArea):
         )
         panel_open = self.model.panel_visible or bool(os.environ.get("OMP_PET_PANEL"))
         self.draw_chrome(ctx, w, h, t, state, view, sleeping, panel_open)
+        self._publish_input_region(w, h, t, state, {}, view, sleeping, panel_open)
 
     def on_draw(self, _area, ctx, w: int, h: int) -> None:  # noqa: ANN001
         t = time.monotonic()
@@ -581,9 +730,10 @@ class PetArea(Gtk.DrawingArea):
             if on_state is not None:
                 on_state(state)
             self.last_state = state
-        self.skin.draw_body(ctx, w, h, t, state, pose)
+        self.skin.draw_body(ctx, w, h, t, state, pose, max(1, int(self.get_scale_factor())))
 
         self.draw_chrome(ctx, w, h, t, state, view, sleeping, panel_open)
+        self._publish_input_region(w, h, t, state, pose, view, sleeping, panel_open)
 
     def draw_chrome(self, ctx, w: int, h: int, t: float, state: str,
                     view, sleeping: bool, panel_open: bool) -> None:  # noqa: ANN001
@@ -598,12 +748,9 @@ class PetArea(Gtk.DrawingArea):
                 self._text(ctx, "z" * (i % 2 + 1), zx, zy, 11 + i * 2, dim)
 
         # status line under the cat (suppressed while the panel is open);
-        # clock is the TURN clock — monotonic across tool flips within a turn.
-        if not panel_open and view and state in WORKING_STATES | {"waiting"}:
-            if state == "waiting" and view.tool == "ask":
-                line = "等待回答"
-            else:
-                line = view.tool or STATE_LABELS.get(view.state, view.state)
+        # attention states use the toast instead of repeating the same line.
+        if not panel_open and view and state in WORKING_STATES:
+            line = view.tool or STATE_LABELS.get(view.state, view.state)
             self._text(ctx, f"{line} · {view.clock(t)}",
                        w / 2, h - 34, 10.5, COL_DIM, align_center=True, max_w=w - 16)
             if view.detail and state == "tool":
@@ -613,26 +760,157 @@ class PetArea(Gtk.DrawingArea):
             self._text(ctx, "zzz… 有任务会叫醒我", w / 2, h - 24, 9.5, COL_DIM,
                        align_center=True, max_w=w - 16)
 
-        # persistent attention bubbles — THE notification surface
-        if state == "done":
-            self._bubble(ctx, f"✓ 完成 · {view.label if view else ''}".strip(),
-                         w * 0.78, 34, COL_OK, t, pulse=True)
-        elif state == "error":
-            self._bubble(ctx, f"✗ 出错 · {view.label if view else ''}".strip(),
-                         w * 0.78, 34, COL_ERR, t, pulse=True)
-        elif state == "waiting":
-            asking = view is not None and view.tool == "ask"
-            self._bubble(ctx, "? 等待回答" if asking else "? 等待审批",
-                         w * 0.78, 34, COL_ASK, t, pulse=True)
-
-        for text, _exp in self.model.poke_bubbles:
-            self._bubble(ctx, text, w * 0.70, 66, COL_OK, t)
-
-        if self.model.total_live() > 1:
-            self._bubble(ctx, f"×{self.model.total_live()}", w - 6, 20, COL_DIM, t)
+        if not panel_open:
+            spec = self._toast_spec(state, view)
+            if spec is not None:
+                title, subtitle, glyph, color = spec
+                self._draw_toast(ctx, w, h, title, subtitle, glyph, color, t, True)
+            poke_ay = 70.0 if spec is not None else 58.0
+            for text, _exp in self.model.poke_bubbles:
+                self._draw_speech(ctx, w, h, text, poke_ay, COL_OK)
+                poke_ay += 22.0
+            n = self.model.total_live()
+            if n > 1:
+                self._draw_count_chip(ctx, w, h, n)
 
         if panel_open:
             self._draw_panel(ctx, w, h)
+
+    def _scratch_ctx(self):
+        ctx = getattr(self, "_scratch_cr", None)
+        if ctx is None:
+            self._scratch_surf = cairo.ImageSurface(cairo.Format.ARGB32, 8, 8)
+            self._scratch_cr = cairo.Context(self._scratch_surf)
+            ctx = self._scratch_cr
+        return ctx
+
+    def _chrome_hit_rects(self, w: int, h: int, t: float, state: str,  # noqa: ARG002
+                          view, sleeping: bool, panel_open: bool) -> list[tuple[float, float, float, float]]:
+        """Window-local rects for toasts / chip / status — not the hover panel."""
+        rects: list[tuple[float, float, float, float]] = []
+        cr = self._scratch_ctx()
+        if not panel_open and view and state in WORKING_STATES:
+            band = 36.0 if (view.detail and state == "tool") else 22.0
+            sw = min(w - 16.0, 140.0)
+            rects.append(((w - sw) / 2, h - 40.0, sw, band))
+        elif sleeping and not panel_open:
+            sw = min(w - 16.0, 140.0)
+            rects.append(((w - sw) / 2, h - 30.0, sw, 18.0))
+        if panel_open:
+            return rects
+        spec = self._toast_spec(state, view)
+        if spec is not None:
+            title, subtitle, _g, _c = spec
+            bx, by, bw, bh, _tx, tail_h, *_rest = self._toast_geom(cr, w, h, title, subtitle)
+            rects.append((bx, by, bw, bh + tail_h))
+        poke_ay = 70.0 if spec is not None else 58.0
+        for text, _exp in self.model.poke_bubbles:
+            bx, by, bw, bh, _tx, tail_h, *_r = self._speech_geom(cr, w, h, text, poke_ay)
+            rects.append((bx, by, bw, bh + tail_h))
+            poke_ay += 22.0
+        n = self.model.total_live()
+        if n > 1:
+            rects.append(self._count_chip_geom(w, h, n))
+        return rects
+
+    @staticmethod
+    def _dilate_region(region: cairo.Region, pad: int) -> cairo.Region:
+        if pad <= 0:
+            return region
+        out = region.copy()
+        for dx, dy in (
+            (-pad, 0), (pad, 0), (0, -pad), (0, pad),
+            (-pad, -pad), (-pad, pad), (pad, -pad), (pad, pad),
+        ):
+            extra = region.copy()
+            extra.translate(dx, dy)
+            out.union(extra)
+        return out
+
+    def _region_cache_key(self, state: str, pose: dict, panel_open: bool) -> tuple:
+        """Cache key for input region — covers all params that affect silhouette."""
+        return (
+            state,
+            pose.get("jump", 0.0),
+            pose.get("squish", 1.0),
+            pose.get("tilt", 0.0),
+            panel_open,
+        )
+
+    def _silhouette_region(self, w: int, h: int, t: float, state: str,
+                           pose: dict, view, sleeping: bool,
+                           panel_open: bool) -> cairo.Region:
+        cache_key = self._region_cache_key(state, pose, panel_open)
+        if cache_key in self._region_cache:
+            return self._region_cache[cache_key]
+        
+        mw, mh = max(1, int(w)), max(1, int(h))
+        mask = cairo.ImageSurface(cairo.Format.ARGB32, mw, mh)
+        mctx = cairo.Context(mask)
+        paint = getattr(self.skin, "paint_hit_mask", self.skin.draw_body)
+        try:
+            paint(mctx, w, h, t, state, pose, max(1, int(self.get_scale_factor())))
+        except TypeError:
+            paint(mctx, w, h, t, state, pose)
+        mctx.set_source_rgba(0, 0, 0, 1)
+        for x, y, rw, rh in self._chrome_hit_rects(w, h, t, state, view, sleeping, panel_open):
+            mctx.rectangle(x, y, rw, rh)
+            mctx.fill()
+        region = Gdk.cairo_region_create_from_surface(mask)
+        if os.environ.get("PET_HIT_DUMP") and not getattr(self, "_hit_dumped", False):
+            mask.write_to_png("/tmp/pet-hitmask.png")
+            ext = region.get_extents()
+            corners = {
+                "TL": region.contains_point(2, 2),
+                "TR": region.contains_point(mw - 3, 2),
+                "BL": region.contains_point(2, mh - 3),
+                "BR": region.contains_point(mw - 3, mh - 3),
+                "body": region.contains_point(int(w * 0.42), int(h * 0.60)),
+            }
+            print(f"[hit] rects={region.num_rectangles()} "
+                  f"ext={ext.x},{ext.y} {ext.width}x{ext.height} win={mw}x{mh} "
+                  f"corners={corners}",
+                  flush=True)
+            self._hit_dumped = True
+        dilated = self._dilate_region(region, HIT_PAD)
+        
+        # Cache with size limit (prevent unbounded growth from pose variations)
+        if len(self._region_cache) > 32:
+            self._region_cache.clear()
+        self._region_cache[cache_key] = dilated
+        return dilated
+
+    def _publish_input_region(self, w: int, h: int, t: float, state: str,
+                              pose: dict, view, sleeping: bool,
+                              panel_open: bool) -> None:
+        """Wayland wl_surface input region: empty pixels click through.
+
+        Hovering the silhouette opens the panel; leaving it hides the panel.
+        The panel itself is not added to the hit region — otherwise moving
+        off the character onto the overlay would keep the pointer captured.
+        Drag and the right-click menu still take the whole window so the
+        gesture/popover cannot lose the pointer. Wayland cannot do
+        hover-without-click: clicks on the silhouette still land here.
+        """
+        native = self.get_native()
+        if native is None:
+            return
+        surface = native.get_surface()
+        if surface is None:
+            return
+        mw, mh = max(1, int(w)), max(1, int(h))
+        dragging = bool(getattr(native, "_drag_active", False))
+        menu = getattr(native, "_menu", None)
+        menu_open = bool(menu is not None and menu.get_visible())
+        if dragging or menu_open:
+            region = cairo.Region(cairo.RectangleInt(0, 0, mw, mh))
+        else:
+            region = self._silhouette_region(
+                w, h, t, state, pose, view, sleeping, panel_open)
+        if self._input_region is not None and self._input_region.equal(region):
+            return
+        self._input_region = region
+        surface.set_input_region(region)
 
 
 # --------------------------------------------------------------------------
@@ -807,27 +1085,6 @@ class PetWindow(Gtk.Window):
         LayerShell.set_anchor(self, LayerShell.Edge.BOTTOM, self.anchor_bottom)
         self._push_margins()
 
-    def save_position(self) -> None:
-        save_state({
-            "margin_x": self.margin_x,
-            "margin_y": self.margin_y,
-            "anchor_right": self.anchor_right,
-            "anchor_bottom": self.anchor_bottom,
-        })
-
-    def on_hover_enter(self, *_a) -> None:  # noqa: ANN001
-        self.model.panel_visible = True
-        self.area.queue_draw()
-
-    def on_hover_leave(self, *_a) -> None:  # noqa: ANN001
-        self.model.panel_visible = False
-        self.area.queue_draw()
-
-    def on_press(self, _gesture, _n, x, y) -> None:  # noqa: ANN001
-        self._drag_active = True
-        self._drag_moved = False
-        self._ensure_pos()
-
     def on_drag_update(self, _gesture, dx: float, dy: float) -> None:
         """Wayland gives no global pointer position: GestureDrag offsets are
         WINDOW-RELATIVE, offset = (P-P0) - (W-W0). Adding the CUMULATIVE offset
@@ -838,12 +1095,16 @@ class PetWindow(Gtk.Window):
         — both were tried and rejected.)"""
         if not self._drag_active:
             return
-        if abs(dx) + abs(dy) < 6:
+        # HiDPI-aware deadzone: scale with device pixel ratio
+        scale = max(1, int(self.area.get_scale_factor()))
+        deadzone = 6 * scale
+        if abs(dx) + abs(dy) < deadzone:
             return  # deadzone keeps click-vs-drag discrimination stable
         self._drag_moved = True
         self.pos[0] += dx
         self.pos[1] += dy
         self.place()
+
 
     def on_release(self, _gesture, *_a) -> None:  # noqa: ANN001
         was_drag = self._drag_moved
@@ -851,6 +1112,7 @@ class PetWindow(Gtk.Window):
         if was_drag:
             self.apply_layout()  # re-anchor to nearest edges, then persist once
             self.save_position()
+            self.area.queue_draw()  # drop full-window capture immediately
             return
         attention, _view = self.model.primary()
         if attention in ("done", "error"):
@@ -860,7 +1122,6 @@ class PetWindow(Gtk.Window):
         self.model.add_poke_bubble(random.choice(REACTIONS["pet"]))
         self.area.wiggle()
 
-
     def on_right_press(self, _gesture, _n_press: int, x: float, y: float) -> None:  # noqa: ANN001
         """Right-click opens the pet context menu at the pointer."""
         if self._menu is None:
@@ -869,10 +1130,12 @@ class PetWindow(Gtk.Window):
             self._menu = Gtk.PopoverMenu.new_from_model(menu_model)
             self._menu.set_has_arrow(False)
             self._menu.set_parent(self.area)
+            self._menu.connect("closed", lambda *_a: self.area.queue_draw())
         rect = Gdk.Rectangle()
         rect.x, rect.y, rect.width, rect.height = int(x), int(y), 1, 1
         self._menu.set_pointing_to(rect)
         self._menu.popup()
+        self.area.queue_draw()
 
     def _request_quit(self) -> None:
         if self.on_quit is not None:
@@ -893,6 +1156,8 @@ class IpcServer:
         self.area = area
         self.on_fatal = on_fatal
         self.conn_counter = 0
+        # Track malformed frames per connection: disconnect after threshold
+        self.conn_errors: dict[int, int] = {}
 
     async def serve(self) -> None:
         try:
@@ -926,6 +1191,7 @@ class IpcServer:
         self.conn_counter += 1
         conn_id = self.conn_counter
         buffer = b""
+        malformed_threshold = 10
         try:
             while True:
                 chunk = await reader.read(4096)
@@ -939,6 +1205,12 @@ class IpcServer:
                     try:
                         frame = json.loads(line.decode("utf-8"))
                     except json.JSONDecodeError:
+                        # Track malformed frames; disconnect if threshold exceeded
+                        self.conn_errors[conn_id] = self.conn_errors.get(conn_id, 0) + 1
+                        if self.conn_errors[conn_id] >= malformed_threshold:
+                            print(f"omp-pet: conn {conn_id} exceeded malformed frame limit, disconnecting",
+                                  file=sys.stderr, flush=True)
+                            break
                         continue
                     if frame.get("t") == "poke":
                         await self.dispatch_poke(frame, writer)
@@ -947,6 +1219,7 @@ class IpcServer:
         except (ConnectionError, asyncio.IncompleteReadError):
             pass
         finally:
+            self.conn_errors.pop(conn_id, None)
             GLib.idle_add(self.model.drop_conn, conn_id)
             try:
                 writer.close()

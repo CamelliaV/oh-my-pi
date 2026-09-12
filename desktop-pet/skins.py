@@ -9,9 +9,9 @@ Modes (selected via `--skin TYPE[:PATH]` or persisted config):
   image:<png>      single character cutout + procedural transforms
   frames:<dir>     per-state PNG sequences  `<state>-<n>.png`, cycles at ~7fps
   live2d:<dir>     Cubism model dir (*.model3.json) rendered via live2d-py
-                   into a GtkGLArea; optional motions.json maps pet states to
-                   motions/expressions. Falls back to cat when live2d-py or
-                   the model is unavailable.
+                   offscreen (EGL pbuffer → Cairo blit). Optional motions.json
+                   maps pet states to motions/expressions. Falls back to cat
+                   when live2d-py or the model is unavailable.
 
 All skins must degrade gracefully: bad asset → SkinUnavailable → caller falls
 back to CatSkin with a log line. A broken skin must never kill the daemon.
@@ -80,7 +80,7 @@ class CatSkin:
             self.next_blink = t + 2.5 + (t * 977 % 35) / 10.0  # deterministic jitter
 
     def draw_body(self, ctx, w: int, h: int, t: float, state: str,
-                  pose: dict) -> None:  # noqa: ANN001
+                  pose: dict, scale_factor: int = 1) -> None:  # noqa: ANN001,ARG002
         breathe = 1.0 + 0.02 * math.sin(t * 2.1)
         jump = pose.get("jump", 0.0)
         tilt = pose.get("tilt", 0.0)
@@ -242,7 +242,7 @@ class ImageSkin:
         pass
 
     def draw_body(self, ctx, w: int, h: int, t: float, state: str,
-                  pose: dict) -> None:  # noqa: ANN001
+                  pose: dict, scale_factor: int = 1) -> None:  # noqa: ANN001,ARG002
         if self.pix is None:
             return
         cx, cy = w * 0.42, h * 0.60 - pose.get("jump", 0.0)
@@ -302,20 +302,34 @@ class FramesSkin:
         if not os.path.isdir(self.directory):
             raise SkinError(f"frames skin: no such directory {self.directory}")
         found: dict[str, list[tuple[int, str]]] = {}
-        for path in sorted(glob.glob(os.path.join(self.directory, "*.png"))):
-            base = os.path.splitext(os.path.basename(path))[0]
-            stem, _, num = base.rpartition("-")
-            if not stem or not num.isdigit():
-                stem, num = base, "0"
-            found.setdefault(stem.lower(), []).append((int(num), path))
+        for ext in ("*.png", "*.webp"):
+            for path in sorted(glob.glob(os.path.join(self.directory, ext))):
+                base = os.path.splitext(os.path.basename(path))[0]
+                stem, _, num = base.rpartition("-")
+                if not stem or not num.isdigit():
+                    stem, num = base, "0"
+                found.setdefault(stem.lower(), []).append((int(num), path))
         if not found:
-            raise SkinError(f"frames skin: no PNGs under {self.directory}")
+            raise SkinError(f"frames skin: no PNGs/WebPs under {self.directory}")
         max_side = BODY_BOX
         for stem, items in found.items():
             items.sort()
             frames = []
             for _n, path in items:
+                # WebP animated: extract all frames; static WebP/PNG: single frame
                 pix = GdkPixbuf.Pixbuf.new_from_file(path)
+                if path.lower().endswith(".webp"):
+                    # GdkPixbuf.PixbufAnimation for multi-frame WebP
+                    try:
+                        anim = GdkPixbuf.PixbufAnimation.new_from_file(path)
+                        if not anim.is_static_image():
+                            # Extract frames via iter — GdkPixbuf doesn't expose frame count
+                            # directly; approximate with file size heuristic or just use
+                            # the static_image fallback for now (GdkPixbuf WebP anim support
+                            # is incomplete; Pillow would be better but adds dependency).
+                            pix = anim.get_static_image()
+                    except Exception:  # noqa: BLE001
+                        pass  # fallback to single-frame load above
                 pw, ph = pix.get_width(), pix.get_height()
                 scale = min(max_side / max(pw, 1), max_side / max(ph, 1), 4.0)
                 frames.append(
@@ -339,7 +353,7 @@ class FramesSkin:
         return next(iter(self.groups.values()))
 
     def draw_body(self, ctx, w: int, h: int, t: float, state: str,
-                  pose: dict) -> None:  # noqa: ANN001
+                  pose: dict, scale_factor: int = 1) -> None:  # noqa: ANN001,ARG002
         seq = self._sequence(state)
         frame = seq[int(t * self.FPS) % len(seq)]
         cx, cy = w * 0.42, h * 0.60 - pose.get("jump", 0.0)
@@ -383,13 +397,17 @@ class Live2DSkin:
     pixels back as a Cairo image surface. needs_gl stays False — the regular
     DrawingArea path renders the body like any other skin.
 
+    The pbuffer is BODY_BOX × GTK widget scale_factor (not the logical 150px
+    box). GTK4's draw_func records in logical pixels and GSK rasterizes into
+    an integer-scale buffer (2× on a 1.5× display); a 150px Cubism frame
+    bilinear-upsampled into that buffer is what made Hiyori look mushy —
+    the textures are 2048².
+
     Optional `motions.json` next to the model maps pet states:
       {"thinking": {"motion": ["Idle", 0]}, "done": {"expression": "..."}}
     """
     name = "live2d"
     needs_gl = False
-
-    RENDER_W, RENDER_H = int(BODY_BOX), int(BODY_BOX)
 
     def __init__(self, model_dir: str) -> None:
         self.model_dir = os.path.expanduser(model_dir)
@@ -399,24 +417,55 @@ class Live2DSkin:
         self.current_state: str | None = None
         self.moc_path: str | None = None
         self._egl = None  # (dpy, surf, ctx)
-        self._surface = None  # cairo.ImageSurface
+        self._egl_cfg = None
+        self._pbuffer_px: int | None = None
+        self._frame_buf: bytearray | None = None
+        # Static frame cache: skip render when (state, pose_key) unchanged + no active motion
+        self._last_pose_key: tuple | None = None
+        self._last_state: str | None = None
+        self._motion_active_until: float = 0.0
         try:
             import numpy  # noqa: F401
             self._numpy = numpy
         except ImportError:
             self._numpy = None
 
-    def _egl_setup(self) -> None:
+    @staticmethod
+    def _pixel_size(scale_factor: int) -> int:
+        return max(int(BODY_BOX), int(round(BODY_BOX * max(int(scale_factor), 1))))
+
+    def _egl_setup(self, px: int) -> None:
         from OpenGL.EGL import (
             eglGetDisplay, eglInitialize, eglChooseConfig, eglBindAPI,
             eglCreatePbufferSurface, eglCreateContext, eglMakeCurrent,
+            eglDestroySurface,
             EGL_SURFACE_TYPE, EGL_PBUFFER_BIT, EGL_RED_SIZE, EGL_GREEN_SIZE,
             EGL_BLUE_SIZE, EGL_ALPHA_SIZE, EGL_NONE, EGL_OPENGL_API,
             EGL_CONTEXT_MAJOR_VERSION, EGL_CONTEXT_MINOR_VERSION,
             EGL_WIDTH, EGL_HEIGHT, EGL_DEFAULT_DISPLAY,
         )
         import ctypes
-        w, h = self.RENDER_W, self.RENDER_H
+        if self._egl is not None and self._pbuffer_px == px:
+            dpy, surf, ctx = self._egl
+            eglMakeCurrent(dpy, surf, surf, ctx)
+            return
+        pb = (ctypes.c_int * 5)(EGL_WIDTH, px, EGL_HEIGHT, px, EGL_NONE)
+        if self._egl is not None:
+            dpy, old_surf, ctx = self._egl
+            surf = eglCreatePbufferSurface(dpy, self._egl_cfg, pb)
+            if not surf:
+                raise SkinError("live2d skin: eglCreatePbufferSurface resize failed")
+            if not eglMakeCurrent(dpy, surf, surf, ctx):
+                eglDestroySurface(dpy, surf)
+                raise SkinError("live2d skin: eglMakeCurrent resize failed")
+            eglDestroySurface(dpy, old_surf)
+            self._egl = (dpy, surf, ctx)
+            self._pbuffer_px = px
+            if self.model is not None:
+                from OpenGL.GL import glViewport
+                glViewport(0, 0, px, px)
+                self.model.Resize(px, px)
+            return
         dpy = eglGetDisplay(EGL_DEFAULT_DISPLAY)
         if not dpy:
             raise SkinError("live2d skin: eglGetDisplay failed")
@@ -431,14 +480,15 @@ class Live2DSkin:
         if not eglChooseConfig(dpy, cfg_attr, ctypes.byref(cfg), 1, n) or n.value != 1:
             raise SkinError("live2d skin: no suitable EGL config")
         eglBindAPI(EGL_OPENGL_API)
-        pb = (ctypes.c_int * 5)(EGL_WIDTH, w, EGL_HEIGHT, h, EGL_NONE)
         surf = eglCreatePbufferSurface(dpy, cfg, pb)
         ctx_attr = (ctypes.c_int * 5)(EGL_CONTEXT_MAJOR_VERSION, 2,
                                       EGL_CONTEXT_MINOR_VERSION, 1, EGL_NONE)
         ctx = eglCreateContext(dpy, cfg, None, ctx_attr)
         if not eglMakeCurrent(dpy, surf, surf, ctx):
             raise SkinError("live2d skin: eglMakeCurrent failed")
+        self._egl_cfg = cfg
         self._egl = (dpy, surf, ctx)
+        self._pbuffer_px = px
 
     def load(self) -> None:
         """Light validation — heavy GL init happens in gl_init()."""
@@ -461,25 +511,36 @@ class Live2DSkin:
             except (OSError, json.JSONDecodeError):
                 self.motion_map = {}
 
-    def gl_init(self) -> None:
+    def gl_init(self, px: int | None = None) -> None:
         """Create the offscreen context and load the model into it."""
         assert self.live2d is not None and self.moc_path is not None
-        self._egl_setup()
+        size = int(px) if px else self._pixel_size(1)
+        self._egl_setup(size)
         self.live2d.init()
         self.live2d.glInit()
         self.model = self.live2d.LAppModel()
         self.model.LoadModelJson(self.moc_path)
-        self.model.Resize(self.RENDER_W, self.RENDER_H)
+        self.model.Resize(size, size)
         self.live2d.clearBuffer(0.0, 0.0, 0.0, 0.0)
 
-    def resize(self, w: int, h: int) -> None:  # noqa: ARG002 — fixed pbuffer
+    def resize(self, w: int, h: int) -> None:  # noqa: ARG002 — pbuffer follows scale_factor
         pass
 
     def dispose(self) -> None:
         self.model = None
         self.live2d = None
-        self._surface = None
+        self._frame_buf = None
         self._egl = None
+        self._egl_cfg = None
+        self._pbuffer_px = None
+
+    def _pose_cache_key(self, pose: dict) -> tuple:
+        """Stable hash key for pose dict — only params that affect Live2D rendering."""
+        return (
+            pose.get("jump", 0.0),
+            pose.get("squish", 1.0),
+            pose.get("tilt", 0.0),
+        )
 
     def on_state(self, state: str) -> None:
         """Apply motion/expression mapping when the pet state changes."""
@@ -496,10 +557,14 @@ class Live2DSkin:
                 index = int(motion[1]) if len(motion) > 1 else 0
                 priority = getattr(self.live2d.MotionPriority, "FORCE", 3)
                 self.model.StartMotion(str(motion[0]), index, priority)
+                # Mark motion active for ~3s (typical motion duration); exact tracking
+                # needs IsFinished() which live2d-py doesn't expose cleanly.
+                self._motion_active_until = time.time() + 3.0
         except Exception:  # noqa: BLE001 — a wrong motion id must never kill us
             pass
 
     def _render_pixels(self) -> bytes | None:
+
         """Render one frame offscreen; return flipped premultiplied BGRA bytes."""
         from OpenGL.GL import glReadPixels, GL_RGBA, GL_UNSIGNED_BYTE
         dpy, surf, ctx = self._egl
@@ -508,13 +573,14 @@ class Live2DSkin:
         self.live2d.clearBuffer(0.0, 0.0, 0.0, 0.0)
         self.model.Update()
         self.model.Draw()
-        w, h = self.RENDER_W, self.RENDER_H
+        w = h = int(self._pbuffer_px or BODY_BOX)
         data = glReadPixels(0, 0, w, h, GL_RGBA, GL_UNSIGNED_BYTE)
         dump = os.environ.get("L2D_DUMP")
-        if dump:
+        if dump and not getattr(self, "_dumped", False):
             from PIL import Image
             img = Image.frombytes("RGBA", (w, h), bytes(data))
             img.save(dump)
+            self._dumped = True
             print(f"[l2d] dumped {w}x{h} -> {dump}", flush=True)
         if self._numpy is None:
             return None  # numpy-less fallback: skip body rather than stall
@@ -530,40 +596,80 @@ class Live2DSkin:
         return numpy.concatenate([premul[:, :, 2:], premul[:, :, 1:2],
                                   premul[:, :, 0:1], a8], axis=-1).tobytes()
 
-    def draw_body(self, ctx, w: int, h: int, t: float, state: str,
-                  pose: dict) -> None:  # noqa: ANN001
-        import sys
-        import cairo
+    def _body_pose_transform(self, w: int, h: int, t: float, pose: dict) -> tuple[float, float, float, float]:
+        cx = w * 0.42
+        cy = h * 0.60 - pose.get("jump", 0.0)
+        breathe = 1.0 + 0.02 * math.sin(t * 2.1)
+        scale = breathe * pose.get("squish", 1.0)
+        return cx, cy, scale, pose.get("tilt", 0.0)
 
+    def _blit_frame(self, ctx, w: int, h: int, t: float, pose: dict,
+                    alpha: float) -> None:  # noqa: ANN001
+        if not self._frame_buf or not self._pbuffer_px:
+            return
+        import cairo
+        rw = rh = int(self._pbuffer_px)
+        surface = cairo.ImageSurface.create_for_data(
+            self._frame_buf, cairo.Format.ARGB32, rw, rh, rw * 4)
+        surface.set_device_scale(rw / BODY_BOX, rh / BODY_BOX)
+        cx, cy, scale, tilt = self._body_pose_transform(w, h, t, pose)
+        ctx.save()
+        ctx.translate(cx, cy)
+        ctx.rotate(tilt)
+        ctx.scale(scale, scale)
+        ctx.set_source_surface(surface, -BODY_BOX / 2, -BODY_BOX / 2)
+        try:
+            ctx.get_source().set_filter(cairo.FILTER_GOOD)
+        except Exception:  # noqa: BLE001
+            pass
+        ctx.paint_with_alpha(alpha)
+        ctx.restore()
+
+    def draw_body(self, ctx, w: int, h: int, t: float, state: str,
+                  pose: dict, scale_factor: int = 1) -> None:  # noqa: ANN001
+        px = self._pixel_size(scale_factor)
         if self.model is None:
             try:
-                self.gl_init()
+                self.gl_init(px)
             except Exception as exc:  # noqa: BLE001
                 if not getattr(self, "_init_failed", False):
                     print(f"omp-pet: live2d init failed: {exc}",
                           file=sys.stderr, flush=True)
                     self._init_failed = True
                 return
+        elif self._pbuffer_px != px:
+            try:
+                self._egl_setup(px)
+            except Exception as exc:  # noqa: BLE001
+                print(f"omp-pet: live2d resize to {px} failed: {exc}",
+                      file=sys.stderr, flush=True)
+        
+        # Skip expensive EGL render if pose+state unchanged and no motion playing
+        pose_key = self._pose_cache_key(pose)
+        now = time.time()
+        motion_playing = now < self._motion_active_until
+        if (not motion_playing and self._frame_buf is not None 
+            and pose_key == self._last_pose_key and state == self._last_state):
+            # Reuse cached frame
+            alpha = 0.65 if state in ("idle", "aborted") else (
+                0.85 if state == "waiting" else 1.0)
+            self._blit_frame(ctx, w, h, t, pose, alpha)
+            return
+        
         raw = self._render_pixels()
         if raw is None:
             return
-        rw, rh = self.RENDER_W, self.RENDER_H
-        surface = cairo.ImageSurface.create_for_data(
-            bytearray(raw), cairo.Format.ARGB32, rw, rh, rw * 4)
-        cx, cy = w * 0.42, h * 0.60 - pose.get("jump", 0.0)
-        breathe = 1.0 + 0.02 * math.sin(t * 2.1)
-        scale = breathe * pose.get("squish", 1.0)
-        dw, dh = rw * scale, rh * scale
+        self._frame_buf = bytearray(raw)
+        self._last_pose_key = pose_key
+        self._last_state = state
         alpha = 0.65 if state in ("idle", "aborted") else (
             0.85 if state == "waiting" else 1.0)
+        self._blit_frame(ctx, w, h, t, pose, alpha)
 
-        ctx.save()
-        ctx.translate(cx, cy)
-        ctx.rotate(pose.get("tilt", 0.0))
-        ctx.scale(scale, scale)
-        ctx.set_source_surface(surface, -rw / 2, -rh / 2)
-        ctx.paint_with_alpha(alpha)
-        ctx.restore()
+    def paint_hit_mask(self, ctx, w: int, h: int, t: float, state: str,
+                       pose: dict, scale_factor: int = 1) -> None:  # noqa: ANN001,ARG002
+        """Opaque silhouette of the last Cubism frame — no extra GL readback."""
+        self._blit_frame(ctx, w, h, t, pose, 1.0)
 
 
 # --------------------------------------------------------------------------

@@ -21,6 +21,8 @@ export interface ProviderValidationConfig {
 	baseUrl?: string;
 	headers?: Record<string, string>;
 	apiKey?: string;
+	/** Multi-key pool (models.yml `apiKeys`); non-empty satisfies the auth requirement like `apiKey`. */
+	apiKeys?: string[];
 	api?: Api;
 	auth?: ProviderAuthMode;
 	oauthConfigured?: boolean;
@@ -42,6 +44,7 @@ export function validateProviderConfiguration(
 ): void {
 	const hasProviderApi = !!config.api;
 	const models = config.models;
+	const hasConfiguredKeys = !!config.apiKey || (config.apiKeys?.length ?? 0) > 0;
 
 	if (models.length === 0) {
 		if (mode === "models-config") {
@@ -50,7 +53,7 @@ export function validateProviderConfiguration(
 				!config.baseUrl &&
 				!config.headers &&
 				!config.compat &&
-				!config.apiKey &&
+				!hasConfiguredKeys &&
 				config.auth !== "none" &&
 				!config.disableStrictTools &&
 				!config.guardrailIdentifier &&
@@ -71,8 +74,8 @@ export function validateProviderConfiguration(
 		}
 		const requiresAuth =
 			mode === "runtime-register"
-				? !config.apiKey && !config.oauthConfigured
-				: !config.apiKey && (config.auth ?? "apiKey") !== "none" && (config.auth ?? "apiKey") !== "oauth";
+				? !hasConfiguredKeys && !config.oauthConfigured
+				: !hasConfiguredKeys && (config.auth ?? "apiKey") !== "none" && (config.auth ?? "apiKey") !== "oauth";
 		if (requiresAuth) {
 			throw new Error(
 				mode === "runtime-register"
@@ -121,6 +124,7 @@ export const ModelsConfigFile = new ConfigFile<ModelsConfig>("models", {
 				baseUrl: providerConfig.baseUrl,
 				headers: providerConfig.headers,
 				apiKey: providerConfig.apiKey,
+				apiKeys: providerConfig.apiKeys,
 				api: providerConfig.api as Api | undefined,
 				auth: (providerConfig.auth ?? "apiKey") as ProviderAuthMode,
 				discovery: providerConfig.discovery as ProviderDiscovery | undefined,

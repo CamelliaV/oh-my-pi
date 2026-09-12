@@ -108,8 +108,25 @@ const ANTHROPIC_SESSION_STICKY_CACHE_WARM_MS = 60 * 60_000;
 export type ApiKeyCredential = {
 	type: "api_key";
 	key: string;
-	source?: "login";
+	/**
+	 * - `login` — persisted by a successful interactive `/login`.
+	 * - `config` — synced from `models.yml` `providers.<name>.apiKeys`; reconciled
+	 *   on every config reload so config edits keep row identity (and persisted
+	 *   rate-limit blocks) stable.
+	 */
+	source?: "login" | "config";
 };
+
+/**
+ * Selection policy for a config-sourced multi-key pool (`models.yml` `apiKeys`).
+ * - `first-fill` (default): everyone uses the first unblocked key in config
+ *   order; a key is only abandoned while its usage-limit block is active. This
+ *   keeps the whole client base on one upstream account, preserving warm
+ *   prompt caches.
+ * - `round-robin`: rotate the starting key on every resolve, spreading load
+ *   across the pool.
+ */
+export type ApiKeyPoolPolicy = "first-fill" | "round-robin";
 
 export type OAuthCredential = {
 	type: "oauth";
@@ -1314,6 +1331,13 @@ export class AuthStorage {
 	#data: Map<string, StoredCredential[]> = new Map();
 	#runtimeOverrides: Map<string, string> = new Map();
 	#configOverrides: Map<string, string> = new Map();
+	/**
+	 * Selection policy per provider with a config-sourced multi-key pool
+	 * (`models.yml` `apiKeys`). Membership doubles as "this provider's auth is
+	 * config-owned", used to suppress OAuth identity leakage the same way a
+	 * single config override does.
+	 */
+	#configPoolPolicies: Map<string, ApiKeyPoolPolicy> = new Map();
 	/** Tracks next credential index per provider:type key for round-robin distribution (non-session use). */
 	#providerRoundRobinIndex: Map<string, number> = new Map();
 	/** Tracks the last used credential per provider for a session (used for rate-limit switching). */
@@ -1560,18 +1584,130 @@ export class AuthStorage {
 	}
 
 	/**
-	 * Remove a single config-sourced API key override.
+	 * Remove a single config-sourced API key override. Also tears down any
+	 * config key pool: a provider whose config auth vanished must not keep
+	 * serving pooled keys (provider removal from models.yml runs through here).
 	 */
 	removeConfigApiKey(provider: string): void {
 		this.#configOverrides.delete(provider);
+		this.#removeConfigApiKeyPool(provider);
 	}
 
 	/**
-	 * Drop every config-sourced API key. Called by `ModelRegistry` before
-	 * re-parsing `models.yml` so removed entries actually disappear.
+	 * Drop every config-sourced API key override. Called by `ModelRegistry`
+	 * before re-parsing `models.yml` so removed entries actually disappear.
+	 *
+	 * Key pools are intentionally NOT torn down here — a reload re-syncs every
+	 * still-configured pool via {@link setConfigApiKeys}, and soft-deleting +
+	 * re-inserting would churn row ids and orphan persisted rate-limit blocks
+	 * and session stickiness. Stale providers are removed after the reload by
+	 * {@link pruneConfigApiKeyPools}.
 	 */
 	clearConfigApiKeys(): void {
 		this.#configOverrides.clear();
+	}
+
+	/**
+	 * Register/reconcile a config-sourced multi-key pool (models.yml
+	 * `providers.<name>.apiKeys`).
+	 *
+	 * Keys are matched to existing rows by exact value, so re-syncing an
+	 * unchanged list preserves row ids — and with them the persisted
+	 * usage-limit blocks and session stickiness that reference those ids.
+	 * Keys dropped from the config are soft-deleted; new keys are inserted.
+	 * Selection policy defaults to `first-fill` (drain the first key until a
+	 * usage-limit block rotates to the next); pass `"round-robin"` to spread
+	 * every resolution across the pool.
+	 */
+	setConfigApiKeys(provider: string, keys: readonly string[], policy: ApiKeyPoolPolicy = "first-fill"): void {
+		const dedupedKeys = [...new Set(keys.filter(key => key.length > 0))];
+		if (dedupedKeys.length === 0) {
+			this.#removeConfigApiKeyPool(provider);
+			return;
+		}
+		this.#configPoolPolicies.set(provider, policy);
+		const keySet = new Set(dedupedKeys);
+		const existing = this.#getStoredCredentials(provider).filter(
+			(entry): entry is StoredCredential & { credential: ApiKeyCredential } =>
+				entry.credential.type === "api_key" && entry.credential.source === "config",
+		);
+		const existingKeys = new Set(existing.map(entry => entry.credential.key));
+		let membershipChanged = false;
+		for (const key of dedupedKeys) {
+			if (existingKeys.has(key)) continue;
+			this.#store.upsertAuthCredentialForProvider(provider, { type: "api_key", key, source: "config" });
+			membershipChanged = true;
+		}
+		for (const entry of existing) {
+			if (keySet.has(entry.credential.key)) continue;
+			this.#store.deleteAuthCredential(entry.id, "removed from models.yml apiKeys");
+			membershipChanged = true;
+		}
+		if (membershipChanged) {
+			this.#refreshCredentialsFromStore(provider);
+			this.#resetProviderAssignments(provider);
+		}
+	}
+
+	/**
+	 * Tear down config-sourced pools for providers absent from `activeProviders`.
+	 * Called after a config (re)load with the set of providers whose `apiKeys`
+	 * were just synced, so pools dropped from the config actually disappear.
+	 * Rows are identified from the persistent store, so pools configured before
+	 * a process restart are still pruned correctly.
+	 */
+	pruneConfigApiKeyPools(activeProviders: ReadonlySet<string>): void {
+		for (const provider of this.#configPoolPolicies.keys()) {
+			if (!activeProviders.has(provider)) this.#configPoolPolicies.delete(provider);
+		}
+		let stored: StoredAuthCredential[];
+		try {
+			stored = this.#store.listAuthCredentials();
+		} catch (err) {
+			logger.debug("Failed to enumerate stored credentials for config pool pruning", { err });
+			return;
+		}
+		const staleProviders = new Set<string>();
+		for (const record of stored) {
+			if (record.credential.type !== "api_key" || record.credential.source !== "config") continue;
+			if (!activeProviders.has(record.provider)) staleProviders.add(record.provider);
+		}
+		for (const provider of staleProviders) {
+			this.#removeConfigApiKeyPool(provider);
+		}
+	}
+
+	/**
+	 * Whether `provider`'s auth is pinned by user config — single `apiKey`
+	 * override or an `apiKeys` pool. Used to suppress broker OAuth identity
+	 * (account ids, OAuth credential listing) for config-owned providers.
+	 */
+	#hasConfigAuth(provider: string): boolean {
+		return this.#configOverrides.has(provider) || this.#configPoolPolicies.has(provider);
+	}
+
+	/** Soft-delete every config-sourced pool row of `provider` and drop its policy. */
+	#removeConfigApiKeyPool(provider: string): void {
+		this.#configPoolPolicies.delete(provider);
+		const configRows = this.#getStoredCredentials(provider).filter(
+			(entry): entry is StoredCredential & { credential: ApiKeyCredential } =>
+				entry.credential.type === "api_key" && entry.credential.source === "config",
+		);
+		if (configRows.length === 0) return;
+		for (const entry of configRows) {
+			this.#store.deleteAuthCredential(entry.id, "removed from models.yml apiKeys");
+		}
+		this.#refreshCredentialsFromStore(provider);
+		this.#resetProviderAssignments(provider);
+	}
+
+	/** Re-list a provider's rows from the store into the in-memory snapshot. */
+	#refreshCredentialsFromStore(provider: string): void {
+		const records = this.#store.listAuthCredentials(provider);
+		this.#setStoredCredentials(
+			provider,
+			records.map(record => ({ id: record.id, credential: record.credential })),
+		);
 	}
 
 	/**
@@ -2241,6 +2377,7 @@ export class AuthStorage {
 		sessionId: string | undefined,
 		options: AuthApiKeyOptions | undefined,
 		filter?: (credential: ApiKeyCredential) => boolean,
+		poolPolicy?: ApiKeyPoolPolicy,
 	): Promise<ApiKeySelection | undefined> {
 		const credentials = this.#getCredentialsForProvider(provider)
 			.map((credential, index) => ({ credential, index }))
@@ -2253,9 +2390,18 @@ export class AuthStorage {
 		if (credentials.length === 1) return credentials[0];
 
 		const providerKey = this.#getProviderTypeKey(provider, "api_key");
-		const order = this.#getCredentialOrder(providerKey, sessionId, credentials.length);
+		// An explicit pool policy (config `apiKeys`) overrides the default
+		// session-hash order: first-fill walks config order, round-robin rotates
+		// per resolve. Both skip usage-aware ranking — the user dictated the
+		// distribution, and relay keys rarely expose a usage probe anyway.
+		const order =
+			poolPolicy === "first-fill"
+				? credentials.map((_, index) => index)
+				: poolPolicy === "round-robin"
+					? this.#getCredentialOrder(providerKey, undefined, credentials.length)
+					: this.#getCredentialOrder(providerKey, sessionId, credentials.length);
 		const fallback = credentials[order[0]];
-		const strategy = this.#rankingStrategyResolver?.(provider);
+		const strategy = poolPolicy ? undefined : this.#rankingStrategyResolver?.(provider);
 		if (!strategy) {
 			for (const idx of order) {
 				const candidate = credentials[idx];
@@ -2895,6 +3041,13 @@ export class AuthStorage {
 		if (this.#runtimeOverrides.has(provider)) return { kind: "runtime" };
 		if (this.#configOverrides.has(provider)) return { kind: "config" };
 		const stored = this.#getCredentialsForProvider(provider);
+		// Config pool rows outrank OAuth/login in the getApiKey cascade.
+		if (
+			this.#configPoolPolicies.has(provider) &&
+			stored.some(credential => credential.type === "api_key" && credential.source === "config")
+		) {
+			return { kind: "config" };
+		}
 		if (stored.some(credential => credential.type === "oauth")) return { kind: "oauth" };
 		if (stored.some(credential => credential.type === "api_key" && credential.source === "login")) {
 			return { kind: "api_key" };
@@ -2928,7 +3081,7 @@ export class AuthStorage {
 
 		// Runtime / config overrides bypass OAuth account_uuid attribution — the
 		// caller is authenticating with an explicit key, not the broker's OAuth.
-		if (this.#runtimeOverrides.has(provider) || this.#configOverrides.has(provider)) return undefined;
+		if (this.#runtimeOverrides.has(provider) || this.#hasConfigAuth(provider)) return undefined;
 
 		// Prefer the session-sticky credential when available.
 		const sessionPref = this.#getSessionCredential(provider, sessionId);
@@ -5710,6 +5863,20 @@ export class AuthStorage {
 			return configKey;
 		}
 
+		// Config key pool (models.yml apiKeys): preflight only needs any live
+		// key; #selectCredentialByType already skips usage-limit-blocked rows.
+		if (this.#configPoolPolicies.has(provider)) {
+			const configPoolSelection = this.#selectCredentialByType(
+				provider,
+				"api_key",
+				undefined,
+				credential => credential.type === "api_key" && credential.source === "config",
+			);
+			if (configPoolSelection) {
+				return this.#configValueResolver(configPoolSelection.credential.key);
+			}
+		}
+
 		// Precedence: a deliberate OAuth/login credential wins, then an explicit env var,
 		// then a stored static api_key (which may be a stale broker-migrated copy) as a last resort.
 		const oauthSelection = this.#selectCredentialByType(provider, "oauth");
@@ -5753,11 +5920,13 @@ export class AuthStorage {
 	 * Priority (first match wins):
 	 * 1. Runtime override (CLI --api-key)
 	 * 2. Config override (models.yml `providers.<name>.apiKey`)
-	 * 3. OAuth token from storage (auto-refreshed)
-	 * 4. API key persisted by a successful `/login`
-	 * 5. Environment variable
-	 * 6. Stored API key (e.g. a broker-migrated copy) — last resort, so an explicit env var wins
-	 * 7. Fallback resolver (models.yml custom providers, last-resort)
+	 * 3. Config key pool (models.yml `providers.<name>.apiKeys`, first-fill or
+	 *    round-robin per `apiKeyRotation`, skipping usage-limit-blocked keys)
+	 * 4. OAuth token from storage (auto-refreshed)
+	 * 5. API key persisted by a successful `/login`
+	 * 6. Environment variable
+	 * 7. Stored API key (e.g. a broker-migrated copy) — last resort, so an explicit env var wins
+	 * 8. Fallback resolver (models.yml custom providers, last-resort)
 	 */
 	async getApiKey(provider: string, sessionId?: string, options?: AuthApiKeyOptions): Promise<string | undefined> {
 		// Runtime override takes highest priority
@@ -5774,6 +5943,24 @@ export class AuthStorage {
 		const configKey = this.#configOverrides.get(provider);
 		if (configKey) {
 			return configKey;
+		}
+
+		// Config key pool: same precedence reasoning as the single-key override —
+		// config-pinned keys authenticate the config-pinned endpoint. The pool
+		// adds block-aware rotation on top (see #selectApiKeyCredential).
+		const configPoolPolicy = this.#configPoolPolicies.get(provider);
+		if (configPoolPolicy) {
+			const configPoolSelection = await this.#selectApiKeyCredential(
+				provider,
+				sessionId,
+				options,
+				credential => credential.source === "config",
+				configPoolPolicy,
+			);
+			if (configPoolSelection) {
+				this.#recordSessionCredential(provider, sessionId, "api_key", configPoolSelection.index);
+				return this.#configValueResolver(configPoolSelection.credential.key);
+			}
 		}
 
 		// Precedence: a deliberate OAuth/login credential wins, then an explicit env var,
@@ -5838,7 +6025,7 @@ export class AuthStorage {
 		// Runtime / config overrides intentionally short-circuit OAuth: when the
 		// user has pinned an API key, they expect the OAuth identity to be
 		// suppressed (same contract as `getOAuthAccountId`).
-		if (this.#runtimeOverrides.has(provider) || this.#configOverrides.has(provider)) {
+		if (this.#runtimeOverrides.has(provider) || this.#hasConfigAuth(provider)) {
 			return undefined;
 		}
 		const resolved = await this.#resolveOAuthSelection(provider, sessionId, options);
@@ -5935,7 +6122,7 @@ export class AuthStorage {
 	 * credential.
 	 */
 	listOAuthAccounts(provider: string, sessionId?: string): OAuthAccountSummary[] {
-		if (this.#runtimeOverrides.has(provider) || this.#configOverrides.has(provider)) {
+		if (this.#runtimeOverrides.has(provider) || this.#hasConfigAuth(provider)) {
 			return [];
 		}
 		const sessionCredential = this.#getSessionCredential(provider, sessionId);
@@ -5974,7 +6161,7 @@ export class AuthStorage {
 		credentialId: number,
 		options?: { lastUsedAtMs?: number },
 	): boolean {
-		if (!sessionId || this.#runtimeOverrides.has(provider) || this.#configOverrides.has(provider)) {
+		if (!sessionId || this.#runtimeOverrides.has(provider) || this.#hasConfigAuth(provider)) {
 			return false;
 		}
 		const stored = this.#getStoredCredentials(provider);
@@ -5994,7 +6181,7 @@ export class AuthStorage {
 	 * exercise each stored account exactly once.
 	 */
 	async getOAuthAccesses(provider: string, options?: AuthApiKeyOptions): Promise<OAuthAccessResolution[]> {
-		if (this.#runtimeOverrides.has(provider) || this.#configOverrides.has(provider)) {
+		if (this.#runtimeOverrides.has(provider) || this.#hasConfigAuth(provider)) {
 			return [];
 		}
 		const providerKey = this.#getProviderTypeKey(provider, "oauth");
@@ -6021,7 +6208,7 @@ export class AuthStorage {
 		position: number,
 		options?: AuthApiKeyOptions,
 	): Promise<OAuthAccessResolution | undefined> {
-		if (this.#runtimeOverrides.has(provider) || this.#configOverrides.has(provider)) {
+		if (this.#runtimeOverrides.has(provider) || this.#hasConfigAuth(provider)) {
 			return undefined;
 		}
 		const selection = this.#getStoredOAuthSelections(provider)[position];
@@ -6046,7 +6233,7 @@ export class AuthStorage {
 		credentialId: number,
 		options?: AuthApiKeyOptions,
 	): Promise<OAuthAccessResolution | undefined> {
-		if (this.#runtimeOverrides.has(provider) || this.#configOverrides.has(provider)) {
+		if (this.#runtimeOverrides.has(provider) || this.#hasConfigAuth(provider)) {
 			return undefined;
 		}
 		const selection = this.#getStoredOAuthSelections(provider).find(
@@ -7113,13 +7300,14 @@ export class AuthStorage {
 	 * Describe where the active credential for a provider came from.
 	 *
 	 * Mirrors {@link AuthStorage.getApiKey} precedence, highest first:
-	 *   1. Runtime override (`--api-key`).
-	 *   2. Config override (`models.yml` `providers.<name>.apiKey`).
-	 *   3. Stored OAuth credential.
-	 *   4. API key persisted by a successful `/login`.
-	 *   5. Env var — overrides a stored static api_key (e.g. a stale broker copy).
-	 *   6. Stored api_key credential.
-	 *   7. Fallback resolver.
+	 * 1. Runtime override (`--api-key`).
+	 * 2. Config override (`models.yml` `providers.<name>.apiKey`).
+	 * 3. Config key pool (`models.yml` `providers.<name>.apiKeys`).
+	 * 4. Stored OAuth credential.
+	 * 5. API key persisted by a successful `/login`.
+	 * 6. Env var — overrides a stored static api_key (e.g. a stale broker copy).
+	 * 7. Stored api_key credential.
+	 * 8. Fallback resolver.
 	 *
 	 * The string is purely informational; consumers must not parse it.
 	 */
@@ -7129,6 +7317,10 @@ export class AuthStorage {
 		}
 		if (this.#configOverrides.has(provider)) {
 			return "config override (models.yml)";
+		}
+		if (this.#configPoolPolicies.has(provider)) {
+			const policy = this.#configPoolPolicies.get(provider);
+			return `config key pool (models.yml apiKeys, ${policy})`;
 		}
 
 		const baseLabel = this.#sourceLabel ?? "local store";

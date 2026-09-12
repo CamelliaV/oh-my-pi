@@ -300,6 +300,17 @@ export const getModelsConfigSchemaBundle = once(() => {
 	const ProviderConfigSchema = type({
 		"baseUrl?": "string",
 		"apiKey?": "string",
+		/**
+		 * Multiple API keys forming a rotation pool (auth_credentials rows with
+		 * source "config"). Mutually exclusive with `apiKey`.
+		 */
+		"apiKeys?": "string[]",
+		/**
+		 * Pool selection policy for `apiKeys`: `first-fill` (default) uses the
+		 * first unblocked key until a usage-limit block rotates to the next;
+		 * `round-robin` spreads every resolution across the pool.
+		 */
+		"apiKeyRotation?": '"first-fill" | "round-robin"',
 		"api?": ApiSchema,
 		"headers?": { "[string]": "string" },
 		"compat?": ApiCompatSchema,
@@ -341,6 +352,20 @@ export const getModelsConfigSchemaBundle = once(() => {
 		}
 		if (value.apiKey !== undefined && typeof value.apiKey === "string" && value.apiKey.length === 0) {
 			return ctx.mustBe("apiKey a non-empty string");
+		}
+		if (value.apiKey !== undefined && value.apiKeys !== undefined) {
+			return ctx.mustBe("either apiKey or apiKeys, not both");
+		}
+		if (value.apiKeys !== undefined) {
+			if (value.apiKeys.length === 0) {
+				return ctx.mustBe("apiKeys a non-empty array (or use apiKey)");
+			}
+			if (value.apiKeys.some(key => key.length === 0)) {
+				return ctx.mustBe("apiKeys entries non-empty strings");
+			}
+		}
+		if (value.apiKeyRotation !== undefined && value.apiKeys === undefined) {
+			return ctx.mustBe("apiKeyRotation requires apiKeys");
 		}
 		return true;
 	});

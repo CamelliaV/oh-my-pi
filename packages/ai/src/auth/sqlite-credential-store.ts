@@ -116,7 +116,8 @@ function normalizeStoredIdentityKey(identityKey: string | null | undefined): str
 
 export function serializeCredential(provider: string, credential: AuthCredential): SerializedCredentialRecord | null {
 	if (credential.type === "api_key") {
-		const data = credential.source === "login" ? { key: credential.key, source: "login" } : { key: credential.key };
+		const data =
+			credential.source !== undefined ? { key: credential.key, source: credential.source } : { key: credential.key };
 		return {
 			credentialType: "api_key",
 			data: JSON.stringify(data),
@@ -147,7 +148,7 @@ function deserializeCredential(row: AuthRow): AuthCredential | null {
 	if (row.credential_type === "api_key") {
 		const data = parsed as Record<string, unknown>;
 		if (typeof data.key === "string") {
-			const source = data.source === "login" ? "login" : undefined;
+			const source = data.source === "login" || data.source === "config" ? data.source : undefined;
 			return source ? { type: "api_key", key: data.key, source } : { type: "api_key", key: data.key };
 		}
 	}

@@ -1,5 +1,5 @@
 import * as path from "node:path";
-import type { ApiKeyResolver, FetchImpl, UsageProvider } from "@oh-my-pi/pi-ai";
+import type { ApiKeyPoolPolicy, ApiKeyResolver, FetchImpl, UsageProvider } from "@oh-my-pi/pi-ai";
 import { registerCustomApi, unregisterCustomApis } from "@oh-my-pi/pi-ai/api-registry";
 import { registerOAuthProvider, unregisterOAuthProvider, unregisterOAuthProviders } from "@oh-my-pi/pi-ai/oauth";
 import type { OAuthCredentials, OAuthLoginCallbacks } from "@oh-my-pi/pi-ai/oauth/types";
@@ -224,6 +224,13 @@ export class ModelRegistry {
 	#internedStaticModels: Map<string, Model<Api>> = new Map();
 	#providerLookupSnapshots: Map<string, Model<Api>[]> = new Map();
 	#customProviderApiKeys: Map<string, string> = new Map();
+	/**
+	 * Raw (pre-resolution, `!cmd` intact) multi-key pools from models.yml
+	 * `providers.<name>.apiKeys`, plus their rotation policy. Populated during
+	 * every config load; membership is the source of truth for
+	 * {@link AuthStorage.pruneConfigApiKeyPools} after each load.
+	 */
+	#customProviderApiKeyPools: Map<string, { keys: string[]; rotation: ApiKeyPoolPolicy }> = new Map();
 	// Every command-backed (`!cmd`) config value a provider carries — apiKey plus
 	// provider/model-override header values — keyed by provider. The 401 auth
 	// retry invalidates these command caches so refreshed credentials reach the
@@ -287,7 +294,16 @@ export class ModelRegistry {
 
 	#resolveCommandBackedApiKey(provider: string, options?: { forceCommandRefresh?: boolean }): CommandApiKeyResolution {
 		const keyConfig = this.#customProviderApiKeys.get(provider);
-		if (!isCommandConfigValue(keyConfig)) return { configured: false };
+		if (!isCommandConfigValue(keyConfig)) {
+			const pool = this.#customProviderApiKeyPools.get(provider);
+			if (pool?.keys.some(isCommandConfigValue)) {
+				// Pool with command-backed entries: re-resolve and re-sync rows, then
+				// report "not command-configured" so the caller continues into the
+				// AuthStorage cascade and the pool branch serves the request.
+				this.#installProviderApiKeys(provider, pool.keys, pool.rotation, options);
+			}
+			return { configured: false };
+		}
 		const value = resolveConfigValue(keyConfig, options);
 		if (value) {
 			this.authStorage.setConfigApiKey(provider, value);
@@ -304,10 +320,12 @@ export class ModelRegistry {
 	 */
 	#collectCommandConfigValues(
 		target: Set<string>,
-		apiKey: string | undefined,
+		apiKey: string | readonly string[] | undefined,
 		headers: Record<string, string> | undefined,
 	): void {
-		if (isCommandConfigValue(apiKey)) target.add(apiKey);
+		for (const value of Array.isArray(apiKey) ? apiKey : [apiKey]) {
+			if (isCommandConfigValue(value)) target.add(value);
+		}
 		if (!headers) return;
 		for (const key in headers) {
 			const value = headers[key];
@@ -324,6 +342,9 @@ export class ModelRegistry {
 	 */
 	#invalidateProviderCommandConfigs(provider: string): void {
 		invalidateCommandConfig(this.#customProviderApiKeys.get(provider));
+		for (const poolKey of this.#customProviderApiKeyPools.get(provider)?.keys ?? []) {
+			invalidateCommandConfig(poolKey);
+		}
 		const configs = this.#commandConfigsByProvider.get(provider);
 		if (!configs) return;
 		for (const config of configs) invalidateCommandConfig(config);
@@ -337,6 +358,26 @@ export class ModelRegistry {
 		} else if (isCommandConfigValue(keyConfig)) {
 			this.authStorage.removeConfigApiKey(provider);
 		}
+	}
+
+	/**
+	 * Install a models.yml `apiKeys` multi-key pool. Entries may individually be
+	 * command-backed (`!cmd`); each is resolved and the resolved values are what
+	 * get stored (the stored key must equal the wire bearer for usage-limit
+	 * rotation to attribute blocks to the right row). Entries failing resolution
+	 * are skipped; if none resolve, the pool is torn down for this cycle.
+	 */
+	#installProviderApiKeys(
+		provider: string,
+		keyConfigs: readonly string[],
+		rotation: ApiKeyPoolPolicy = "first-fill",
+		options?: { forceCommandRefresh?: boolean },
+	): void {
+		this.#customProviderApiKeyPools.set(provider, { keys: [...keyConfigs], rotation });
+		const resolved = keyConfigs
+			.map(keyConfig => resolveConfigValue(keyConfig, options))
+			.filter((key): key is string => Boolean(key));
+		this.authStorage.setConfigApiKeys(provider, resolved, rotation);
 	}
 
 	/**
@@ -691,6 +732,7 @@ export class ModelRegistry {
 		}
 		this.#modelsConfigFile.invalidate();
 		this.#customProviderApiKeys.clear();
+		this.#customProviderApiKeyPools.clear();
 		this.#keylessProviders.clear();
 		this.#discoverableProviders = [];
 		// Drop config-sourced apiKeys from AuthStorage before reload; entries
@@ -746,6 +788,9 @@ export class ModelRegistry {
 		this.#cachedDiscoverableModels = logger.time("modelRegistry:loadDiscoverableModels", () =>
 			this.#applyHardcodedModelPolicies(this.#loadCachedDiscoverableModels()),
 		);
+		// Retire pools whose provider no longer appears in models.yml; pools kept
+		// in the config were already reconciled in place by #installProviderApiKeys.
+		this.authStorage.pruneConfigApiKeyPools(new Set(this.#customProviderApiKeyPools.keys()));
 		this.#lastStaticLoadMtime = this.#modelsConfigFile.getMtimeMs();
 	}
 
@@ -1339,7 +1384,11 @@ export class ModelRegistry {
 		for (const [providerName, providerConfig] of providerEntries) {
 			const resolvedProviderHeaders = resolveConfigHeaders(providerConfig.headers);
 			const commandConfigs = new Set<string>();
-			this.#collectCommandConfigValues(commandConfigs, providerConfig.apiKey, providerConfig.headers);
+			this.#collectCommandConfigValues(
+				commandConfigs,
+				providerConfig.apiKey ?? providerConfig.apiKeys,
+				providerConfig.headers,
+			);
 			for (const modelDef of providerConfig.models ?? []) {
 				this.#collectCommandConfigValues(commandConfigs, undefined, modelDef.headers);
 			}
@@ -1408,6 +1457,9 @@ export class ModelRegistry {
 			// must authenticate the outbound request.
 			if (providerConfig.apiKey) {
 				this.#installProviderApiKey(providerName, providerConfig.apiKey);
+			}
+			if (providerConfig.apiKeys) {
+				this.#installProviderApiKeys(providerName, providerConfig.apiKeys, providerConfig.apiKeyRotation);
 			}
 
 			// Parse per-model overrides. Header values are kept raw (`!cmd` intact)
@@ -2168,6 +2220,9 @@ export class ModelRegistry {
 			if (providerConfig.apiKey) {
 				this.#installProviderApiKey(providerName, providerConfig.apiKey);
 			}
+			if (providerConfig.apiKeys) {
+				this.#installProviderApiKeys(providerName, providerConfig.apiKeys, providerConfig.apiKeyRotation);
+			}
 			for (const modelDef of modelDefs) {
 				const providerCompat = providerConfig.disableStrictTools
 					? mergeCompat(providerConfig.compat, { disableStrictTools: true })
@@ -2319,7 +2374,8 @@ export class ModelRegistry {
 	 */
 	hasCommandBackedApiKey(provider: string): boolean {
 		const keyConfig = this.#customProviderApiKeys.get(provider);
-		return isCommandConfigValue(keyConfig);
+		if (isCommandConfigValue(keyConfig)) return true;
+		return this.#customProviderApiKeyPools.get(provider)?.keys.some(isCommandConfigValue) ?? false;
 	}
 
 	getDiscoverableProviders(): string[] {

@@ -679,6 +679,46 @@ reasoning matters.
    `web-search-codex`/`browser-tabs`/Jina failures reproduce on a stashed
    clean tree, so they are unrelated to this patch.
 
+31. `fix(session)` mid-stream transport death after committed text now
+   resumes instead of pinning the error — `The socket connection was closed
+   unexpectedly` / `stream closed before a finish_reason` / HTTP/2 reset /
+   stall killed a turn's provider stream *after* user-visible text had
+   already rendered. `TurnRecovery.isRetryableError` declined replay
+   (`#hasReplayUnsafeOutput` is a *redaction* guard, not an instability
+   signal), so the turn settled as a terminal error even though nothing about
+   the retry would duplicate anything the user saw — except the already-
+   rendered text, which replaying WOULD repeat. The two existing recovery
+   exit paths were both wrong here: `classifyResolvedInterruptedToolTurn`
+   only kicks in when every emitted tool call already has a result, and the
+   generic replay path repeats the visible prefix. `packages/coding-agent/
+   src/session/turn-recovery.ts` gains a third path — `handlePartialStreamDeath`
+   — that pops a bounded continuation (`PARTIAL_STREAM_RESUME_MAX_ATTEMPTS = 3`,
+   counter reset on a healthy settle) and appends a hidden `developer` resume
+   directive (`prompts/system/partial-stream-resume.md`, rendered with a
+   retry counter) that becomes the last turn and primes the model to finish the
+   interrupted output rather than start over. `Agent.continue()` then accepts
+   the turn because the transcript tail is the directive, not the assistant
+   message. The agent-session settle chain gets a new branch in
+   `session/agent-session.ts` between the existing stream-stall /
+   classification fallbacks, and the stagnation guard factory
+   `matchesMidStreamDeathText` now covers the Bun socket-close wording
+   (`isUnexpectedSocketCloseMessage` from `@oh-my-pi/pi-utils`) plus `other
+   side closed` alongside the existing stall / HTTP/2-reset / premature-close
+   pumps so all three share one predicate. Tool-turn and private-history
+   continuations are explicitly NOT redirected — `#toolCallsAllResolved`
+   bails out to the resolved-turn path. Verified by a permanent regression
+   test (`packages/coding-agent/test/partial-stream-death.test.ts`) that
+   drives the failing session shape end-to-end: a mock that dies mid-stream
+   with the exact Bun socket-close wording after committed text produces
+   exactly two model requests — the resumed prompt ends in the hidden
+   developer directive, the partial turn stays in place, output is not
+   repeated, and the saga terminates on either success or the 3rd such death
+   (asserted via `requests.length === 4`); before the fix the same shape
+   produced one request and a surface-level error. Also ran the sibling
+   recovery suites (`agent-session-retry-recovery`,
+   `agent-session-thinking-loop-retry`, `turn-recovery-replay-unsafe`) — 73
+   pass, 0 fail.
+
 
 ## Merge adjudications (v18.0.10 → v18.1.6 → v18.1.10, 2026-09-04)
 

@@ -1,8 +1,10 @@
 import type { AgentTool, AgentToolResult } from "@oh-my-pi/pi-agent-core";
+import { toolWireSchema, validateToolArguments } from "@oh-my-pi/pi-ai";
 import { isRecord } from "@oh-my-pi/pi-utils";
 import { INTENT_FIELD } from "@oh-my-pi/pi-wire";
 import type { ToolSession } from "../../tools";
 import { ToolError } from "../../tools/tool-errors";
+import { schemaDeclaresIntentField } from "../../utils/tool-schema";
 import { invokeEvalPrelude } from "../preludes";
 import { EVAL_AGENT_BRIDGE_NAME, type EvalAgentHandleResult, runEvalAgent } from "../agent-bridge";
 import { EVAL_BUDGET_BRIDGE_NAME, type EvalBudgetResult, runEvalBudget } from "../budget-bridge";
@@ -16,15 +18,21 @@ import {
 	runEvalStatus,
 	runEvalWait,
 } from "../handle-bridge";
+import type { EvalShadowCellSession } from "../speculation/cell-session";
+import { getActiveEvalShadowCell } from "../speculation/runtime-context";
 import { EVAL_WORKPOOL_BRIDGE_NAME, type EvalWorkpoolResult, runEvalWorkpool } from "../workpool-bridge";
+import type { RuntimeCallIdentity } from "./shared/runtime";
 import type { JsStatusEvent } from "./shared/types";
 
 export type { JsStatusEvent } from "./shared/types";
 
-interface ToolBridgeOptions {
+export interface ToolBridgeOptions {
 	session: ToolSession;
 	signal?: AbortSignal;
 	emitStatus?: (event: JsStatusEvent) => void;
+	defaultIntent?: string;
+	identity?: RuntimeCallIdentity;
+	shadowCell?: EvalShadowCellSession;
 }
 
 type ToolValue =
@@ -55,11 +63,11 @@ function getTool(session: ToolSession, name: string): AgentTool {
 	return tool;
 }
 
-function normalizeArgs(args: unknown): unknown {
+function normalizeArgs(args: unknown, defaultIntent?: string): unknown {
 	if (!isRecord(args)) return args;
 	const record = { ...args };
-	if (record[INTENT_FIELD] === undefined) {
-		record[INTENT_FIELD] = "js prelude";
+	if (defaultIntent !== undefined && !(INTENT_FIELD in record)) {
+		record[INTENT_FIELD] = defaultIntent;
 	}
 	return record;
 }
@@ -120,11 +128,11 @@ function summarizeToolResult(
 	}
 }
 
-function normalizeAgentToolResult(
+export function bridgeValueFromToolResult(
 	name: string,
 	args: unknown,
 	result: AgentToolResult,
-	options: ToolBridgeOptions,
+	emitStatus?: (event: JsStatusEvent) => void,
 ): ToolValue {
 	const textBlocks = result.content.filter(
 		(content): content is { type: "text"; text: string } =>
@@ -136,22 +144,45 @@ function normalizeAgentToolResult(
 	);
 	const text = textBlocks.map(block => block.text).join("");
 	const hasError = toolResultHasError(result);
-	options.emitStatus?.(summarizeToolResult(name, args, result, text, hasError));
-	if (result.details === undefined && imageBlocks.length === 0 && !hasError) {
-		return text;
-	}
-	const value: Exclude<ToolValue, string> = {
-		text,
-		details: result.details,
-	};
+	emitStatus?.(summarizeToolResult(name, args, result, text, hasError));
+	if (result.details === undefined && imageBlocks.length === 0 && !hasError) return text;
+	const value: Exclude<ToolValue, string> = { text, details: result.details };
 	if (imageBlocks.length > 0) {
-		value.images = imageBlocks.map(block => ({
-			mimeType: block.mimeType,
-			data: block.data,
-		}));
+		value.images = imageBlocks.map(block => ({ mimeType: block.mimeType, data: block.data }));
 	}
 	if (hasError) value.hasError = true;
 	return value;
+}
+
+function normalizeAgentToolResult(
+	name: string,
+	args: unknown,
+	result: AgentToolResult,
+	options: ToolBridgeOptions,
+): ToolValue {
+	return bridgeValueFromToolResult(name, args, result, options.emitStatus);
+}
+
+function waitForSpeculativeClaim<T>(claim: Promise<T>, signal?: AbortSignal): Promise<T> {
+	if (!signal) return claim;
+	signal.throwIfAborted();
+	const { promise, resolve, reject } = Promise.withResolvers<T>();
+	let settled = false;
+	let onAbort: () => void = () => {};
+	const finish = (settle: () => void): void => {
+		if (settled) return;
+		settled = true;
+		signal.removeEventListener("abort", onAbort);
+		settle();
+	};
+	onAbort = (): void =>
+		finish(() => reject(signal.reason ?? new DOMException("Speculative claim was interrupted", "AbortError")));
+	signal.addEventListener("abort", onAbort, { once: true });
+	void claim.then(
+		value => finish(() => resolve(value)),
+		error => finish(() => reject(error)),
+	);
+	return promise;
 }
 
 export async function callSessionTool(name: string, args: unknown, options: ToolBridgeOptions): Promise<ToolValue> {
@@ -201,8 +232,54 @@ export async function callSessionTool(name: string, args: unknown, options: Tool
 		throw new ToolError(`\`${name}\` cannot run through the eval bridge; call the direct \`${name}\` tool.`);
 	}
 	const tool = getTool(options.session, name);
-	const normalizedArgs = normalizeArgs(args);
 	const toolCallId = `js-${name}-${crypto.randomUUID()}`;
+	// A schema-owned name stays tool data across alternatives. Deleting an
+	// invalid value to make another branch match could select a different operation.
+	const intentIsDeclared = schemaDeclaresIntentField(toolWireSchema(tool));
+	const suppliedIntent = isRecord(args) ? args[INTENT_FIELD] : undefined;
+	const validationArgs = isRecord(args) ? { ...args } : args;
+	if (isRecord(validationArgs) && !intentIsDeclared) delete validationArgs[INTENT_FIELD];
+	let validatedArgs: unknown;
+	try {
+		validatedArgs = validateToolArguments(tool, {
+			type: "toolCall",
+			id: toolCallId,
+			name,
+			arguments: validationArgs as Record<string, unknown>,
+		});
+	} catch (error) {
+		if (!tool.lenientArgValidation) {
+			options.emitStatus?.({
+				op: name,
+				error: error instanceof Error ? error.message : String(error),
+			});
+			throw error;
+		}
+		if (isRecord(validationArgs)) {
+			const fallback = { ...validationArgs };
+			delete fallback.__parseError;
+			delete fallback.__rawJson;
+			validatedArgs = fallback;
+		} else {
+			validatedArgs = validationArgs;
+		}
+	}
+	if (isRecord(validatedArgs) && !intentIsDeclared && suppliedIntent !== undefined) {
+		validatedArgs[INTENT_FIELD] = suppliedIntent;
+	}
+	const normalizedArgs = normalizeArgs(
+		validatedArgs,
+		!intentIsDeclared ? (options.defaultIntent ?? "js prelude") : undefined,
+	);
+	const shadowCell = options.shadowCell ?? getActiveEvalShadowCell();
+	if (shadowCell && options.identity) {
+		const claimed = await waitForSpeculativeClaim(
+			shadowCell.claim(name, normalizedArgs, options.identity, Number.MAX_SAFE_INTEGER, options.signal),
+			options.signal,
+		);
+		options.signal?.throwIfAborted();
+		if (claimed) return bridgeValueFromToolResult(name, normalizedArgs, claimed, options.emitStatus);
+	}
 	try {
 		const result = await tool.execute(
 			toolCallId,

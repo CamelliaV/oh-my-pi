@@ -1139,9 +1139,9 @@ export function importFromDict(beam: BeamMemoryState, data: Record<string, unkno
 			if (exists) {
 				purgeMemoryArtifacts(db, [id]);
 				db.run("DELETE FROM episodic_memory WHERE id = ?", [id]);
-		}
-		if (exists || replacedEpisodes.has(id)) {
-			stats.episodic_memory.overwritten++;
+			}
+			if (exists || replacedEpisodes.has(id)) {
+				stats.episodic_memory.overwritten++;
 			} else {
 				stats.episodic_memory.inserted++;
 			}

@@ -1,11 +1,11 @@
 /**
  * SGR mouse report parsing (`\x1b[<button;col;rowM` / `…m`).
  *
- * Mouse tracking is enabled only while a fullscreen overlay holds the
- * alternate screen (see tui.ts MOUSE_TRACKING_ON), so consumers are
- * fullscreen components hit-testing against their own rendered frame:
- * the frame paints from screen row 0, hence `row`/`col` are exposed
- * 0-based for direct indexing into rendered lines.
+ * Mouse tracking is enabled while a fullscreen overlay holds the alternate
+ * screen (see tui.ts MOUSE_TRACKING_ON), or — opt-in via `tui.mouse` — on the
+ * normal buffer whenever no overlay is visible. Consumers hit-test
+ * against their own rendered frame: the frame paints from screen row 0, hence
+ * `row`/`col` are exposed 0-based for direct indexing into rendered lines.
  */
 
 /** A decoded SGR mouse report. */
@@ -18,7 +18,13 @@ export interface SgrMouseEvent {
 	row: number;
 	/** True for a release report (`m` suffix). */
 	release: boolean;
-	/** Wheel direction: -1 up, 1 down, null when not a vertical wheel event. */
+	/**
+	 * Vertical wheel direction: -1 up, 1 down, null when not a vertical wheel
+	 * event. Horizontal wheel reports (buttons 66/67, the sideways drift of a
+	 * two-finger trackpad scroll) surface as wheelX instead: reporting them as
+	 * a vertical direction scrolled selectors up and back down at the end of a
+	 * gesture.
+	 */
 	wheel: -1 | 1 | null;
 	/** Horizontal wheel (tilt wheel / trackpad horizontal scroll): -1 left, 1 right, null when absent. */
 	wheelX: -1 | 1 | null;

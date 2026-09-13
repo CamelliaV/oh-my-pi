@@ -2001,7 +2001,10 @@ describe("anthropic usage input dialect", () => {
 
 	it("falls back to recorded cache buckets when the delta repeats input without cache fields", async () => {
 		vi.spyOn(AnthropicMessages.prototype, "create").mockImplementation(
-			() => createMockRequest(relayUsageEvents({ input_tokens: INCLUSIVE_INPUT_TOKENS, output_tokens: 1_400 })) as never,
+			() =>
+				createMockRequest(
+					relayUsageEvents({ input_tokens: INCLUSIVE_INPUT_TOKENS, output_tokens: 1_400 }),
+				) as never,
 		);
 
 		const stream = streamAnthropic(inclusiveRelayModel, context, { apiKey: "sk-relay-test" });

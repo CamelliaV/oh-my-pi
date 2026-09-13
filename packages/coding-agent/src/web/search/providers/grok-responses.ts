@@ -451,7 +451,11 @@ export async function searchGrokResponses(params: GrokResponsesSearchParams): Pr
 
 	if (!parsed.answer && parsed.sources.length === 0) {
 		const providerLabel = params.providerId === "xai" ? "xAI" : "Grok";
-		throw new SearchProviderError(params.providerId, `${providerLabel} web_search returned no answer or sources`, 502);
+		throw new SearchProviderError(
+			params.providerId,
+			`${providerLabel} web_search returned no answer or sources`,
+			502,
+		);
 	}
 	return parsed;
 }

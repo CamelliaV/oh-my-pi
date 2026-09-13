@@ -6,23 +6,28 @@
  */
 import path from "node:path";
 import type { Component } from "@oh-my-pi/pi-tui";
-import { Container, Markdown, Text } from "@oh-my-pi/pi-tui";
+import { Container, Markdown, Text, visibleWidth, wrapTextWithAnsi } from "@oh-my-pi/pi-tui";
 import { formatNumber, sanitizeText } from "@oh-my-pi/pi-utils";
-import { settings } from "../config/settings";
 import type { RenderResultOptions } from "../extensibility/custom-tools/types";
 import { formatContextUsage } from "../modes/components/status-line/context-thresholds";
 import { getMarkdownTheme, type Theme } from "../modes/theme/theme";
 import { stripGeneratedOutputNotice, stripRawOutputArtifactNotice } from "../tools/output-meta";
 import {
 	capPreviewLines,
+	FEED_MODEL_BADGE_WIDTH,
 	formatBadge,
 	formatDuration,
 	formatExpandHint,
+	formatFeedModelBadge,
 	formatMoreItems,
+	formatStatusIcon,
+	isFeedModelBadgeEnabled,
 	previewLine,
 	previewWindowRows,
 	replaceTabs,
+	shortenPath,
 	type ToolUIStatus,
+	TRUNCATE_LENGTHS,
 	truncateToWidth,
 } from "../tools/render-utils";
 import {
@@ -33,7 +38,7 @@ import {
 	parseFindingDetails,
 	type SubmitReviewDetails,
 } from "../tools/review";
-import { framedBlock, renderStatusLine } from "../tui";
+import { framedBlock, outputBlockContentWidth, renderStatusLine } from "../tui";
 import { executionDisplayText, presentSubagentExecution } from "./execution-view";
 import { repairDoubleEncodedJsonString } from "./repair-args";
 import { subprocessToolRegistry } from "./subprocess-tool-registry";
@@ -77,8 +82,6 @@ function appendAgentStats(
 		contextTokens?: number;
 		contextWindow?: number;
 		cost: number;
-		resolvedModel?: string;
-		showResolvedModelBadge?: boolean;
 	},
 	theme: Theme,
 ): string {
@@ -98,9 +101,6 @@ function appendAgentStats(
 	}
 	if (opts.cost > 0) {
 		line += `${theme.sep.dot}${theme.fg("statusLineCost", `$${opts.cost.toFixed(2)}`)}`;
-	}
-	if (opts.resolvedModel && opts.showResolvedModelBadge) {
-		line += `${theme.sep.dot}${theme.fg("dim", truncateToWidth(replaceTabs(opts.resolvedModel), 30))}`;
 	}
 	return line;
 }
@@ -862,6 +862,37 @@ export function renderCall(args: TaskParams, options: TaskRenderOptions, theme: 
 	});
 }
 
+function truncateTaskRow(text: string, width: number, ellipsis?: ""): string {
+	return Number.isFinite(width) ? truncateToWidth(text, width, ellipsis) : text;
+}
+
+function renderDescriptionLines(description: string, prefix: string, width: number, theme: Theme): string[] {
+	if (!Number.isFinite(width)) return description.split("\n").map(line => `${prefix}${theme.fg("dim", line)}`);
+	const boundedPrefix = truncateToWidth(prefix, Math.max(0, width - 1), "");
+	const contentWidth = Math.max(1, width - visibleWidth(boundedPrefix));
+	return wrapTextWithAnsi(description, contentWidth).map(line => `${boundedPrefix}${theme.fg("dim", line)}`);
+}
+
+/**
+ * Get status icon for agent state.
+ * For running status, uses animated spinner if spinnerFrame is provided.
+ * Maps AgentProgress status to styled icon format.
+ */
+function getStatusIcon(status: AgentProgress["status"], theme: Theme, spinnerFrame?: number): string {
+	switch (status) {
+		case "pending":
+			return formatStatusIcon("pending", theme);
+		case "running":
+			return formatStatusIcon("running", theme, spinnerFrame);
+		case "completed":
+			return formatStatusIcon("success", theme);
+		case "failed":
+			return formatStatusIcon("error", theme);
+		case "aborted":
+			return formatStatusIcon("aborted", theme);
+	}
+}
+
 /**
  * Render streaming progress for a single agent.
  */
@@ -876,39 +907,96 @@ function renderAgentProgress(
 	seenNestedTasks?: WeakSet<object>,
 	nestedDepth = 0,
 	nowMs = Date.now(),
+	maxWidth = Number.POSITIVE_INFINITY,
 ): string[] {
 	const lines: string[] = [];
 
 	const view = presentSubagentExecution({ id: progress.id, progress, status: progress.status }, nowMs, expanded);
 	const iconColor = frozen ? "dim" : view.color;
 
-	// Main status line: id: description [status] · stats · ⟨agent⟩
-	const trimmedDescription = progress.description?.trim();
-	const description = trimmedDescription ? previewLine(sanitizeText(trimmedDescription), 64) : undefined;
-	const displayId = formatTaskId(progress.id);
-	const titlePart = description ? `${theme.bold(displayId)}: ${description}` : displayId;
+	// Reserve the name and required badges before optional model metadata and details.
+	const fullDescription = progress.description ? replaceTabs(sanitizeText(progress.description)).trim() : undefined;
 	const indent = prefix ? `${prefix} ` : "";
-	const glyph = view.failed
+	let statusBadge = "";
+	// Provider retry state takes precedence over the generic failure marker.
+	if (progress.retryState && progress.status === "running") {
+		statusBadge = ` ${formatBadge("retrying", "warning", theme)}`;
+	} else if (progress.retryFailure && (progress.status === "failed" || progress.status === "aborted")) {
+		statusBadge = ` ${formatBadge("rate-limited", "error", theme)}`;
+	} else if (progress.status === "failed" || progress.status === "aborted") {
+		statusBadge = ` ${formatBadge(progress.status, iconColor, theme)}`;
+	}
+	// Fork: the row glyph is execution-driven (getStatusIcon is gone with the
+	// view-based head) — error/cancelled glyphs come from the phase machine.
+	const rowIcon = view.failed
 		? theme.status.error
 		: view.phase === "cancelled" || progress.status === "aborted"
 			? theme.status.aborted
 			: theme.status.done;
-	let statusLine = `${indent}${theme.fg(iconColor, glyph)} ${theme.fg(frozen ? "dim" : view.active ? "accent" : "text", titlePart)}`;
-	statusLine += agentTypeBadge(progress.agent, theme);
+	const displayId = truncateTaskRow(
+		formatTaskId(progress.id),
+		Math.max(0, maxWidth - visibleWidth(`${indent}${rowIcon} ${statusBadge}`)),
+	);
+	const roleBadge = truncateTaskRow(
+		agentTypeBadge(progress.agent, theme),
+		Math.max(0, maxWidth - visibleWidth(`${indent}${rowIcon} ${displayId}${statusBadge}`)),
+	);
+	const badges = `${roleBadge}${statusBadge}`;
+	const modelBadge = isFeedModelBadgeEnabled()
+		? formatFeedModelBadge(
+				progress.resolvedModelIdentity ?? progress.resolvedModel,
+				progress.resolvedThinkingLevel,
+				progress.advisor,
+				theme,
+				Math.min(
+					FEED_MODEL_BADGE_WIDTH,
+					Math.max(0, maxWidth - visibleWidth(`${indent}${rowIcon} ${displayId}${badges}`) - 1),
+				),
+			)
+		: "";
+	const modelLead = modelBadge ? `${modelBadge} ` : "";
+	const description =
+		fullDescription &&
+		visibleWidth(`${indent}${rowIcon} ${modelLead}${displayId}: ${fullDescription}${badges}`) <= maxWidth
+			? fullDescription
+			: undefined;
+	const titlePart = description ? `${theme.bold(displayId)}: ${description}` : displayId;
+	let statusLine: string;
+	if (progress.status === "running" || progress.status === "pending") {
+		// Live (or queued) agents use the same dot finished rows keep: detached
+		// async spawns can stay "pending" while real work is running, so a
+		// pending/hourglass or spinner glyph reads wrong in the transcript. Keep
+		// the row static; the Task tool header already carries the dispatch icon.
+		const dot = theme.styledSymbol("status.done", frozen ? "dim" : "accent");
+		const nameColor = frozen ? "dim" : "accent";
+		const name = theme.fg(nameColor, description ? theme.bold(displayId) : displayId);
+		statusLine = `${indent}${dot} ${modelLead}${name}`;
+		if (description) {
+			statusLine += `${theme.fg(nameColor, ":")} ${theme.fg(nameColor, description)}`;
+		}
+	} else if (progress.status === "completed") {
+		// Finished rows keep the dot but settle from accent to the plain
+		// foreground: completion reads as a color change, not a new glyph.
+		statusLine = `${indent}${theme.styledSymbol("status.done", "text")} ${modelLead}${theme.fg("text", titlePart)}`;
+	} else {
+		statusLine = `${indent}${theme.fg(iconColor, rowIcon)} ${modelLead}${theme.fg("accent", titlePart)}`;
+	}
+	statusLine += badges;
 	statusLine += ` ${formatBadge(view.summary, iconColor, theme)}`;
-
-	const showBadge = settings.get("task.showResolvedModelBadge");
 	if (progress.status === "running") {
-		if (!description) {
+		if (!fullDescription) {
 			const taskPreview = previewLine(sanitizeText(progress.assignment ?? progress.task), 40);
 			statusLine += ` ${theme.fg("muted", taskPreview)}`;
 		}
-		statusLine = appendAgentStats(statusLine, { ...progress, showResolvedModelBadge: showBadge }, theme);
+		statusLine = appendAgentStats(statusLine, progress, theme);
 	} else if (progress.status === "completed") {
-		statusLine = appendAgentStats(statusLine, { ...progress, showResolvedModelBadge: showBadge }, theme);
+		statusLine = appendAgentStats(statusLine, progress, theme);
 	}
 
-	lines.push(statusLine);
+	lines.push(truncateTaskRow(statusLine, maxWidth, ""));
+	if (fullDescription && !description) {
+		lines.push(...renderDescriptionLines(fullDescription, continuePrefix, maxWidth, theme));
+	}
 	for (const detail of view.details) lines.push(`${continuePrefix}${theme.tree.hook} ${theme.fg(iconColor, detail)}`);
 	for (const event of view.events) lines.push(`${continuePrefix}${theme.fg("dim", event)}`);
 
@@ -1022,6 +1110,7 @@ function renderAgentProgress(
 			seenNestedTasks,
 			nestedDepth,
 			nowMs,
+			Math.max(0, maxWidth - visibleWidth(continuePrefix)),
 		);
 		for (const line of nestedLines) {
 			lines.push(`${continuePrefix}${line}`);
@@ -1152,6 +1241,7 @@ function renderAgentResult(
 	theme: Theme,
 	seenNestedTasks?: WeakSet<object>,
 	nestedDepth = 0,
+	maxWidth = Number.POSITIVE_INFINITY,
 ): string[] {
 	const lines: string[] = [];
 
@@ -1180,16 +1270,42 @@ function renderAgentResult(
 	);
 	const statusText = needsWarning ? `${view.label} · 警告` : mergeFailed ? "合并失败" : view.summary;
 
-	// Main status line: id: description [status] · stats · ⟨agent⟩
-	const trimmedDescription = result.description ? sanitizeText(result.description).trim() : undefined;
-	const description = trimmedDescription ? previewLine(trimmedDescription, 64) : undefined;
-	const displayId = formatTaskId(result.id);
+	// Reserve the name and required badges before optional model metadata and details.
+	const fullDescription = result.description ? replaceTabs(sanitizeText(result.description)).trim() : undefined;
+	const indent = prefix ? `${prefix} ` : "";
+	const statusBadge = ` ${formatBadge(statusText, iconColor, theme)}`;
+	const displayId = truncateTaskRow(
+		formatTaskId(result.id),
+		Math.max(0, maxWidth - visibleWidth(`${indent}${icon} ${statusBadge}`)),
+	);
+	const roleBadge = truncateTaskRow(
+		agentTypeBadge(result.agent, theme),
+		Math.max(0, maxWidth - visibleWidth(`${indent}${icon} ${displayId}${statusBadge}`)),
+	);
+	const badges = `${roleBadge}${statusBadge}`;
+	const modelBadge = isFeedModelBadgeEnabled()
+		? formatFeedModelBadge(
+				result.resolvedModelIdentity ?? result.resolvedModel,
+				result.resolvedThinkingLevel,
+				result.advisor,
+				theme,
+				Math.min(
+					FEED_MODEL_BADGE_WIDTH,
+					Math.max(0, maxWidth - visibleWidth(`${indent}${icon} ${displayId}${badges}`) - 1),
+				),
+			)
+		: "";
+	const modelLead = modelBadge ? `${modelBadge} ` : "";
+	const description =
+		fullDescription &&
+		visibleWidth(`${indent}${icon} ${modelLead}${displayId}: ${fullDescription}${badges}`) <= maxWidth
+			? fullDescription
+			: undefined;
 	const titlePart = description ? `${theme.bold(displayId)}: ${description}` : displayId;
-	let statusLine = `${prefix ? `${prefix} ` : ""}${theme.fg(iconColor, icon)} ${theme.fg(
+	let statusLine = `${indent}${theme.fg(iconColor, icon)} ${modelLead}${theme.fg(
 		success && !needsWarning ? "text" : "accent",
 		titlePart,
-	)}${agentTypeBadge(result.agent, theme)} ${formatBadge(statusText, iconColor, theme)}`;
-	const showBadge = settings.get("task.showResolvedModelBadge");
+	)}${badges}`;
 	statusLine = appendAgentStats(
 		statusLine,
 		{
@@ -1198,8 +1314,6 @@ function renderAgentResult(
 			contextTokens: result.contextTokens,
 			contextWindow: result.contextWindow,
 			cost: result.usage?.cost.total ?? 0,
-			resolvedModel: result.resolvedModel,
-			showResolvedModelBadge: showBadge,
 		},
 		theme,
 	);
@@ -1209,8 +1323,11 @@ function renderAgentResult(
 		statusLine += ` ${theme.fg("warning", "[truncated]")}`;
 	}
 
-	lines.push(statusLine);
-	for (const detail of view.details) lines.push(`${continuePrefix}${theme.fg(view.color, detail)}`);
+	lines.push(truncateTaskRow(statusLine, maxWidth, ""));
+	if (fullDescription && !description) {
+		lines.push(...renderDescriptionLines(fullDescription, continuePrefix, maxWidth, theme));
+	}
+	for (const detail of view.details) lines.push(`${continuePrefix}${theme.tree.hook} ${theme.fg(view.color, detail)}`);
 	for (const event of view.events) lines.push(`${continuePrefix}${theme.fg("dim", event)}`);
 
 	lines.push(...renderTaskSection(result.assignment ?? result.task, continuePrefix, expanded, theme));
@@ -1274,6 +1391,7 @@ function renderAgentResult(
 					theme,
 					seenNestedTasks,
 					nestedDepth,
+					Math.max(0, maxWidth - visibleWidth(continuePrefix)),
 				)) {
 					deferredToolLines.push(`${continuePrefix}${line}`);
 				}
@@ -1326,10 +1444,25 @@ function renderAgentResult(
 		lines.push(...deferredToolLines);
 	}
 
-	if (result.patchPath && !aborted && result.exitCode === 0) {
-		lines.push(`${continuePrefix}${theme.fg("dim", `Patch: ${result.patchPath}`)}`);
+	// Artifact rows: paths shortened (home → `~`), tabs expanded, and width-bounded
+	// like every other rendered line; the full paths live in the model-facing summary.
+	// A nested-only run still carries its (empty) root patch path, so hide that
+	// row when the runner reports no root changes — same as the model summary.
+	if (result.patchPath && result.hasRootChanges !== false && !aborted && result.exitCode === 0) {
+		lines.push(
+			`${continuePrefix}${theme.fg("dim", truncateToWidth(`Patch: ${replaceTabs(shortenPath(result.patchPath))}`, TRUNCATE_LENGTHS.CONTENT))}`,
+		);
 	} else if (result.branchName && !aborted && result.exitCode === 0) {
-		lines.push(`${continuePrefix}${theme.fg("dim", `Branch: ${result.branchName}`)}`);
+		lines.push(
+			`${continuePrefix}${theme.fg("dim", truncateToWidth(`Branch: ${replaceTabs(sanitizeText(result.branchName))}`, TRUNCATE_LENGTHS.CONTENT))}`,
+		);
+	}
+	if (!aborted && result.exitCode === 0) {
+		for (const nestedPath of result.nestedPatchPaths ?? []) {
+			lines.push(
+				`${continuePrefix}${theme.fg("dim", truncateToWidth(`Nested patch: ${replaceTabs(shortenPath(nestedPath))}`, TRUNCATE_LENGTHS.CONTENT))}`,
+			);
+		}
 	}
 
 	// Error message
@@ -1509,6 +1642,7 @@ export function renderResult(
 		const frozen = options.renderContext?.frozen === true;
 		const nowMs = options.renderContext?.nowMs ?? Date.now();
 		const lines: string[] = [];
+		const contentWidth = outputBlockContentWidth(width);
 
 		// Result rows win once any exist; progress rows for spawns without a
 		// result (a mixed call's async subset) render as a supplement below.
@@ -1537,14 +1671,26 @@ export function renderResult(
 			}
 			for (const progress of visible) {
 				lines.push(
-					...renderAgentProgress(progress, "", "  ", expanded, theme, spinnerFrame, frozen, undefined, 0, nowMs),
+					...renderAgentProgress(
+						progress,
+						"",
+						"  ",
+						expanded,
+						theme,
+						spinnerFrame,
+						frozen,
+						undefined,
+						0,
+						nowMs,
+						contentWidth,
+					),
 				);
 			}
 		} else if (details.results && details.results.length > 0) {
 			const ordered = orderResultsForDisplay(details.results);
 			const visible = expanded ? ordered : selectCollapsedResults(ordered);
 			for (const res of visible) {
-				lines.push(...renderAgentResult(res, "", "  ", expanded, theme));
+				lines.push(...renderAgentResult(res, "", "  ", expanded, theme, undefined, 0, contentWidth));
 			}
 			if (visible.length < ordered.length) {
 				const hint = formatExpandHint(theme, false, true);
@@ -1564,7 +1710,19 @@ export function renderResult(
 				: [];
 			for (const progress of supplementalProgress) {
 				lines.push(
-					...renderAgentProgress(progress, "", "  ", expanded, theme, spinnerFrame, frozen, undefined, 0, nowMs),
+					...renderAgentProgress(
+						progress,
+						"",
+						"  ",
+						expanded,
+						theme,
+						spinnerFrame,
+						frozen,
+						undefined,
+						0,
+						nowMs,
+						contentWidth,
+					),
 				);
 			}
 
@@ -1644,6 +1802,52 @@ function isTaskToolDetails(value: unknown): value is TaskToolDetails {
 	);
 }
 
+/**
+ * Subagent ids visible on a task tool card, for click-to-focus hit-testing.
+ * Reads `progress[]` (in-flight) and `results[]` (settled) defensively — card
+ * details arrive as `unknown` through the tool-result pipeline — and recurses
+ * into the same nested snapshots the card renders (`extractedToolData.task`
+ * details plus the in-flight snapshot), so a click on a nested worker row
+ * resolves to that worker instead of an outer agent. Callers intersect with
+ * the live registry, which decides focusability and recency.
+ */
+export function taskCardAgentIds(details: unknown): string[] {
+	if (typeof details !== "object" || details === null) return [];
+	const ids: string[] = [];
+	const seen = new Set<unknown>();
+	const pushId = (item: unknown): void => {
+		if (typeof item !== "object" || item === null || !("id" in item)) return;
+		const id: unknown = item.id;
+		if (typeof id === "string" && id.length > 0 && !ids.includes(id)) ids.push(id);
+	};
+	const collectDetails = (value: unknown, depth: number): void => {
+		if (typeof value !== "object" || value === null || depth > MAX_NESTED_TASK_RENDER_DEPTH) return;
+		if (seen.has(value)) return;
+		seen.add(value);
+		const record = value as { results?: unknown; progress?: unknown };
+		collectList(record.results, depth);
+		collectList(record.progress, depth);
+	};
+	const collectList = (value: unknown, depth: number): void => {
+		if (!Array.isArray(value)) return;
+		for (const item of value) {
+			pushId(item);
+			if (typeof item !== "object" || item === null || seen.has(item)) continue;
+			seen.add(item);
+			const record = item as { extractedToolData?: unknown; inflightTaskDetails?: unknown };
+			const nested = record.extractedToolData;
+			if (typeof nested === "object" && nested !== null && "task" in nested) {
+				const tasks = (nested as { task?: unknown }).task;
+				if (Array.isArray(tasks)) for (const task of tasks) collectDetails(task, depth + 1);
+			}
+			collectDetails(record.inflightTaskDetails, depth + 1);
+		}
+	};
+	collectList("progress" in details ? details.progress : undefined, 0);
+	collectList("results" in details ? details.results : undefined, 0);
+	return ids;
+}
+
 // Nested subagent snapshots sit one or more levels below the frame border, so
 // they keep tree guides to convey depth (the parent prepends its own continue
 // prefix). Only the top-level agent list drops guides (the frame is its box).
@@ -1660,6 +1864,7 @@ function renderNestedTaskResults(
 	theme: Theme,
 	seen: WeakSet<object> = new WeakSet<object>(),
 	depth = 0,
+	maxWidth = Number.POSITIVE_INFINITY,
 ): string[] {
 	const lines: string[] = [];
 	for (const details of detailsList) {
@@ -1681,7 +1886,7 @@ function renderNestedTaskResults(
 		const hiddenCount = ordered.length - visible.length;
 		visible.forEach((result, index) => {
 			const { prefix, continuePrefix } = nestedMarkers(hiddenCount === 0 && index === visible.length - 1, theme);
-			lines.push(...renderAgentResult(result, prefix, continuePrefix, expanded, theme, seen, depth + 1));
+			lines.push(...renderAgentResult(result, prefix, continuePrefix, expanded, theme, seen, depth + 1, maxWidth));
 		});
 		if (hiddenCount > 0) {
 			const { prefix } = nestedMarkers(true, theme);
@@ -1706,6 +1911,7 @@ function renderNestedTaskTree(
 	seen: WeakSet<object> = new WeakSet<object>(),
 	depth = 0,
 	nowMs = Date.now(),
+	maxWidth = Number.POSITIVE_INFINITY,
 ): string[] {
 	const lines: string[] = [];
 	for (const details of detailsList) {
@@ -1725,7 +1931,9 @@ function renderNestedTaskTree(
 			const hiddenCount = ordered.length - visible.length;
 			visible.forEach((result, index) => {
 				const { prefix, continuePrefix } = nestedMarkers(hiddenCount === 0 && index === visible.length - 1, theme);
-				lines.push(...renderAgentResult(result, prefix, continuePrefix, expanded, theme, seen, depth + 1));
+				lines.push(
+					...renderAgentResult(result, prefix, continuePrefix, expanded, theme, seen, depth + 1, maxWidth),
+				);
 			});
 			if (hiddenCount > 0) {
 				const { prefix } = nestedMarkers(true, theme);
@@ -1753,6 +1961,7 @@ function renderNestedTaskTree(
 						seen,
 						depth + 1,
 						nowMs,
+						maxWidth,
 					),
 				);
 			});

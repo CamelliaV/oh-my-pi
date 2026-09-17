@@ -210,6 +210,24 @@ describe("StatusLineComponent context breakdown", () => {
 
 		expect(comp.getCachedContextBreakdown().usedTokens).toBe(5_500);
 		expect(fake.usageCalls()).toBe(2);
+	it("re-queries when settings or tokenizer identity changes", () => {
+		const { session, usageCalls } = makeSession({ messages: [userMessage("hi")] });
+		const mutable = session as unknown as {
+			settings: { revision: number };
+			agent: { tokenizer: object; state: { tools: unknown[] } };
+		};
+		mutable.settings = { revision: 0 };
+		mutable.agent.tokenizer = {};
+
+		const comp = statusLines.track(new StatusLineComponent(session));
+		comp.getCachedContextBreakdown();
+
+		mutable.settings.revision++;
+		comp.getCachedContextBreakdown();
+		mutable.agent.tokenizer = {};
+		comp.getCachedContextBreakdown();
+
+		expect(usageCalls()).toBe(3);
 	});
 
 	it("re-queries when only the in-flight pending revision changes (no message change)", () => {

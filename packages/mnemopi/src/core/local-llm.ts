@@ -191,19 +191,21 @@ export async function callConfiguredCompletion(
 		return null;
 	}
 	try {
-		const message = await retryTransientCompletion(() =>
-			completeSimple(
-				model,
-				{
-					messages: [{ role: "user", content: prompt, timestamp: Date.now() }],
-				},
-				{
-					apiKey: llmApiKey() || undefined,
-					maxTokens: opts.maxTokens ?? llmMaxTokens(),
-					signal: opts.signal,
-					temperature,
-				},
-			),
+		const message = await retryTransientCompletion(
+			() =>
+				completeSimple(
+					model,
+					{
+						messages: [{ role: "user", content: prompt, timestamp: Date.now() }],
+					},
+					{
+						apiKey: llmApiKey() || undefined,
+						maxTokens: opts.maxTokens ?? llmMaxTokens(),
+						signal: opts.signal,
+						temperature,
+					},
+				),
+			{ provider: model.provider },
 		);
 		return assistantText(message).trim() || null;
 	} catch {

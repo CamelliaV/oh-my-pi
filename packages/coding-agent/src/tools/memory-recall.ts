@@ -1,6 +1,7 @@
 import { type } from "@oh-my-pi/omptype";
 import type { AgentTool, AgentToolResult } from "@oh-my-pi/pi-agent-core";
 import { untilAborted } from "@oh-my-pi/pi-utils";
+import { isHindsightConfigured, loadHindsightConfig } from "../hindsight/config";
 import { createToolMemoryRuntimeContext } from "../memory-backend/runtime";
 import { memoryBackendCapabilities } from "../memory-backend/types";
 import recallDescription from "../prompts/tools/recall.md" with { type: "text" };
@@ -25,7 +26,9 @@ export class MemoryRecallTool implements AgentTool<typeof memoryRecallSchema> {
 	constructor(private readonly session: ToolSession) {}
 
 	static createIf(session: ToolSession): MemoryRecallTool | null {
-		if (!memoryBackendCapabilities[session.settings.get("memory.backend")].searchable) return null;
+		const backend = session.settings.get("memory.backend");
+		if (!memoryBackendCapabilities[backend].searchable) return null;
+		if (backend === "hindsight" && !isHindsightConfigured(loadHindsightConfig(session.settings))) return null;
 		return new MemoryRecallTool(session);
 	}
 

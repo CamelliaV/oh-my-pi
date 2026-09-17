@@ -132,7 +132,9 @@ const proxyXaiRegistry = {
 	getAll: () => [],
 	find: () => undefined,
 	getProviderBaseUrl: (provider: string) => (provider === "xai-oauth" ? "https://proxy.example/v1/" : undefined),
-	getProviderHeaders: (provider: string) => (provider === "xai-oauth" ? { "X-Proxy-Tenant": "tenant-1" } : undefined),
+	getProviderHeaders: async (provider: string) =>
+		provider === "xai-oauth" ? { "X-Proxy-Tenant": "tenant-1" } : undefined,
+	resolver: () => async () => "proxy-key",
 } as unknown as ModelRegistry;
 
 describe("xAI web search provider", () => {
@@ -263,6 +265,7 @@ describe("xAI web search provider", () => {
 		const modelRegistry = {
 			...proxyXaiRegistry,
 			authStorage,
+			resolver: authStorage.resolver.bind(authStorage),
 		} as unknown as ModelRegistry;
 		const originalFetch = globalThis.fetch;
 		globalThis.fetch = Object.assign(capture.fetchMock, { preconnect: originalFetch.preconnect });
@@ -552,7 +555,7 @@ describe("xAI web search provider", () => {
 					content: [
 						{
 							type: "output_text",
-							text: "Ignored because output_text wins",
+							text: "Message-level xAI answer",
 							annotations: [
 								{
 									type: "url_citation",
@@ -577,7 +580,7 @@ describe("xAI web search provider", () => {
 
 		expect(response).toMatchObject({
 			provider: "xai",
-			answer: "Top-level xAI answer",
+			answer: "Message-level xAI answer",
 			requestId: "resp_xai_123",
 			model: "grok-4.3",
 			authMode: "api_key",

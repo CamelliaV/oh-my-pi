@@ -2,6 +2,7 @@ import { type } from "@oh-my-pi/omptype";
 import type { AgentTool, AgentToolResult } from "@oh-my-pi/pi-agent-core";
 import { sanitizeSkillName, writeManagedSkill } from "../autolearn/managed-skills";
 import { isNameClaimedByAuthoredSkill } from "../extensibility/skills";
+import { isHindsightConfigured, loadHindsightConfig } from "../hindsight/config";
 import { createToolMemoryRuntimeContext } from "../memory-backend/runtime";
 import { memoryBackendCapabilities } from "../memory-backend/types";
 import learnDescription from "../prompts/tools/learn.md" with { type: "text" };
@@ -42,7 +43,9 @@ export class LearnTool implements AgentTool<typeof learnSchema> {
 
 	static createIf(session: ToolSession): LearnTool | null {
 		if (!session.settings.get("autolearn.enabled")) return null;
-		if (!memoryBackendCapabilities[session.settings.get("memory.backend")].writable) return null;
+		const backend = session.settings.get("memory.backend");
+		if (!memoryBackendCapabilities[backend].writable) return null;
+		if (backend === "hindsight" && !isHindsightConfigured(loadHindsightConfig(session.settings))) return null;
 		return new LearnTool(session);
 	}
 

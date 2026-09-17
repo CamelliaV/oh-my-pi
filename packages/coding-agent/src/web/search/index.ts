@@ -144,6 +144,7 @@ interface ExecuteSearchOptions {
 	authStorage: AuthStorage;
 	modelRegistry?: ModelRegistry;
 	activeModel?: Model;
+	modelName?: string;
 	sessionId?: string;
 	signal?: AbortSignal;
 }
@@ -154,7 +155,7 @@ async function executeSearch(
 	params: SearchQueryParams,
 	options: ExecuteSearchOptions,
 ): Promise<{ content: Array<{ type: "text"; text: string }>; details: SearchRenderDetails }> {
-	const { activeModel, authStorage, modelRegistry, sessionId, signal } = options;
+	const { activeModel, authStorage, modelRegistry, modelName, sessionId, signal } = options;
 	const explicitProvider = params.provider;
 	let candidates: SearchProviderCandidate[];
 	if (explicitProvider && explicitProvider !== "auto") {
@@ -237,6 +238,7 @@ async function executeSearch(
 				authStorage,
 				modelRegistry,
 				activeModel,
+				modelName,
 				sessionId,
 				antigravityEndpointMode,
 				geminiModel,
@@ -330,6 +332,7 @@ export async function runSearchQuery(
 		authStorage?: AuthStorage;
 		modelRegistry?: ModelRegistry;
 		activeModel?: Model;
+		modelName?: string;
 		sessionId?: string;
 		signal?: AbortSignal;
 	} = {},
@@ -345,6 +348,7 @@ export async function runSearchQuery(
 			authStorage,
 			modelRegistry,
 			activeModel: options.activeModel,
+			modelName: options.modelName,
 			sessionId: options.sessionId,
 			signal: options.signal,
 		});
@@ -388,6 +392,7 @@ export class WebSearchTool implements AgentTool<typeof webSearchSchema, SearchRe
 			authStorage,
 			modelRegistry: this.#session.modelRegistry,
 			activeModel: this.#session.getActiveModel?.(),
+			modelName: this.#session.getActiveModel?.()?.id,
 			sessionId,
 			signal,
 		});
@@ -415,6 +420,7 @@ export const webSearchCustomTool: CustomTool<typeof webSearchSchema, SearchRende
 			authStorage,
 			modelRegistry: ctx.modelRegistry,
 			activeModel: ctx.model,
+			modelName: ctx.model?.id,
 			sessionId,
 			signal,
 		});

@@ -350,11 +350,11 @@ function resolveOpenAIResponsesUrl(baseUrl: string): string {
 	return normalized.endsWith("/responses") ? normalized : `${normalized}/responses`;
 }
 
-function resolveCodexSearchTransport(
+async function resolveCodexSearchTransport(
 	modelRegistry: ModelRegistry | undefined,
 	modelId: string,
 	activeModel: Model | undefined,
-): CodexSearchTransport {
+): Promise<CodexSearchTransport> {
 	if (isCodexSearchAffinityModel(activeModel)) {
 		const protocol = activeModel.api === "openai-codex-responses" ? "codex" : "responses";
 		const baseUrl = activeModel.baseUrl;
@@ -363,12 +363,16 @@ function resolveCodexSearchTransport(
 			protocol === "codex" &&
 			activeModel.provider === "openai-codex" &&
 			url === resolveCodexResponsesUrl(CODEX_BASE_URL);
+		const affinityHeaders =
+			(await modelRegistry?.resolveModelHeaders(activeModel)) ??
+			(await modelRegistry?.getProviderHeaders(activeModel.provider)) ??
+			{};
 		return {
 			provider: activeModel.provider,
 			baseUrl,
 			url,
 			headers: {
-				...(modelRegistry?.getProviderHeaders(activeModel.provider) ?? {}),
+				...affinityHeaders,
 				...(activeModel.headers ?? {}),
 			},
 			protocol,
@@ -392,14 +396,15 @@ function resolveCodexSearchTransport(
 	}
 	const url = resolveCodexResponsesUrl(baseUrl);
 	const customEndpoint = url !== resolveCodexResponsesUrl(CODEX_BASE_URL);
+	const headers =
+		modelRegistry && registryModel
+			? await modelRegistry.resolveModelHeaders(registryModel)
+			: await modelRegistry?.getProviderHeaders("openai-codex");
 	return {
 		provider: "openai-codex",
 		baseUrl,
 		url,
-		headers: {
-			...modelRegistry?.getProviderHeaders("openai-codex"),
-			...registryModel?.headers,
-		},
+		headers: { ...headers },
 		protocol: "codex",
 		authMode: customEndpoint ? "api-key" : "codex-oauth",
 		rejectOfficialOAuth: customEndpoint,
@@ -905,7 +910,7 @@ export async function searchCodex(params: SearchParams): Promise<SearchResponse>
 	if (!firstCandidate) {
 		throw new SearchProviderError("codex", "No Codex web search model is configured.");
 	}
-	const transport = resolveCodexSearchTransport(params.modelRegistry, firstCandidate.modelId, activeModel);
+	const transport = await resolveCodexSearchTransport(params.modelRegistry, firstCandidate.modelId, activeModel);
 	// The ChatGPT-backend Codex endpoint speaks the undocumented codex-rs
 	// request shape (responses-lite moves tools into an `additional_tools`
 	// developer item), so the documented `web_search.filters.allowed_domains`
@@ -944,7 +949,7 @@ export async function searchCodex(params: SearchParams): Promise<SearchResponse>
 			: params.authStorage.resolver(transport.provider, resolverOptions);
 		result = await withAuth(
 			keyOrResolver,
-			accessToken => {
+			async accessToken => {
 				if (activeCodexModel) {
 					return callCodexSearchWithProviderTransport(accessToken, query, {
 						signal: params.signal,
@@ -959,13 +964,17 @@ export async function searchCodex(params: SearchParams): Promise<SearchResponse>
 						searchDelayMs: transport.searchDelayMs,
 					});
 				}
+				const requestTransport = await resolveCodexSearchTransport(
+					params.modelRegistry,
+					firstCandidate.modelId,
+				);
 				return runCodexSearchCandidates({
 					auth: { accessToken },
 					params,
 					query,
 					modelCandidates,
 					modelWasConfigured: modelSelectionWasExplicit,
-					transport,
+					transport: requestTransport,
 				});
 			},
 			{
@@ -986,17 +995,18 @@ export async function searchCodex(params: SearchParams): Promise<SearchResponse>
 		result = await withOAuthAccess(
 			params.authStorage,
 			"openai-codex",
-			access => {
+			async access => {
 				// A refreshed/rotated credential can carry a different bearer and
 				// ChatGPT account id than the seed used to select the first attempt.
 				const accountId = access.accountId ?? getCodexAccountId(access.accessToken);
+				const requestTransport = await resolveCodexSearchTransport(params.modelRegistry, firstCandidate.modelId);
 				return runCodexSearchCandidates({
 					auth: { accessToken: access.accessToken, accountId },
 					params,
 					query,
 					modelCandidates,
 					modelWasConfigured: modelSelectionWasExplicit,
-					transport,
+					transport: requestTransport,
 				});
 			},
 			{ sessionId: params.sessionId, signal: params.signal, seed },

@@ -1,5 +1,6 @@
 import { type } from "@oh-my-pi/omptype";
 import type { AgentTool, AgentToolResult } from "@oh-my-pi/pi-agent-core";
+import { isHindsightConfigured, loadHindsightConfig } from "../hindsight/config";
 import { createToolMemoryRuntimeContext } from "../memory-backend/runtime";
 import { memoryBackendCapabilities } from "../memory-backend/types";
 import retainDescription from "../prompts/tools/retain.md" with { type: "text" };
@@ -30,7 +31,9 @@ export class MemoryRetainTool implements AgentTool<typeof memoryRetainSchema> {
 	constructor(private readonly session: ToolSession) {}
 
 	static createIf(session: ToolSession): MemoryRetainTool | null {
-		if (!memoryBackendCapabilities[session.settings.get("memory.backend")].retainable) return null;
+		const backend = session.settings.get("memory.backend");
+		if (!memoryBackendCapabilities[backend].retainable) return null;
+		if (backend === "hindsight" && !isHindsightConfigured(loadHindsightConfig(session.settings))) return null;
 		return new MemoryRetainTool(session);
 	}
 

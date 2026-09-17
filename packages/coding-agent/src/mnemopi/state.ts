@@ -15,6 +15,8 @@ import {
 	truncateRecallQuery,
 } from "../hindsight/content";
 import { extractMessages } from "../hindsight/transcript";
+import type { MemoryPromptPreparation } from "../memory-backend/types";
+import { redactMemorySecrets, redactRememberWrite } from "../memory-backend/redact";
 import { redactSecretFields, redactSecrets } from "../secrets/redact";
 import type { AgentSession, AgentSessionEvent } from "../session/agent-session";
 import type { MnemopiBackendConfig, MnemopiScoping } from "./config";
@@ -228,6 +230,7 @@ export interface MnemopiSessionStateOptions {
 	session: AgentSession;
 	aliasOf?: MnemopiSessionState;
 	lastRetainedTurn?: number;
+	hasRecalledForFirstTurn?: boolean;
 }
 
 export class MnemopiSessionState {
@@ -242,7 +245,7 @@ export class MnemopiSessionState {
 	lastRecallSnippet?: string;
 	unsubscribe?: () => void;
 	#retentionCursorLoaded = false;
-	#lastAutoRecallPrompt?: string;
+	hasRecalledForFirstTurn: boolean;
 	#recallGeneration = 0;
 
 	constructor(options: MnemopiSessionStateOptions) {
@@ -251,6 +254,7 @@ export class MnemopiSessionState {
 		this.session = options.session;
 		this.aliasOf = options.aliasOf;
 		this.lastRetainedTurn = options.lastRetainedTurn ?? 0;
+		this.hasRecalledForFirstTurn = options.hasRecalledForFirstTurn ?? false;
 		this.scoped = options.aliasOf?.scoped ?? createScopedResources(options.config);
 		this.memory = this.scoped.retain.memory;
 		this.globalMemory = this.scoped.global?.memory;
@@ -258,15 +262,17 @@ export class MnemopiSessionState {
 
 	setSessionId(sessionId: string): void {
 		if (this.sessionId === sessionId) return;
+		this.#recallGeneration++;
 		this.sessionId = sessionId;
-		this.resetConversationTracking();
+		this.lastRetainedTurn = 0;
+		this.#retentionCursorLoaded = false;
 	}
 
 	resetConversationTracking(): void {
+		this.#recallGeneration++;
 		this.lastRetainedTurn = 0;
 		this.#retentionCursorLoaded = false;
-		this.#lastAutoRecallPrompt = undefined;
-		this.#recallGeneration++;
+		this.hasRecalledForFirstTurn = false;
 		this.lastRecallSnippet = undefined;
 	}
 
@@ -351,7 +357,14 @@ export class MnemopiSessionState {
 				continue;
 			}
 			if (op === "update") {
-				const content = options.content == null ? null : redactSecrets(options.content, this.session.obfuscator);
+				// `update` writes replacement content straight to the row, bypassing
+				// `rememberInScope`, so it needs the same redaction — both the
+				// obfuscator's session-known secrets and the pattern-based
+				// credential scan, chained.
+				const content =
+					options.content === undefined
+						? null
+						: redactMemorySecrets(redactSecrets(options.content, this.session.obfuscator));
 				if (target.memory.update(id, content, options.importance ?? null)) {
 					return { status: "updated", ...resultContext };
 				}
@@ -452,8 +465,11 @@ export class MnemopiSessionState {
 
 	rememberInScope(memory: MnemopiRememberInput, options: MnemopiRememberOptions = {}): string | undefined {
 		try {
+			// Chained redaction: the obfuscator scrubs the session's known secrets,
+			// the pattern scan catches credential shapes the session never saw.
 			const safe = redactSecretFields({ memory, options }, this.session.obfuscator);
-			return this.scoped.retain.memory.remember(safe.memory, safe.options);
+			const [scrubbed, scrubbedOptions] = redactRememberWrite(safe.memory, safe.options);
+			return this.scoped.retain.memory.remember(scrubbed, scrubbedOptions);
 		} catch (error) {
 			logger.warn("Mnemopi: retain failed", {
 				bank: this.scoped.retain.bank,
@@ -479,33 +495,25 @@ export class MnemopiSessionState {
 		return formatRecallBlock(selected);
 	}
 
-	async beforeAgentStartPrompt(promptText: string): Promise<string | undefined> {
-		if (!this.config.autoRecall || this.aliasOf) return undefined;
+	async beforeAgentStartPrompt(promptText: string): Promise<MemoryPromptPreparation | undefined> {
+		if (!this.config.autoRecall || this.aliasOf || this.hasRecalledForFirstTurn) return undefined;
 		const latestPrompt = promptText.trim();
 		if (!latestPrompt) return undefined;
 		const generation = ++this.#recallGeneration;
-		this.#lastAutoRecallPrompt = latestPrompt;
-		const previous = this.lastRecallSnippet;
 		const history = extractMessages(this.session.sessionManager);
 		const queryMessages = [...history, { role: "user" as const, content: latestPrompt }];
 		const query = composeRecallQuery(latestPrompt, queryMessages, this.config.recallContextTurns);
 		const truncated = truncateRecallQuery(query, latestPrompt, this.config.recallMaxQueryChars);
-		let context: string | undefined;
-		try {
-			context = await this.recallForContext(truncated, latestPrompt);
-		} catch (error) {
-			if (generation === this.#recallGeneration) this.#lastAutoRecallPrompt = undefined;
-			throw error;
-		} finally {
-			if (generation === this.#recallGeneration) {
-				this.lastRecallSnippet = context;
-				// An empty result must remove the previous turn's promoted snippet;
-				// the caller only refreshes the base prompt for nonempty injections.
-				if (previous && !context) await this.session.refreshBaseSystemPrompt();
-			}
-		}
-		if (generation !== this.#recallGeneration || context === previous) return undefined;
-		return context;
+		const context = await this.recallForContext(truncated, latestPrompt);
+		return {
+			context,
+			commit: () => {
+				if (this.#recallGeneration !== generation) return false;
+				this.hasRecalledForFirstTurn = true;
+				if (context) this.lastRecallSnippet = context;
+				return true;
+			},
+		};
 	}
 
 	async recallForCompaction(messages: AgentMessage[]): Promise<string | undefined> {
@@ -621,18 +629,33 @@ export class MnemopiSessionState {
 	}
 
 	async maybeRecallOnAgentStart(): Promise<void> {
-		if (!this.config.autoRecall || this.aliasOf) return;
+		if (!this.config.autoRecall || this.aliasOf || this.hasRecalledForFirstTurn) return;
+		const generation = this.#recallGeneration;
 		const messages = extractMessages(this.session.sessionManager);
 		const lastUser = messages.findLast(message => message.role === "user");
-		if (!lastUser || this.#lastAutoRecallPrompt === lastUser.content.trim()) return;
+		if (!lastUser) return;
+		const query = composeRecallQuery(lastUser.content, messages, this.config.recallContextTurns);
+		const truncated = truncateRecallQuery(query, lastUser.content, this.config.recallMaxQueryChars);
+		let context: string | undefined;
 		try {
-			const context = await this.beforeAgentStartPrompt(lastUser.content);
-			if (context) await this.session.refreshBaseSystemPrompt();
+			context = await this.recallForContext(truncated);
 		} catch (error) {
 			logger.warn("Mnemopi: auto-recall failed", {
 				bank: this.config.bank,
 				error: redactSecrets(toError(error).message, this.session.obfuscator),
 			});
+			return;
+		}
+		// A claimed user turn or a transcript reset supersedes this background
+		// lookup. Do not consume its first recall or overwrite its prompt context.
+		if (this.#recallGeneration !== generation) return;
+		this.hasRecalledForFirstTurn = true;
+		if (!context) return;
+		this.lastRecallSnippet = context;
+		try {
+			await this.session.refreshBaseSystemPrompt();
+		} catch (error) {
+			if (this.config.debug) logger.debug("Mnemopi: prompt refresh after recall failed", { error: String(error) });
 		}
 	}
 
@@ -724,7 +747,8 @@ export class MnemopiSessionState {
 	 * delete the DB files — e.g. `mnemopiBackend.clear` — pass
 	 * `{ consolidate: false }` to skip the retain/flush pass, since spending
 	 * tokens on memories that will be wiped on the next line is wasted work
-	 * (PR #2327 review).
+	 * (PR #2327 review). Cwd rebinding passes `{ retain: false }` to drain
+	 * existing extractions without capturing a transcript after its cwd changed.
 	 *
 	 * `timeoutMs` caps both synchronous SQLite lock waits during final retention
 	 * and the asynchronous consolidation drain (the user-visible `/quit`,
@@ -746,7 +770,8 @@ export class MnemopiSessionState {
 		for (const memory of this.scoped.owned) memory.beam.db.exec(`PRAGMA busy_timeout=${busyTimeoutMs}`);
 	}
 
-	async dispose(options: { consolidate?: boolean; timeoutMs?: number } = {}): Promise<void> {
+	async dispose(options: { consolidate?: boolean; timeoutMs?: number; retain?: boolean } = {}): Promise<void> {
+		this.#recallGeneration++;
 		this.unsubscribe?.();
 		this.unsubscribe = undefined;
 		if (this.aliasOf) return;
@@ -765,7 +790,7 @@ export class MnemopiSessionState {
 			full: false,
 			extract: false,
 			sleep: false,
-			retain: this.config.autoRetain,
+			retain: this.config.autoRetain && options.retain !== false,
 		}).catch((error: unknown) => {
 			logger.warn("Mnemopi: consolidation on dispose failed.", { error: String(error) });
 		});

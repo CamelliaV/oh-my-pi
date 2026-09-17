@@ -1,6 +1,7 @@
 import { type } from "@oh-my-pi/omptype";
 import type { AgentTool, AgentToolResult } from "@oh-my-pi/pi-agent-core";
 import { untilAborted } from "@oh-my-pi/pi-utils";
+import { isHindsightConfigured, loadHindsightConfig } from "../hindsight/config";
 import { createToolMemoryRuntimeContext } from "../memory-backend/runtime";
 import { memoryBackendCapabilities } from "../memory-backend/types";
 import reflectDescription from "../prompts/tools/reflect.md" with { type: "text" };
@@ -26,7 +27,9 @@ export class MemoryReflectTool implements AgentTool<typeof memoryReflectSchema> 
 	constructor(private readonly session: ToolSession) {}
 
 	static createIf(session: ToolSession): MemoryReflectTool | null {
-		if (!memoryBackendCapabilities[session.settings.get("memory.backend")].reflective) return null;
+		const backend = session.settings.get("memory.backend");
+		if (!memoryBackendCapabilities[backend].reflective) return null;
+		if (backend === "hindsight" && !isHindsightConfigured(loadHindsightConfig(session.settings))) return null;
 		return new MemoryReflectTool(session);
 	}
 

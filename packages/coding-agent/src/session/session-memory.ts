@@ -96,12 +96,16 @@ export class SessionMemory {
 		this.#host.getMnemopiSessionState()?.setSessionId(sid);
 	}
 
-	/** New session file: reset auto-recall / retain-threshold counters for the new transcript. */
+	/** New transcript: reset Hindsight counters and reload its frozen mental-model snapshot. */
 	#resetHindsightConversationTrackingIfHindsight(): boolean {
 		if (this.#host.settings.get("memory.backend") !== "hindsight") return false;
 		const state = this.#host.getHindsightSessionState();
 		if (!state || state.aliasOf) return false;
 		state.resetConversationTracking();
+		// Start a bounded first-turn reload without delaying /new, fork, clear, or
+		// session switches. A slow result is discarded so the previous snapshot
+		// remains byte-stable for this transcript (#11961).
+		state.beginMentalModelsTranscriptReload();
 		return true;
 	}
 
@@ -159,7 +163,7 @@ export class SessionMemory {
 		});
 	}
 
-	async #disposeMemoryBackendState(consolidateMnemopi = true): Promise<void> {
+	async #disposeMemoryBackendState(consolidateMnemopi = true, retainMnemopi = true): Promise<void> {
 		this.cancelLocalMemoryStartup();
 		await this.disposeBackendHook();
 		try {
@@ -181,7 +185,7 @@ export class SessionMemory {
 		const mnemopi = this.#host.takeMnemopiSessionState();
 		if (mnemopi) {
 			try {
-				await mnemopi.dispose({ consolidate: consolidateMnemopi });
+				await mnemopi.dispose({ consolidate: consolidateMnemopi, retain: retainMnemopi });
 			} catch (error) {
 				logger.warn("Memory lifecycle: Mnemopi dispose failed", { error: String(error) });
 			}
@@ -191,10 +195,11 @@ export class SessionMemory {
 	/**
 	 * Apply the selected memory backend to runtime state, tools, and prompt.
 	 * Concurrent settings changes run in order and settle before the next turn.
+	 * Cwd rebinding can disable Mnemopi auto-retention without skipping its drain.
 	 */
-	async applyMemoryBackend(): Promise<void> {
+	async applyMemoryBackend(options: { retainMnemopi?: boolean } = {}): Promise<void> {
 		if (this.#host.isDisposed()) return;
-		const transition = this.#memoryBackendTransition.then(() => this.#applyMemoryBackend());
+		const transition = this.#memoryBackendTransition.then(() => this.#applyMemoryBackend(options.retainMnemopi));
 		this.#memoryBackendTransition = transition.then(
 			() => undefined,
 			() => undefined,
@@ -202,10 +207,10 @@ export class SessionMemory {
 		await transition;
 	}
 
-	async #applyMemoryBackend(): Promise<void> {
+	async #applyMemoryBackend(retainMnemopi = true): Promise<void> {
 		if (this.#host.isDisposed()) return;
 		try {
-			await this.#disposeMemoryBackendState();
+			await this.#disposeMemoryBackendState(true, retainMnemopi);
 			if (this.#memoryAgentDir && this.#memoryTaskDepth === 0 && !this.#host.isDisposed()) {
 				const backend = await resolveMemoryBackend(this.#host.settings);
 				this.#activeBackendId = backend.id;

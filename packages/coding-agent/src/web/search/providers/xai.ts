@@ -3,6 +3,7 @@ import { $env } from "@oh-my-pi/pi-utils";
 import { resolveXAIHttpTransport, type XAIHttpProvider } from "../../../lib/xai-http";
 import { SearchProviderError, type SearchResponse } from "../../../web/search/types";
 import type { SearchParams } from "./base";
+import { clampNumResults } from "../utils";
 import { SearchProvider } from "./base";
 import { searchGrokResponses, type GrokResponsesTransport } from "./grok-responses";
 
@@ -13,6 +14,8 @@ const XAI_WEB_SEARCH_MODEL = "grok-4.5";
 // (docs.x.ai/developers/model-capabilities/text/reasoning). Web search is
 // latency-sensitive, so pin these calls low regardless of their configured timeout.
 const XAI_WEB_SEARCH_REASONING_EFFORT = "low";
+const DEFAULT_NUM_RESULTS = 10;
+const MAX_NUM_RESULTS = 30;
 
 /**
  * Prefer `xai-oauth` only when its resolver cannot be shadowed by the shared
@@ -63,7 +66,7 @@ function resolveXAIWebSearchAuth(params: SearchParams): XAIWebSearchAuth {
 export async function searchXAI(params: SearchParams): Promise<SearchResponse> {
 	const auth = resolveXAIWebSearchAuth(params);
 	const transport = params.modelRegistry
-		? resolveXAIHttpTransport(params.modelRegistry, auth.provider, XAI_WEB_SEARCH_MODEL)
+		? await resolveXAIHttpTransport(params.modelRegistry, auth.provider, XAI_WEB_SEARCH_MODEL)
 		: { baseURL: XAI_DEFAULT_BASE_URL };
 	const customEndpoint = transport.baseURL.replace(/\/+$/, "") !== XAI_DEFAULT_BASE_URL;
 	const credentialOrigin = params.authStorage.getCredentialOrigin(auth.provider);
@@ -77,16 +80,22 @@ export async function searchXAI(params: SearchParams): Promise<SearchResponse> {
 			`Refusing to send official xAI OAuth credentials to custom endpoint ${transport.baseURL}. Configure an API key for provider "xai-oauth".`,
 		);
 	}
-	const keyOrResolver = customEndpoint
-		? params.authStorage.resolver(auth.provider, { sessionId: params.sessionId })
-		: auth.keyOrResolver;
+	const keyOrResolver = params.modelRegistry
+		? params.modelRegistry.resolver(auth.provider, {
+				sessionId: params.sessionId,
+				baseUrl: transport.baseURL,
+				modelId: XAI_WEB_SEARCH_MODEL,
+			})
+		: customEndpoint
+			? params.authStorage.resolver(auth.provider, { sessionId: params.sessionId })
+			: auth.keyOrResolver;
 
 	return searchGrokResponses({
 		query: params.query,
 		parsedQuery: params.parsedQuery,
 		systemPrompt: params.systemPrompt,
 		limit: params.limit,
-		numSearchResults: params.numSearchResults,
+		numSearchResults: clampNumResults(params.numSearchResults ?? params.limit, DEFAULT_NUM_RESULTS, MAX_NUM_RESULTS),
 		maxOutputTokens: params.maxOutputTokens,
 		temperature: params.temperature,
 		signal: params.signal,

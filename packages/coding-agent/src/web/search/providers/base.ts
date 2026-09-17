@@ -76,6 +76,8 @@ export interface SearchParams {
 	modelRegistry?: ModelRegistry;
 	/** Current agent model, when search runs inside an agent session. */
 	activeModel?: Model;
+	/** Exact active model identifier, when the caller has trusted session metadata. */
+	modelName?: string;
 	/**
 	 * Optional session id used as the round-robin / sticky key when selecting
 	 * among multiple credentials for the same provider. Pass through from the

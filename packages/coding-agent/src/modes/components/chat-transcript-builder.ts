@@ -27,7 +27,7 @@ import {
 	SKILL_PROMPT_MESSAGE_TYPE,
 	type SkillPromptDetails,
 } from "../../session/messages";
-import type { SessionMessageEntry } from "../../session/session-entries";
+import { type TranscriptEntry, transcriptEntryMessage } from "../../session/session-context";
 import { theme } from "../theme/theme";
 import {
 	assistantHasVisibleContent,
@@ -45,6 +45,7 @@ import { AssistantMessageComponent } from "./assistant-message";
 import { createBackgroundTanDispatchBlock } from "./background-tan-message";
 import { BashExecutionComponent } from "./bash-execution";
 import { detectCacheInvalidation } from "./cache-invalidation-marker";
+import { ServedModelTracker } from "./served-model-marker";
 import { CollabPromptMessageComponent } from "./collab-prompt-message";
 import {
 	BranchSummaryMessageComponent,
@@ -101,6 +102,7 @@ export class ChatTranscriptBuilder {
 	#lastAssistantUsage: Usage | undefined;
 	#workUsage = new WorkUsageAccumulator();
 	#sessionUsage = new SessionUsageAccumulator();
+	#servedModelTracker = new ServedModelTracker();
 	#waitingPoll: ToolExecutionComponent | null = null;
 	#todoSnapshot: ToolExecutionComponent | null = null;
 	#expandables: Array<{ setExpanded(expanded: boolean): void }> = [];
@@ -117,7 +119,7 @@ export class ChatTranscriptBuilder {
 	}
 
 	/** Discard all components and rebuild the whole transcript from `entries`. */
-	rebuild(entries: SessionMessageEntry[]): void {
+	rebuild(entries: TranscriptEntry[]): void {
 		this.reset();
 		for (const entry of entries) this.#appendEntry(entry);
 		// Flush the trailing turn's usage row only once its tools are materialized
@@ -130,7 +132,7 @@ export class ChatTranscriptBuilder {
 	}
 
 	/** Append newly persisted entries without rebuilding already rendered rows. */
-	append(entries: SessionMessageEntry[]): void {
+	append(entries: TranscriptEntry[]): void {
 		for (const entry of entries) this.#appendEntry(entry);
 		if (this.#readArgs.size === 0 && this.#pendingTools.size === 0) {
 			this.#flushPendingUsage();
@@ -174,6 +176,7 @@ export class ChatTranscriptBuilder {
 		this.#lastAssistantUsage = undefined;
 		this.#workUsage = new WorkUsageAccumulator();
 		this.#sessionUsage = new SessionUsageAccumulator();
+		this.#servedModelTracker = new ServedModelTracker();
 		this.#waitingPoll = null;
 		this.#todoSnapshot = null;
 		this.#expandables = [];
@@ -186,9 +189,11 @@ export class ChatTranscriptBuilder {
 		this.reset();
 	}
 
-	#appendEntry(entry: SessionMessageEntry): void {
+	#appendEntry(entry: TranscriptEntry): void {
+		const message = transcriptEntryMessage(entry);
+		if (!message) return;
 		const before = this.container.children.length;
-		this.#appendChatMessage(entry.message);
+		this.#appendChatMessage(message);
 		const components = this.container.children.slice(before);
 		if (components.length > 0) this.#entryComponents.set(entry.id, components);
 	}
@@ -342,16 +347,13 @@ export class ChatTranscriptBuilder {
 								)
 							: undefined;
 						this.container.addChild(
-							new UserMessageComponent(
-								textContent,
-								false,
-								undefined,
-								this.#sessionUsage.current(),
+							new UserMessageComponent(textContent, {
+								sessionUsage: this.#sessionUsage.current(),
 								images,
-								this.deps.ui.imageBudget,
-								() => this.deps.ui.requestRender(),
-								`user:${message.timestamp}`,
-							),
+								imageBudget: this.deps.ui.imageBudget,
+								requestRepaint: () => this.deps.ui.requestRender(),
+								imageKeyPrefix: `user:${message.timestamp}`,
+							}),
 						);
 					}
 				}
@@ -362,6 +364,7 @@ export class ChatTranscriptBuilder {
 				if (message.output) component.appendOutput(message.output);
 				component.setComplete(message.exitCode, message.cancelled, {
 					truncation: message.meta?.truncation,
+					artifactError: message.meta?.artifactError,
 					images: message.images,
 					showImages: settings.get("terminal.showImages"),
 				});
@@ -371,7 +374,10 @@ export class ChatTranscriptBuilder {
 			case "pythonExecution": {
 				const component = new EvalExecutionComponent(message.code, this.deps.ui, message.excludeFromContext);
 				if (message.output) component.appendOutput(message.output);
-				component.setComplete(message.exitCode, message.cancelled, { truncation: message.meta?.truncation });
+				component.setComplete(message.exitCode, message.cancelled, {
+					truncation: message.meta?.truncation,
+					artifactError: message.meta?.artifactError,
+				});
 				this.container.addChild(component);
 				break;
 			}
@@ -441,6 +447,7 @@ export class ChatTranscriptBuilder {
 		if (message.usage.cacheRead + message.usage.cacheWrite + message.usage.input > 0) {
 			this.#lastAssistantUsage = message.usage;
 		}
+		assistantComponent.setServedModelMismatch(this.#servedModelTracker.check(message));
 
 		const hasVisibleAssistantContent = assistantHasVisibleContent(message);
 		if (hasVisibleAssistantContent) {

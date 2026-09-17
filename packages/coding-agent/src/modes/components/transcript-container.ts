@@ -1,4 +1,5 @@
-import { type Component, Container, type HistoryBatch, TERMINAL } from "@oh-my-pi/pi-tui/tui";
+import { TERMINAL } from "@oh-my-pi/pi-tui";
+import { type Component, Container, type HistoryBatch } from "@oh-my-pi/pi-tui/tui";
 import * as logger from "@oh-my-pi/pi-utils/logger";
 import { isToolActivityComponent } from "./tool-activity";
 

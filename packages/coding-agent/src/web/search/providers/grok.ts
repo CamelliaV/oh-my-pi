@@ -121,7 +121,7 @@ export class GrokProvider extends SearchProvider {
 		return hasGrokSearchCredential(authStorage, context?.modelRegistry);
 	}
 
-	search(params: SearchParams): Promise<SearchResponse> {
+	async search(params: SearchParams): Promise<SearchResponse> {
 		const baseURL = resolveGrokBaseUrl();
 		if (!baseURL) {
 			return Promise.reject(
@@ -133,7 +133,7 @@ export class GrokProvider extends SearchProvider {
 		}
 		const declaredProvider = resolveGrokProviderName();
 		const transportHeaders = declaredProvider
-			? params.modelRegistry?.getProviderHeaders?.(declaredProvider)
+			? await params.modelRegistry?.getProviderHeaders?.(declaredProvider)
 			: undefined;
 
 		const keyOrResolver = resolveGrokSearchKey({

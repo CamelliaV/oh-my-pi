@@ -17,7 +17,6 @@ import {
 } from "../../session/messages";
 import { createIrcMessageCard } from "../../tools/hub";
 import { formatArtifactErrorNotice, type OutputMeta } from "../../tools/output-meta";
-import { replaceTabs, TRUNCATE_LENGTHS, truncateToWidth } from "../../tools/render-utils";
 import { canonicalizeMessage } from "../../utils/thinking-display";
 import { ToolActivityContainer } from "../components/tool-activity";
 import { TranscriptBlock } from "../components/transcript-container";

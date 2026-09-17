@@ -84,13 +84,17 @@ export interface AnthropicSearchTransport {
  * statically — same as Codex affinity, the attempt runs and the provider chain
  * falls through to the next source if the upstream rejects or flattens it.
  */
-export function resolveAnthropicSearchTransport(
+export async function resolveAnthropicSearchTransport(
 	activeModel: Model | undefined,
 	modelRegistry: ModelRegistry | undefined,
-): AnthropicSearchTransport | undefined {
+): Promise<AnthropicSearchTransport | undefined> {
 	if (!isAnthropicSearchAffinityModel(activeModel)) return undefined;
+	const resolvedHeaders =
+		(await modelRegistry?.resolveModelHeaders(activeModel)) ??
+		(await modelRegistry?.getProviderHeaders(activeModel.provider)) ??
+		{};
 	const modelHeaders = {
-		...(modelRegistry?.getProviderHeaders(activeModel.provider) ?? {}),
+		...resolvedHeaders,
 		...(activeModel.headers ?? {}),
 	};
 	const extraBetas = activeModel.compat?.extraBetas;

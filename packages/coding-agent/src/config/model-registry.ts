@@ -323,7 +323,6 @@ export class ModelRegistry {
 		return applyCatalogMetrics(models, this.#catalogMetrics);
 	}
 
-
 	/**
 	 * Accumulate every command-backed (`!cmd`) config value from an apiKey and a
 	 * header record into `target`. Used at load time to record which commands a
@@ -414,13 +413,16 @@ export class ModelRegistry {
 		provider: string,
 		keyConfigs: readonly string[],
 		rotation: ApiKeyPoolPolicy = "first-fill",
-		options?: { forceCommandRefresh?: boolean },
 	): void {
 		this.#customProviderApiKeyPools.set(provider, { keys: [...keyConfigs], rotation });
-		const resolved = keyConfigs
-			.map(keyConfig => resolveConfigValue(keyConfig, options))
-			.filter((key): key is string => Boolean(key));
-		this.authStorage.setConfigApiKeys(provider, resolved, rotation);
+		// Entries stay raw (`!cmd` intact): auth-storage's injected config-value
+		// resolver expands them at the async request boundary (peek/getApiKey),
+		// the boundary upstream v18.2.3 moved all config header resolution to.
+		this.authStorage.setConfigApiKeys(
+			provider,
+			keyConfigs.filter(key => key.length > 0),
+			rotation,
+		);
 	}
 
 	/**

@@ -14,6 +14,7 @@ import { HindsightApi } from "@oh-my-pi/pi-coding-agent/hindsight/client";
 import { loadHindsightConfig } from "@oh-my-pi/pi-coding-agent/hindsight/config";
 import { HindsightSessionState } from "@oh-my-pi/pi-coding-agent/hindsight/state";
 import * as memoryBackend from "@oh-my-pi/pi-coding-agent/memory-backend";
+import { memoryBackendCapabilities } from "../src/memory-backend/types";
 import type { MemoryBackend } from "@oh-my-pi/pi-coding-agent/memory-backend/types";
 import { loadMnemopiConfig } from "@oh-my-pi/pi-coding-agent/mnemopi/config";
 import {
@@ -965,6 +966,7 @@ describe("queued user delivery policy", () => {
 			if (phase === "extension hook" || phase === "extension hook after rebuild") pausePreparation(pause);
 			const backend: MemoryBackend = {
 				id: "mnemopi",
+				capabilities: memoryBackendCapabilities.mnemopi,
 				async start() {},
 				async buildDeveloperInstructions() {
 					return "";

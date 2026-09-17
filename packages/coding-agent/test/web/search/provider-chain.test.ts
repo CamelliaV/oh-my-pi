@@ -271,8 +271,8 @@ describe("resolveAnthropicSearchTransport", () => {
 		},
 	} as unknown as ModelRegistry;
 
-	it("reuses the active model's relay endpoint, request id, cloak state and headers", () => {
-		const transport = resolveAnthropicSearchTransport(anthropicRelayModel, modelRegistry);
+	it("reuses the active model's relay endpoint, request id, cloak state and headers", async () => {
+		const transport = await resolveAnthropicSearchTransport(anthropicRelayModel, modelRegistry);
 
 		expect(transport).toEqual({
 			provider: "zzzcoding-claude",
@@ -284,30 +284,32 @@ describe("resolveAnthropicSearchTransport", () => {
 		});
 	});
 
-	it("carries provider-declared betas so a beta-gated relay accepts the search request", () => {
+	it("carries provider-declared betas so a beta-gated relay accepts the search request", async () => {
 		const gated = {
 			...anthropicRelayModel,
 			compat: { extraBetas: ["context-1m-2025-08-07"] },
 		} as unknown as Model;
 
-		expect(resolveAnthropicSearchTransport(gated, modelRegistry)?.extraBetas).toEqual(["context-1m-2025-08-07"]);
+		expect((await resolveAnthropicSearchTransport(gated, modelRegistry))?.extraBetas).toEqual([
+			"context-1m-2025-08-07",
+		]);
 	});
 
-	it("prefers the wire request id over the catalog id", () => {
+	it("prefers the wire request id over the catalog id", async () => {
 		const aliased = { ...anthropicRelayModel, requestModelId: "claude-opus-5-20260801" } as unknown as Model;
 
-		expect(resolveAnthropicSearchTransport(aliased, modelRegistry)?.model).toBe("claude-opus-5-20260801");
+		expect((await resolveAnthropicSearchTransport(aliased, modelRegistry))?.model).toBe("claude-opus-5-20260801");
 	});
 
-	it("reports no cloak for an api-key relay model", () => {
+	it("reports no cloak for an api-key relay model", async () => {
 		const apiKeyModel = { ...anthropicRelayModel, isOAuth: undefined } as unknown as Model;
 
-		expect(resolveAnthropicSearchTransport(apiKeyModel, modelRegistry)?.isOAuth).toBe(false);
+		expect((await resolveAnthropicSearchTransport(apiKeyModel, modelRegistry))?.isOAuth).toBe(false);
 	});
 
-	it("yields no transport for a non-Messages model, leaving the official path in charge", () => {
-		expect(resolveAnthropicSearchTransport(codexAffinityModel, modelRegistry)).toBeUndefined();
-		expect(resolveAnthropicSearchTransport(bedrockClaudeModel, modelRegistry)).toBeUndefined();
+	it("yields no transport for a non-Messages model, leaving the official path in charge", async () => {
+		expect(await resolveAnthropicSearchTransport(codexAffinityModel, modelRegistry)).toBeUndefined();
+		expect(await resolveAnthropicSearchTransport(bedrockClaudeModel, modelRegistry)).toBeUndefined();
 		expect(resolveAnthropicSearchTransport(undefined, modelRegistry)).toBeUndefined();
 	});
 

@@ -348,7 +348,9 @@ export async function searchAnthropic(
 	// headers). Official endpoints keep the standalone path — see
 	// `anthropic-affinity.ts` for why the scope stops there.
 	const transport =
-		"authStorage" in params ? resolveAnthropicSearchTransport(params.activeModel, params.modelRegistry) : undefined;
+		"authStorage" in params
+			? await resolveAnthropicSearchTransport(params.activeModel, params.modelRegistry)
+			: undefined;
 	const credentialProvider = transport?.provider ?? "anthropic";
 	// A models.yml-pinned relay key lives only in the registry's config overlay,
 	// never as a stored credential, so the affinity path resolves through the
@@ -447,11 +449,11 @@ export class AnthropicProvider extends SearchProvider {
 	readonly id = "anthropic";
 	readonly label = "Anthropic";
 
-	isAvailable(authStorage: AuthStorage, context?: SearchProviderAvailabilityContext): Promise<boolean> | boolean {
+	async isAvailable(authStorage: AuthStorage, context?: SearchProviderAvailabilityContext): Promise<boolean> {
 		// Under affinity the credential belongs to the active model's provider, so
 		// official Anthropic auth is not required. A models.yml-pinned relay key
 		// only exists in the registry's config overlay, so consult that storage.
-		const transport = resolveAnthropicSearchTransport(context?.activeModel, context?.modelRegistry);
+		const transport = await resolveAnthropicSearchTransport(context?.activeModel, context?.modelRegistry);
 		if (transport) {
 			return (context?.modelRegistry?.authStorage ?? authStorage).hasAuth(transport.provider);
 		}

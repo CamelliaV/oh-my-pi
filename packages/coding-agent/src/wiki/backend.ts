@@ -4,6 +4,7 @@ import {
 	type MemoryBackend,
 	type MemoryBackendOperationContext,
 	type MemoryBackendSearchItem,
+	type MemoryPromptPreparation,
 } from "../memory-backend/types";
 import { redactSecrets } from "../secrets/redact";
 import type { AgentSession } from "../session/agent-session";
@@ -71,8 +72,12 @@ export const wikiBackend: MemoryBackend = {
 	async buildDeveloperInstructions(_agentDir, _settings, session) {
 		return getWikiState(session)?.instructions();
 	},
-	async beforeAgentStartPrompt(session, query) {
-		return getWikiState(session)?.autoRecall(query);
+	async beforeAgentStartPrompt(session, query): Promise<MemoryPromptPreparation | undefined> {
+		const context = await getWikiState(session)?.autoRecall(query);
+		if (context === undefined) return undefined;
+		// Wiki recall is status-only (no first-turn latch, no prompt-cache
+		// sensitivity), so the commit is an unconditional accept.
+		return { context, commit: () => true };
 	},
 	async clear(agentDir, cwd, session) {
 		await requireState({ agentDir, cwd, session }).clear();

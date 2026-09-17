@@ -11,7 +11,6 @@ import { redactMemorySecrets as redactSecrets } from "../memory-backend/redact";
 import { truncateApproxTokens } from "../mnemopi/config";
 import consolidateInputTemplate from "../prompts/memories/sharpshooter-consolidate-input.md" with { type: "text" };
 import consolidateSystemTemplate from "../prompts/memories/sharpshooter-consolidate-system.md" with { type: "text" };
-import { redactSecrets } from "../secrets/redact";
 import { resolveSharpshooterModel } from "./extract";
 import {
 	readSharpshooterState,

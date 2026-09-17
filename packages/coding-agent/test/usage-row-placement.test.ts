@@ -660,7 +660,7 @@ describe("work usage accounting", () => {
 		expect(timeline[1]!.session.wallMs).toBe(1_000);
 		expect(formatSessionUsageRow(timeline[1]!.session)).toContain("SESSION");
 		expect(formatSessionUsageRow(timeline[1]!.session)).toContain("3 req");
-		const rendered = new UserMessageComponent("next request", false, undefined, timeline[1]!.session)
+		const rendered = new UserMessageComponent("next request", { sessionUsage: timeline[1]!.session })
 			.render(160)
 			.join("\n");
 		const lines = Bun.stripANSI(rendered).split("\n");

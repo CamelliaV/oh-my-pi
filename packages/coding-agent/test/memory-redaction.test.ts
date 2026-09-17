@@ -50,6 +50,9 @@ describe("durable memory redaction", () => {
 		expect(safe.metadata.nested[0]?.region).toBe("west");
 		expect(safe.timestamp.toISOString()).toBe("2026-08-01T00:00:00.000Z");
 		expect(input.metadata.password).toBe("short");
+	});
+});
+
 import {
 	redactMemorySecrets,
 	redactMemoryTextFields,

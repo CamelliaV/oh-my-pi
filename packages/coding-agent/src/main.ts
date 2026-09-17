@@ -26,7 +26,7 @@ import { type Args, reportUnrecognizedFlags, validateToolNames } from "./cli/arg
 import { applyExtensionFlags, type ExtensionFlagSink } from "./cli/extension-flags";
 import { processFileArguments } from "./cli/file-processor";
 import { buildInitialMessage } from "./cli/initial-message";
-import type { selectSession } from "./cli/session-picker";
+import { selectSession } from "./cli/session-picker";
 import { applyStartupCwd } from "./cli/startup-cwd";
 import { getLatestRelease } from "./cli/update-cli";
 import { findConfigFile } from "./config";
@@ -101,7 +101,6 @@ import {
 import type { ForeignSessionInfo, ForeignSessionSource, ForeignSessionStore } from "./session/foreign-session-store";
 import { fuzzyMatchResumableSessions, resolveResumableSession, type SessionInfo } from "./session/session-listing";
 import { ForkSourceNotFoundError, SessionManager } from "./session/session-manager";
-import { executeBuiltinSlashCommand } from "./slash-commands/builtin-registry";
 import { shouldShowStartupSplash } from "./startup-splash";
 import { discoverTitleSystemPromptFile, resolvePromptInput } from "./system-prompt";
 import { createPersistedSubagentReviverFactory } from "./task/persisted-revive";

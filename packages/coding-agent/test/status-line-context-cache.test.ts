@@ -210,6 +210,8 @@ describe("StatusLineComponent context breakdown", () => {
 
 		expect(comp.getCachedContextBreakdown().usedTokens).toBe(5_500);
 		expect(fake.usageCalls()).toBe(2);
+	});
+
 	it("re-queries when settings or tokenizer identity changes", () => {
 		const { session, usageCalls } = makeSession({ messages: [userMessage("hi")] });
 		const mutable = session as unknown as {

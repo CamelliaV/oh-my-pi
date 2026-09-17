@@ -967,6 +967,7 @@ export async function searchCodex(params: SearchParams): Promise<SearchResponse>
 				const requestTransport = await resolveCodexSearchTransport(
 					params.modelRegistry,
 					firstCandidate.modelId,
+					activeModel,
 				);
 				return runCodexSearchCandidates({
 					auth: { accessToken },
@@ -999,7 +1000,11 @@ export async function searchCodex(params: SearchParams): Promise<SearchResponse>
 				// A refreshed/rotated credential can carry a different bearer and
 				// ChatGPT account id than the seed used to select the first attempt.
 				const accountId = access.accountId ?? getCodexAccountId(access.accessToken);
-				const requestTransport = await resolveCodexSearchTransport(params.modelRegistry, firstCandidate.modelId);
+				const requestTransport = await resolveCodexSearchTransport(
+					params.modelRegistry,
+					firstCandidate.modelId,
+					activeModel,
+				);
 				return runCodexSearchCandidates({
 					auth: { accessToken: access.accessToken, accountId },
 					params,

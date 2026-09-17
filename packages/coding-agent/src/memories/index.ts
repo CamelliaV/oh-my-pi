@@ -25,7 +25,6 @@ import consolidationSystemTemplate from "../prompts/memories/consolidation_syste
 import readPathTemplate from "../prompts/memories/read-path.md" with { type: "text" };
 import stageOneInputTemplate from "../prompts/memories/stage_one_input.md" with { type: "text" };
 import stageOneSystemTemplate from "../prompts/memories/stage_one_system.md" with { type: "text" };
-import { redactSecrets } from "../secrets/redact";
 import type { AgentSession } from "../session/agent-session";
 import {
 	claimStage1Jobs,

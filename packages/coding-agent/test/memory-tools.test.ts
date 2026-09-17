@@ -665,9 +665,9 @@ describe("Mnemopi backend lifecycle", () => {
 	it("recalls after an empty first turn and removes promoted memories on a topic change", async () => {
 		const state = registerMnemopiState();
 		state.rememberScoped("Deployment region is west", { scope: "bank", extract: false });
-		expect(await state.beforeAgentStartPrompt("coffee origin")).toBeUndefined();
-		expect(await state.beforeAgentStartPrompt("deployment region")).toContain("Deployment region is west");
-		expect(await state.beforeAgentStartPrompt("coffee origin")).toBeUndefined();
+		expect((await state.beforeAgentStartPrompt("coffee origin"))?.context).toBeUndefined();
+		expect((await state.beforeAgentStartPrompt("deployment region"))?.context).toContain("Deployment region is west");
+		expect((await state.beforeAgentStartPrompt("coffee origin"))?.context).toBeUndefined();
 		expect(state.lastRecallSnippet).toBeUndefined();
 		const instructions = await mnemopiBackend.buildDeveloperInstructions?.(
 			"/tmp",
@@ -684,9 +684,11 @@ describe("Mnemopi backend lifecycle", () => {
 			question === "older topic" ? old.promise : "newer topic memory",
 		);
 		const pending = state.beforeAgentStartPrompt("older topic");
-		expect(await state.beforeAgentStartPrompt("newer topic")).toBe("newer topic memory");
+		const newer = await state.beforeAgentStartPrompt("newer topic");
+		newer?.commit();
+		expect(newer?.context).toBe("newer topic memory");
 		old.resolve("older topic memory");
-		expect(await pending).toBeUndefined();
+		expect((await pending)?.context).toBeUndefined();
 		expect(state.lastRecallSnippet).toBe("newer topic memory");
 	});
 
@@ -699,12 +701,13 @@ describe("Mnemopi backend lifecycle", () => {
 			}),
 		);
 		state.rememberScoped("Deployment region is west", { scope: "bank", extract: false });
-		expect(await state.beforeAgentStartPrompt("deployment region")).toBeUndefined();
+		expect((await state.beforeAgentStartPrompt("deployment region"))?.context).toBeUndefined();
 		response = '{"ids":["0","0","invented"]}';
 		const selected = await state.beforeAgentStartPrompt("deployment region");
-		expect(selected?.match(/Deployment region is west/g)).toHaveLength(1);
+		selected?.commit();
+		expect(selected?.context?.match(/Deployment region is west/g)).toHaveLength(1);
 		response = "not valid JSON";
-		expect(await state.beforeAgentStartPrompt("deployment region")).toBeUndefined();
+		expect((await state.beforeAgentStartPrompt("deployment region"))?.context).toBeUndefined();
 		expect(state.lastRecallSnippet).toBeUndefined();
 	});
 

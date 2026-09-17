@@ -19,7 +19,7 @@ import {
 import type { AgentSession } from "../session/agent-session";
 import { type BankScope, computeBankScope, ensureBankExists } from "./bank";
 import { createHindsightClient } from "./client";
-import { isHindsightConfigured, loadHindsightConfig } from "./config";
+import { type HindsightConfig, isHindsightConfigured, loadHindsightConfig } from "./config";
 import { formatCurrentTime, formatMemories, type HindsightMessage, hasSubstantiveContent } from "./content";
 import { HindsightSessionState } from "./state";
 

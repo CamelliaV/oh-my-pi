@@ -138,14 +138,10 @@ describe("UserMessageComponent inline images", () => {
 
 	it("renders message images inside the bubble frame", () => {
 		const budget = new ImageBudget(8, () => {});
-		const component = new UserMessageComponent(
-			"what is on this [Image #1]?",
-			false,
-			undefined,
-			undefined,
-			[pngDraft()],
-			budget,
-		);
+		const component = new UserMessageComponent("what is on this [Image #1]?", {
+			images: [pngDraft()],
+			imageBudget: budget,
+		});
 
 		const lines = component.render(60);
 		expect(lines.length).toBeGreaterThan(3);
@@ -157,22 +153,14 @@ describe("UserMessageComponent inline images", () => {
 	});
 
 	it("renders no image rows without a budget (marker-only transcript)", () => {
-		const withBudget = new UserMessageComponent(
-			"what is on this [Image #1]?",
-			false,
-			undefined,
-			undefined,
-			[pngDraft()],
-			new ImageBudget(8, () => {}),
-		).render(60);
-		const withoutBudget = new UserMessageComponent(
-			"what is on this [Image #1]?",
-			false,
-			undefined,
-			undefined,
-			[pngDraft()],
-			undefined,
-		).render(60);
+		const withBudget = new UserMessageComponent("what is on this [Image #1]?", {
+			images: [pngDraft()],
+			imageBudget: new ImageBudget(8, () => {}),
+		}).render(60);
+		const withoutBudget = new UserMessageComponent("what is on this [Image #1]?", {
+			images: [pngDraft()],
+			imageBudget: undefined,
+		}).render(60);
 
 		expect(withoutBudget.length).toBeLessThan(withBudget.length);
 		expect(withoutBudget.some(line => line.includes("\x1b_G"))).toBe(false);
@@ -184,15 +172,11 @@ describe("UserMessageComponent inline images", () => {
 		// otherwise the dim placeholder stays on an otherwise idle screen.
 		const webp: ImageContent = { type: "image", data: PNG_1X1, mimeType: "image/webp" };
 		const requestRepaint = vi.fn();
-		const component = new UserMessageComponent(
-			"look at this [Image #1]",
-			false,
-			undefined,
-			undefined,
-			[webp],
-			new ImageBudget(8, () => {}),
+		const component = new UserMessageComponent("look at this [Image #1]", {
+			images: [webp],
+			imageBudget: new ImageBudget(8, () => {}),
 			requestRepaint,
-		);
+		});
 
 		const before = component.render(60);
 		expect(before.some(line => line.includes("[Image: image/webp]"))).toBe(true);
@@ -218,15 +202,11 @@ describe("UserMessageComponent inline images", () => {
 		const webp: ImageContent = { type: "image", data: PNG_1X1, mimeType: "image/webp" };
 		const requestRepaint = vi.fn();
 		const container = new TranscriptContainer();
-		const component = new UserMessageComponent(
-			"wallpaper probe [Image #1]",
-			false,
-			undefined,
-			undefined,
-			[webp],
-			new ImageBudget(8, () => {}),
+		const component = new UserMessageComponent("wallpaper probe [Image #1]", {
+			images: [webp],
+			imageBudget: new ImageBudget(8, () => {}),
 			requestRepaint,
-		);
+		});
 		container.addChild(component);
 
 		const first = container.render(80);

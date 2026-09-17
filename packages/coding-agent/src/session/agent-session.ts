@@ -3556,6 +3556,13 @@ export class AgentSession {
 					await emitAgentEndNotification({ willContinue: true });
 					return;
 				}
+			} else if (this.#recovery.handlePartialStreamDeath(msg)) {
+				// A mid-stream transport death whose output already reached the user:
+				// replaying would duplicate it, so continue the partial turn instead
+				// (invisible to the retry saga — no attempt/backoff, nothing to wait for).
+				maintenanceRoute("partial-stream-resume");
+				await emitAgentEndNotification({ willContinue: true });
+				return;
 			} else if (this.#recovery.handleMalformedFunctionCallStop(msg)) {
 				// A malformed call with committed text cannot be replayed, but it
 				// never executed anything either: keep the turn and continue with a

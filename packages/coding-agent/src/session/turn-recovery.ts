@@ -23,7 +23,7 @@ import * as AIError from "@oh-my-pi/pi-ai/error";
 import { resolveModelPolicy } from "@oh-my-pi/pi-catalog/compat/resolve";
 import { isFireworksFastModelId, toFireworksBaseModelId } from "@oh-my-pi/pi-catalog/fireworks-model-id";
 import { modelsAreEqual } from "@oh-my-pi/pi-catalog/models";
-import { extractRetryHint, logger, prompt } from "@oh-my-pi/pi-utils";
+import { extractRetryHint, isUnexpectedSocketCloseMessage, logger, prompt } from "@oh-my-pi/pi-utils";
 import type { ModelRegistry } from "../config/model-registry";
 import { formatModelStringWithRouting, resolveModelOverride } from "../config/model-resolver";
 
@@ -31,6 +31,7 @@ import type { Settings } from "../config/settings";
 import type { RetryErrorUpdate } from "../extensibility/shared-events";
 import emptyStopRetryTemplate from "../prompts/system/empty-stop-retry.md" with { type: "text" };
 import malformedFunctionCallRetryTemplate from "../prompts/system/malformed-function-call-retry.md" with { type: "text" };
+import partialStreamResumeTemplate from "../prompts/system/partial-stream-resume.md" with { type: "text" };
 import thinkingLoopRedirectTemplate from "../prompts/system/thinking-loop-redirect.md" with { type: "text" };
 import unexpectedStopRetryTemplate from "../prompts/system/unexpected-stop-retry.md" with { type: "text" };
 import {
@@ -73,9 +74,17 @@ const UNEXPECTED_STOP_MAX_RETRIES = 3;
 const UNEXPECTED_STOP_TIMEOUT_MS = 4000;
 const EMPTY_STOP_MAX_RETRIES = 3;
 const MALFORMED_FUNCTION_CALL_MAX_RETRIES = 3;
+const PARTIAL_STREAM_RESUME_MAX_ATTEMPTS = 3;
 const SIBLING_UNBLOCK_BUFFER_MS = 1_000;
 const NON_WHITESPACE_RE = /\S/;
 const USAGE_PREFLIGHT_BLOCKED_PREFIX = "Usage preflight blocked:";
+// The mid-stream transport-death family: the request was accepted and bytes
+// stopped arriving mid-generation (as opposed to a rejected request, which the
+// provider answers before any stream exists). Every member is retriable and
+// eligible for either kind of continuation: the tool-call resume built from
+// synthetic results in `classifyResolvedInterruptedToolTurn`, or the prose
+// resume in `handlePartialStreamDeath`. Neither replays the failed request —
+// the preserved partial turn already carries everything worth keeping.
 const STREAM_STALL_ERROR_RE = /stream stall/i;
 const HTTP2_STREAM_RESET_ERROR_RE =
 	/stream closed with error code\s+nghttp2_(?:internal_error|refused_stream)|nghttp2_(?:internal_error|refused_stream)|HTTP2(?:StreamReset|RefusedStream)/i;
@@ -88,6 +97,36 @@ const PREMATURE_STREAM_CLOSE_ERROR_RE =
 	/(?:stream closed before a (?:finish_reason|terminal response event)|Codex stream ended before terminal completion event)/i;
 const IMMUTABLE_ANTHROPIC_THINKING_ERROR_PATTERN =
 	/messages\.\d+\.content\.\d+.*\b(?:thinking|redacted_thinking)\b.*\blatest assistant message cannot be modified\b/is;
+
+/**
+ * Wording of a mid-stream transport death: the request was accepted and bytes
+ * stopped arriving mid-generation. This is distinct from a request the provider
+ * rejected — that is answered before any stream exists — and from a permanent
+ * TLS configuration failure, which fails identically on every attempt and must
+ * stay terminal.
+ *
+ * Every member is safe to *continue* past: the partial turn is real history, so
+ * recovery never requires reissuing the request that produced it.
+ */
+function matchesMidStreamDeathText(text: string): boolean {
+	return (
+		STREAM_STALL_ERROR_RE.test(text) ||
+		HTTP2_STREAM_RESET_ERROR_RE.test(text) ||
+		PREMATURE_STREAM_CLOSE_ERROR_RE.test(text) ||
+		// Proxied Python HTTP/2 stream resets and HTTP/1.1 chunked truncations
+		// (upstream v18.1.16/v18.1.19) die mid-generation like the rest of this
+		// family — the turn was preserved, continuation should resume it.
+		AIError.PYTHON_HTTP2_STREAM_RESET_PATTERN.test(text) ||
+		AIError.PYTHON_HTTP_INCOMPLETE_CHUNK_PATTERN.test(text) ||
+		isUnexpectedSocketCloseMessage(text) ||
+		// Bun's wording for an abrupt peer close — the same transport event as the
+		// socket-close message above, and equally mid-stream when output already
+		// committed. Callers additionally require retriable classification and, for
+		// prose continuation, committed output, so a peer close that dies *before*
+		// any stream exists cannot be mistaken for one that died during it.
+		/\bother side closed\b/i.test(text)
+	);
+}
 
 function hasNonWhitespace(value: string): boolean {
 	return NON_WHITESPACE_RE.test(value);
@@ -272,6 +311,7 @@ export class TurnRecovery {
 	#emptyStopRetryCount = 0;
 	#unexpectedStopRetryCount = 0;
 	#malformedFunctionCallRetryCount = 0;
+	#partialStreamResumeCount = 0;
 	#acceptTerminalEmptyStopForPrompt = false;
 	// Three fields sit near the word "serve" and are deliberately distinct:
 	// `#activeRetryFallback.served` gates the one-shot `retry_fallback_succeeded`
@@ -405,6 +445,7 @@ export class TurnRecovery {
 		this.#emptyStopRetryCount = 0;
 		this.#unexpectedStopRetryCount = 0;
 		this.#malformedFunctionCallRetryCount = 0;
+		this.#partialStreamResumeCount = 0;
 		this.#acceptTerminalEmptyStopForPrompt = false;
 	}
 
@@ -419,9 +460,16 @@ export class TurnRecovery {
 	 * persisted errors.
 	 */
 	async onAssistantSettledSuccessfully(message: AssistantMessage): Promise<void> {
+		// A turn that actually completed breaks the mid-stream-death streak, so the
+		// continuation cap counts CONSECUTIVE deaths — mirroring the empty-stop /
+		// malformed-call counters, which also bound a run of failures. The reset sits
+		// AFTER the produced-output guard below: this method runs for every settled
+		// turn, so resetting earlier would clear the streak on the very error turns
+		// the cap exists to bound.
 		if (!assistantTurnProducedOutput(message)) {
 			return;
 		}
+		this.#partialStreamResumeCount = 0;
 		const model = this.#host.model();
 		if (model) {
 			const level = this.#host.thinkingLevel();
@@ -493,6 +541,99 @@ export class TurnRecovery {
 	/** Classifies suspicious terminal stops and schedules bounded recovery. */
 	handleUnexpectedAssistantStop(message: AssistantMessage): Promise<boolean> {
 		return this.#handleUnexpectedAssistantStop(message);
+	}
+
+	/**
+	 * Continue past a mid-stream transport death that already committed visible
+	 * output. The streamed text, images, or tool calls are real history: replaying
+	 * the turn would duplicate what the user already saw, which is why
+	 * {@link isRetryableError} refuses it. Nothing needs replaying either — the
+	 * provider never finished the response, so appending a hidden resume directive
+	 * and continuing produces exactly the completion the dead stream owed.
+	 *
+	 * The failed assistant turn is deliberately KEPT as the transcript tail:
+	 * `Agent.continue()` rejects a bare assistant tail (nothing to continue
+	 * *from*), so the directive is appended as the tail instead, making the
+	 * resumed request a normal continuation whose preceding assistant turn is the
+	 * partial output.
+	 *
+	 * Bounded by {@link PARTIAL_STREAM_RESUME_MAX_ATTEMPTS} because a route that
+	 * dies repeatedly will die again; the cap surfaces the error rather than
+	 * looping.
+	 */
+	handlePartialStreamDeath(message: AssistantMessage): boolean {
+		if (message.stopReason !== "error") return false;
+		if (this.#host.abortInProgress() || this.#host.isDisposed() || this.#host.streamingEditAbortTriggered()) {
+			return false;
+		}
+		const errorMessage = message.errorMessage ?? "";
+		if (!matchesMidStreamDeathText(errorMessage)) return false;
+		const id = this.#classifyRetryMessage(message);
+		if (!AIError.retriable(id)) return false;
+		// Only output that already reached the user justifies continuing instead of
+		// replaying. Before any commit, the ordinary retry path owns the turn: it
+		// can discard and reissue with no user-visible consequence.
+		if (!this.#hasReplayUnsafeOutput(message)) return false;
+		// A turn carrying tool calls whose results are all present is the
+		// stall/reset case; it resumes by re-issuing those calls, not by continuing
+		// prose. Leave it to `classifyResolvedInterruptedToolTurn`.
+		if (this.#toolCallsAllResolved(message)) return false;
+
+		this.#partialStreamResumeCount++;
+		if (this.#partialStreamResumeCount > PARTIAL_STREAM_RESUME_MAX_ATTEMPTS) {
+			logger.warn("Partial stream death persisted after resume cap", {
+				attempts: this.#partialStreamResumeCount - 1,
+				model: message.model,
+				provider: message.provider,
+			});
+			this.#partialStreamResumeCount = 0;
+			return false;
+		}
+
+		logger.info("Partial stream death; continuing after delivered output", {
+			attempt: this.#partialStreamResumeCount,
+			model: message.model,
+			provider: message.provider,
+		});
+		const rendered = prompt.render(partialStreamResumeTemplate, {
+			retryCount: this.#partialStreamResumeCount,
+			maxRetries: PARTIAL_STREAM_RESUME_MAX_ATTEMPTS,
+		});
+		this.#host.agent.appendMessage({
+			role: "developer",
+			content: [{ type: "text", text: rendered }],
+			attribution: "agent",
+			timestamp: Date.now(),
+		});
+		this.#host.scheduleAgentContinue({
+			source: "partial-stream-resume",
+			generation: this.#host.promptGeneration(),
+		});
+		return true;
+	}
+
+	/** Whether every tool call on `message` has a matching tool result in context. */
+	#toolCallsAllResolved(message: AssistantMessage): boolean {
+		const callIds = new Set<string>();
+		for (const block of message.content) {
+			if (block.type === "toolCall") callIds.add(block.id);
+		}
+		if (callIds.size === 0) return false;
+		const messages = this.#host.agent.state.messages;
+		let assistantIndex = -1;
+		for (let i = messages.length - 1; i >= 0; i--) {
+			const candidate = messages[i];
+			if (candidate.role === "assistant" && this.#isSameAssistantMessage(candidate, message)) {
+				assistantIndex = i;
+				break;
+			}
+		}
+		if (assistantIndex < 0) return false;
+		for (let i = assistantIndex + 1; i < messages.length; i++) {
+			const candidate = messages[i];
+			if (candidate.role === "toolResult") callIds.delete(candidate.toolCallId);
+		}
+		return callIds.size === 0;
 	}
 
 	/**
@@ -1338,29 +1479,19 @@ export class TurnRecovery {
 			!this.#host.streamingEditAbortTriggered() &&
 			((message.stopReason === "aborted" && AIError.is(id, AIError.Flag.Abort)) || genericAbort);
 		const errorMessage = message.errorMessage ?? "";
-		const streamStall =
-			message.stopReason === "error" && STREAM_STALL_ERROR_RE.test(errorMessage) && AIError.retriable(id);
-		const transportReset =
+		// The whole mid-stream transport-death family (idle stall, HTTP/2 reset,
+		// premature gateway close, socket closure) is treated identically here: the
+		// stream died mid-generation and the turn was preserved so continuation can
+		// resume rather than replay. Distinguished from a rejected request, which
+		// never produced a stream to die.
+		const transportDeath =
 			message.stopReason === "error" &&
-			(HTTP2_STREAM_RESET_ERROR_RE.test(errorMessage) ||
-				AIError.PYTHON_HTTP2_STREAM_RESET_PATTERN.test(errorMessage) ||
-				AIError.PYTHON_HTTP_INCOMPLETE_CHUNK_PATTERN.test(errorMessage)) &&
+			matchesMidStreamDeathText(errorMessage) &&
 			AIError.retriable(id) &&
 			!this.#host.abortInProgress() &&
 			!this.#host.isDisposed() &&
 			!this.#host.streamingEditAbortTriggered();
-		// A premature gateway close (no finish_reason/terminal event) is the same
-		// transport-failure class as the stall/reset cases: mid-generation death.
-		// Preserved-turn continuation lets the retry resume after the partial
-		// output instead of surfacing the error or replaying rendered content.
-		const prematureClose =
-			message.stopReason === "error" &&
-			PREMATURE_STREAM_CLOSE_ERROR_RE.test(errorMessage) &&
-			AIError.retriable(id) &&
-			!this.#host.abortInProgress() &&
-			!this.#host.isDisposed() &&
-			!this.#host.streamingEditAbortTriggered();
-		if (!reasonlessAbort && !streamStall && !transportReset && !prematureClose) return undefined;
+		if (!reasonlessAbort && !transportDeath) return undefined;
 		if (reasonlessAbort && genericAbort) message.errorId = AIError.create(AIError.Flag.Abort);
 
 		// Idle stall and HTTP/2 RST both close the Cursor Connect stream:

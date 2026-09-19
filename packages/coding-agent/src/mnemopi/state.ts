@@ -485,6 +485,7 @@ export class MnemopiSessionState {
 
 	async recallForContext(query: string, question = query): Promise<string | undefined> {
 		const results = await this.collectScopedRecallResults(query);
+
 		const selected = await selectRecallContext(
 			question,
 			results,

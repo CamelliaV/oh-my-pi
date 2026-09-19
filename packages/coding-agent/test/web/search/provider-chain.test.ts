@@ -310,7 +310,7 @@ describe("resolveAnthropicSearchTransport", () => {
 	it("yields no transport for a non-Messages model, leaving the official path in charge", async () => {
 		expect(await resolveAnthropicSearchTransport(codexAffinityModel, modelRegistry)).toBeUndefined();
 		expect(await resolveAnthropicSearchTransport(bedrockClaudeModel, modelRegistry)).toBeUndefined();
-		expect(resolveAnthropicSearchTransport(undefined, modelRegistry)).toBeUndefined();
+		expect(await resolveAnthropicSearchTransport(undefined, modelRegistry)).toBeUndefined();
 	});
 
 	it("yields no transport for an official endpoint, so search keeps the cheap default model", () => {

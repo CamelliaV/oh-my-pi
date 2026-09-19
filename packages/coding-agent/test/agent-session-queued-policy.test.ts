@@ -149,9 +149,10 @@ describe("queued user delivery policy", () => {
 
 	async function setupMemory(
 		backendId: "mnemopi" | "hindsight",
-		recall: (query: string) => Promise<string | undefined>,
+		recall0: (query: string) => Promise<string | undefined>,
 		policy = false,
 	) {
+		const recall = recall0;
 		const dir = TempDir.createSync("@pi-queued-memory-");
 		tempDirs.push(dir);
 		const settings = Settings.isolated({
@@ -200,7 +201,12 @@ describe("queued user delivery policy", () => {
 			state.attachSessionListeners();
 			vi.spyOn(state.memory, "recallEnhanced").mockImplementation(async query => {
 				const content = await recall(query);
-				return content ? [{ id: "recalled", content, source: null, timestamp: null, score: 1 }] : [];
+				// keyword_score: the mock bypasses the real lexical scorer, so pin the score
+				// a genuinely relevant hit would carry (fork: llm-less auto-recall only
+				// injects strong lexical evidence).
+				return content
+					? [{ id: "recalled", content, source: null, timestamp: null, score: 1, keyword_score: 1 }]
+					: [];
 			});
 		} else {
 			const client = new HindsightApi({ baseUrl: "http://unused.invalid" });

@@ -90,8 +90,8 @@ export async function resolveAnthropicSearchTransport(
 ): Promise<AnthropicSearchTransport | undefined> {
 	if (!isAnthropicSearchAffinityModel(activeModel)) return undefined;
 	const resolvedHeaders =
-		(await modelRegistry?.resolveModelHeaders(activeModel)) ??
-		(await modelRegistry?.getProviderHeaders(activeModel.provider)) ??
+		(await modelRegistry?.resolveModelHeaders?.(activeModel)) ??
+		(await modelRegistry?.getProviderHeaders?.(activeModel.provider)) ??
 		{};
 	const modelHeaders = {
 		...resolvedHeaders,

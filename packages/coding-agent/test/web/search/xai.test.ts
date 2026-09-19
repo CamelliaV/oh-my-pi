@@ -10,8 +10,15 @@ const fakeAuthStorage = {
 } as unknown as AuthStorage;
 
 function makeFetchMock(response: Record<string, unknown>): FetchImpl {
+	// Extraction fixtures without a web_search_call item still describe a
+	// response whose search ran; stamp the marker so the fork's real-search
+	// gate accepts them and the parser under test is what decides the answer.
+	const withSearchEvidence = {
+		...response,
+		usage: { ...(response.usage as Record<string, unknown> | undefined), num_server_side_tools_used: 1 },
+	};
 	return async () =>
-		new Response(JSON.stringify(response), {
+		new Response(JSON.stringify(withSearchEvidence), {
 			status: 200,
 			headers: { "Content-Type": "application/json" },
 		});

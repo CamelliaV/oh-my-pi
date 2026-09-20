@@ -5,7 +5,7 @@ patch on top of upstream. `AGENTS.md` carries only the index; read this file
 before rebasing, before touching a patched region, or when a patch's
 reasoning matters.
 
-## Patch list (v18.1.10 baseline; merged 2026-09-04 from v18.0.10 via trial/v18.1.6 two-stage merge — adjudications at the bottom)
+## Patch list (v18.2.3 baseline; merged 2026-09-20 from v18.1.10 via trial/v18.1.19-master then upgrade/v18.2.3 — adjudications at the bottom)
 
 
 1. `feat(tui)` user message bubble rounded frame — `user-message.ts` Box +
@@ -839,3 +839,55 @@ rebuilt and installed. Also exposed while debugging: a usage-less
 assistant message crashes `work-usage.ts` `usageIsBilled` at session load
 (synthetic sessions only — real assistant turns all carry usage); latent,
 left as-is.
+
+## Merge adjudications (v18.1.10 → v18.1.19 → v18.2.3, 2026-09-20)
+
+Two-stage synthetic-commit merge: `trial/v18.1.19-master` (`eec14df`, already
+resolved) plus master patch 31 (`ccf1f82`) onto `upgrade/v18.2.3`, then
+`upstream/v18.2.3` (`7b9d57a`, parented on `6e64dd0`). 37 conflict files.
+All 31 patches survive. Adjudications that matter:
+
+1. **MemoryPromptPreparation** — upstream v18.2.x replaced
+   `beforeAgentStartPrompt(): string | undefined` with a commit-gated
+   `{ context, commit }` so aborted/superseded lookups never inject. Ported
+   across mnemopi/hindsight/wiki backends and session-tools. First-turn latch
+   (`hasRecalledForFirstTurn`) is claimed on *any* committed lookup including
+   empty, matching queued-policy. Fork's keyword_score ≥ 0.7 auto-recall
+   gate stays (llm-less injection). Topic-change / selector-decline tests
+   that assumed uncommitted lookups could mutate `lastRecallSnippet` were
+   dropped — that contract is now commit-gated.
+2. **Async headers** — v18.2.3 made `ModelRegistry.getProviderHeaders()` /
+   `resolveModelHeaders()` async. Search affinity (anthropic/codex/grok/xai)
+   awaits them; tests that called the transports sync now `async/await`.
+3. **UserBubbleOptions** — upstream collapsed the positional ctor into an
+   options object. Fork's image/usage fields (`images`, `imageBudget`,
+   `sessionUsage`, `imageKeyPrefix`) live on that object; call sites and
+   tests converted.
+4. **Kitty graphics** — fork per-screen ledgers (`#transmittedMain/Alt`)
+   unioned with upstream's `#resetPurgeIds` + union `#transmitted` set.
+   `forgetTransmitted` uses the reset-purge queue so a deletion cannot ride
+   out on an alternate-buffer frame.
+5. **Title spinner** — upstream added `tui.titleSpinner` styles
+   (braille/pulse/dots/line). Fork's nerd-font pie ring is the default
+   (`pie`), with a slower 130ms interval.
+6. **web_search extraction** — fork's grok-responses core adopted
+   upstream's phased `parseAnswer` heuristic (`final_answer` /
+   commentary / 300-char substantive). Real-search gate still requires
+   `num_server_side_tools_used`.
+7. **Codex custom-endpoint OAuth guard** — `getCredentialOrigin` /
+   `hasCommandBackedApiKey` are optional-called so partial AuthStorage
+   mocks (broker tests) don't throw.
+8. **Python HTTP/2 mid-stream death** — upstream's
+   `PYTHON_HTTP2_STREAM_RESET_PATTERN` /
+   `PYTHON_HTTP_INCOMPLETE_CHUNK_PATTERN` folded into fork's unified
+   `matchesMidStreamDeathText` (patch 31).
+9. **NATIVES** — official v18.2.3 binary `--smoke-test` with isolated HOME
+   extracted `pi_natives.linux-x64-{baseline,modern}.node`; copied into
+   `packages/natives/native/` of the upgrade worktree. Binary is 242 MB
+   (precompiled bytecode, v18.2.0).
+
+Verification: `bun run check:ts` 0 errors; zh [1210] driver 6/6;
+partial-stream-death 4/4; memory-tools + queued-policy 117/117; resume
+tests 12/12; gallery `--surface=segment` paints; `--smoke-test` ok;
+installed `~/.local/bin/omp-patched` reports `omp/18.2.3`.
+

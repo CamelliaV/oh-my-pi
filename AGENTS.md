@@ -406,7 +406,10 @@ parents onto the previous one), making every upgrade incremental. v17.3.5→v18.
 was done this way (34 files, 76 hunks; merge commit `008c64c`); v18.0.9→v18.0.10
 cost exactly ONE trivial conflict (159 files, +6398−774); v18.0.10→v18.1.10
 (2026-09-04) went through `trial/v18.1.6` — 40 conflicts resolved there, then
-the v18.1.10 incremental merge added only 8 (541 files, +31953−15683).
+the v18.1.10 incremental merge added only 8 (541 files, +31953−15683);
+v18.1.10→v18.2.3 (2026-09-20) went through `trial/v18.1.19-master` then
+`upgrade/v18.2.3` (synthetic `upstream/v18.2.3` parented on `6e64dd0`).
+
 
 Legacy alternative: replace the worktree with the tarball and re-apply the
 patch series by hand/cherry-pick.
@@ -423,7 +426,7 @@ patch series by hand/cherry-pick.
    PTY probes for extensions (`/tools`) — debug sessions MUST use `--no-session`.
 
 
-### Patch list (v18.1.10 baseline)
+### Patch list (v18.2.3 baseline)
 
 Index only. Full rationale, wire measurements, and verification recipes live in
 [`docs/fork-patches.md`](docs/fork-patches.md) — read it before rebasing, before

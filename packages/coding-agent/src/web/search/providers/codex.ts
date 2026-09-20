@@ -929,8 +929,8 @@ export async function searchCodex(params: SearchParams): Promise<SearchResponse>
 			// its AuthStorage, so a lower-priority OAuth origin is irrelevant when
 			// that command source is configured.
 			const credentialSource = params.modelRegistry?.authStorage ?? params.authStorage;
-			const credentialOrigin = credentialSource.getCredentialOrigin(transport.provider);
-			const hasCommandBackedKey = params.modelRegistry?.hasCommandBackedApiKey(transport.provider) === true;
+			const credentialOrigin = credentialSource.getCredentialOrigin?.(transport.provider);
+			const hasCommandBackedKey = params.modelRegistry?.hasCommandBackedApiKey?.(transport.provider) === true;
 			if (!hasCommandBackedKey && (credentialOrigin?.kind === "oauth" || credentialOrigin?.kind === "env")) {
 				throw new SearchProviderError(
 					"codex",

@@ -213,18 +213,18 @@ describe("UserMessageComponent inline images", () => {
 		expect(first.some(line => line.includes("[Image: image/webp]"))).toBe(true);
 		expect(first.some(line => line.includes("\x1b_G"))).toBe(false);
 
-		// Commit the finalized bubble into native history (flush policy offers
-		// the complete settled prefix), then let the conversion land.
-		const flush = container.peekFlushBatch(80);
-		expect(flush).toBeDefined();
-		container.acknowledgeFinalizedBatch(flush!.id);
-
 		for (let i = 0; i < 100 && requestRepaint.mock.calls.length === 0; i++) {
 			const { promise, resolve } = Promise.withResolvers<void>();
 			setImmediate(resolve);
 			await promise;
 		}
 		expect(requestRepaint).toHaveBeenCalled();
+
+		// Conversion done → isTranscriptBlockFinalized is now true, so flush
+		// can offer the settled prefix into native history.
+		const flush = container.peekFlushBatch(80);
+		expect(flush).toBeDefined();
+		container.acknowledgeFinalizedBatch(flush!.id);
 
 		// A resize epoch replays the committed ledger: the late conversion must
 		// surface in the replayed history instead of the placeholder forever.

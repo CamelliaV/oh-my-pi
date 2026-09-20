@@ -313,8 +313,8 @@ describe("resolveAnthropicSearchTransport", () => {
 		expect(await resolveAnthropicSearchTransport(undefined, modelRegistry)).toBeUndefined();
 	});
 
-	it("yields no transport for an official endpoint, so search keeps the cheap default model", () => {
-		expect(resolveAnthropicSearchTransport(officialAnthropicModel, modelRegistry)).toBeUndefined();
+	it("yields no transport for an official endpoint, so search keeps the cheap default model", async () => {
+		expect(await resolveAnthropicSearchTransport(officialAnthropicModel, modelRegistry)).toBeUndefined();
 	});
 
 	it("yields no transport when an explicit search endpoint is configured", () => {

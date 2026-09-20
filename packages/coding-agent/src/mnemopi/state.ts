@@ -506,12 +506,13 @@ export class MnemopiSessionState {
 		const query = composeRecallQuery(latestPrompt, queryMessages, this.config.recallContextTurns);
 		const truncated = truncateRecallQuery(query, latestPrompt, this.config.recallMaxQueryChars);
 		const context = await this.recallForContext(truncated, latestPrompt);
+		const stale = this.#recallGeneration !== generation;
 		return {
-			context,
+			context: stale ? undefined : context,
 			commit: () => {
 				if (this.#recallGeneration !== generation) return false;
 				this.hasRecalledForFirstTurn = true;
-				if (context) this.lastRecallSnippet = context;
+				this.lastRecallSnippet = context;
 				return true;
 			},
 		};
@@ -650,8 +651,8 @@ export class MnemopiSessionState {
 		// A claimed user turn or a transcript reset supersedes this background
 		// lookup. Do not consume its first recall or overwrite its prompt context.
 		if (this.#recallGeneration !== generation) return;
-		this.hasRecalledForFirstTurn = true;
 		if (!context) return;
+		this.hasRecalledForFirstTurn = true;
 		this.lastRecallSnippet = context;
 		try {
 			await this.session.refreshBaseSystemPrompt();

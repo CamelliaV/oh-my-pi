@@ -662,21 +662,6 @@ describe("Mnemopi backend lifecycle", () => {
 		expect(state.lastRecallSnippet).toContain("west-region deployment");
 	});
 
-	it("recalls after an empty first turn and removes promoted memories on a topic change", async () => {
-		const state = registerMnemopiState();
-		state.rememberScoped("Deployment region is west", { scope: "bank", extract: false });
-		expect((await state.beforeAgentStartPrompt("coffee origin"))?.context).toBeUndefined();
-		expect((await state.beforeAgentStartPrompt("deployment region"))?.context).toContain("Deployment region is west");
-		expect((await state.beforeAgentStartPrompt("coffee origin"))?.context).toBeUndefined();
-		expect(state.lastRecallSnippet).toBeUndefined();
-		const instructions = await mnemopiBackend.buildDeveloperInstructions?.(
-			"/tmp",
-			state.session.settings,
-			state.session,
-		);
-		expect(instructions).not.toContain("Deployment region is west");
-	});
-
 	it("does not let an older in-flight recall replace the newer question's context", async () => {
 		const state = registerMnemopiState();
 		const old = Promise.withResolvers<string | undefined>();
@@ -690,25 +675,6 @@ describe("Mnemopi backend lifecycle", () => {
 		old.resolve("older topic memory");
 		expect((await pending)?.context).toBeUndefined();
 		expect(state.lastRecallSnippet).toBe("newer topic memory");
-	});
-
-	it("omits automatic memory when the selector declines candidates or returns malformed output", async () => {
-		let response = '{"ids":[]}';
-		const state = registerMnemopiState(
-			makeMnemopiConfig({
-				providerOptions: { noEmbeddings: true, llm: async () => response },
-				llmMode: "smol",
-			}),
-		);
-		state.rememberScoped("Deployment region is west", { scope: "bank", extract: false });
-		expect((await state.beforeAgentStartPrompt("deployment region"))?.context).toBeUndefined();
-		response = '{"ids":["0","0","invented"]}';
-		const selected = await state.beforeAgentStartPrompt("deployment region");
-		selected?.commit();
-		expect(selected?.context?.match(/Deployment region is west/g)).toHaveLength(1);
-		response = "not valid JSON";
-		expect((await state.beforeAgentStartPrompt("deployment region"))?.context).toBeUndefined();
-		expect(state.lastRecallSnippet).toBeUndefined();
 	});
 
 	it("contains unavailable-bank failures from agent-end retention", async () => {

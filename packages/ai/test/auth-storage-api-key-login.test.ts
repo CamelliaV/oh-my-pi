@@ -115,6 +115,43 @@ describe("AuthStorage api-key login upsert", () => {
 		expect(rotatedKeys).toEqual(["first-kagi-key", "second-kagi-key"]);
 	});
 
+	it("rotates a login-key pool on usage-limit even without sticky or apiKey", async () => {
+		if (!store || !authStorage) throw new Error("test setup failed");
+
+		for (let i = 0; i < 12; i++) {
+			store.upsertAuthCredentialForProvider("google", {
+				type: "api_key",
+				key: `sk-fake-${String(i).padStart(2, "0")}`,
+				source: "login",
+			});
+		}
+		await authStorage.reload();
+
+		const sessionId = "sess-google-pool";
+		const first = await authStorage.getApiKey("google", sessionId);
+		expect(first).toMatch(/^sk-fake-\d{2}$/);
+
+		// Drop the in-memory sticky the resolve just wrote, matching a fresh
+		// process / turn-recovery mark that does not pass the exhausted bearer.
+		expect(authStorage.releaseSessionCredentialForReselection("google", sessionId)).toBe(true);
+
+		const geminiQuota = Object.assign(
+			new Error(
+				"Google API error (429): You exceeded your current quota, please check your plan and billing details. For more information on this error, head to: https://ai.google.dev/gemini-api/docs/rate-limits.\n* Quota exceeded for metric: generativelanguage.googleapis.com/generate_content_free_tier_requests, limit: 20\nPlease retry in 46.30812685s.",
+			),
+			{ status: 429 },
+		);
+		const switched = await authStorage.rotateSessionCredential("google", sessionId, {
+			error: geminiQuota,
+			modelId: "gemini-3.8-flash",
+		});
+		expect(switched).toBe(true);
+
+		const next = await authStorage.getApiKey("google", sessionId);
+		expect(next).toMatch(/^sk-fake-\d{2}$/);
+		expect(next).not.toBe(first);
+	});
+
 	it("replaces Token Plan Cookies by API-token identity without collapsing different tokens", () => {
 		if (!store) throw new Error("test setup failed");
 		const firstToken = "sk-sp-first";

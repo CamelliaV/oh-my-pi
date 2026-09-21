@@ -10,6 +10,7 @@ import {
 	isUsageLimitStatus,
 	matchesUsageLimitText,
 	parseRateLimitReason,
+	usageLimitBlockRetryAfterMs,
 } from "@oh-my-pi/pi-ai/error/rate-limit";
 
 function googleRpc429(reason: string, retryDelay?: string, message = "Resource exhausted"): string {
@@ -200,6 +201,17 @@ describe("parseRateLimitReason", () => {
 		expect(parseRateLimitReason(freeQuota)).toBe("QUOTA_EXHAUSTED");
 		expect(isUsageLimit(new ProviderHttpError(freeQuota, 429, { code: "insufficient_quota" }))).toBe(true);
 		expect(isUsageLimitOutcome(429, freeQuota)).toBe(true);
+	});
+
+	it("classifies Gemini free-tier quota as exhausted despite the rate-limits URL", () => {
+		const geminiQuota =
+			"Google API error (429): You exceeded your current quota, please check your plan and billing details. For more information on this error, head to: https://ai.google.dev/gemini-api/docs/rate-limits. To monitor your current usage, head to: https://ai.dev/rate-limit. \n* Quota exceeded for metric: generativelanguage.googleapis.com/generate_content_free_tier_requests, limit: 20, model: gemini-3.8-flash\nPlease retry in 46.30812685s.";
+		expect(parseRateLimitReason(geminiQuota)).toBe("QUOTA_EXHAUSTED");
+		expect(isUsageLimitOutcome(429, geminiQuota)).toBe(true);
+		expect(isUsageLimit(Object.assign(new Error(geminiQuota), { status: 429 }))).toBe(true);
+		const block = usageLimitBlockRetryAfterMs(geminiQuota, 46_308);
+		expect(block.retryAfterMs).toBe(30 * 60 * 1000);
+		expect(block.providerTimed).toBe(false);
 	});
 
 	it("classifies Codex usage limit error as QUOTA_EXHAUSTED", () => {
@@ -739,6 +751,26 @@ describe("calculateRateLimitBackoffMs", () => {
 
 	it("returns a short backoff for CONCURRENT_LIMIT", () => {
 		expect(calculateRateLimitBackoffMs("CONCURRENT_LIMIT")).toBe(5_000);
+	});
+});
+
+describe("usageLimitBlockRetryAfterMs", () => {
+	it("floors a short Gemini retry hint to the quota backoff", () => {
+		const block = usageLimitBlockRetryAfterMs("Quota exceeded for metric generate_content_free_tier_requests", 46_000);
+		expect(block.retryAfterMs).toBe(30 * 60 * 1000);
+		expect(block.providerTimed).toBe(false);
+	});
+
+	it("keeps a long quota reset as provider-timed", () => {
+		const block = usageLimitBlockRetryAfterMs("You exceeded your current quota", 6 * 60 * 60 * 1000);
+		expect(block.retryAfterMs).toBe(6 * 60 * 60 * 1000);
+		expect(block.providerTimed).toBe(true);
+	});
+
+	it("honors a short hint on a transient per-minute cap", () => {
+		const block = usageLimitBlockRetryAfterMs("Rate limit exceeded, too many requests per minute", 5_000);
+		expect(block.retryAfterMs).toBe(5_000);
+		expect(block.providerTimed).toBe(true);
 	});
 });
 

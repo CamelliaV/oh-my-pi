@@ -246,15 +246,6 @@ export function parseRateLimitReason(errorMessage: string): RateLimitReason {
 	}
 
 	if (
-		lower.includes("per minute") ||
-		lower.includes("rate limit") ||
-		lower.includes("too many requests") ||
-		lower.includes("presque")
-	) {
-		return "RATE_LIMIT_EXCEEDED";
-	}
-
-	if (
 		lower.includes("exhausted") ||
 		lower.includes("quota") ||
 		lower.includes("usage limit") ||
@@ -269,6 +260,15 @@ export function parseRateLimitReason(errorMessage: string): RateLimitReason {
 		CREDITS_EXHAUSTED_PATTERN.test(errorMessage)
 	) {
 		return "QUOTA_EXHAUSTED";
+	}
+
+	if (
+		lower.includes("per minute") ||
+		lower.includes("rate limit") ||
+		lower.includes("too many requests") ||
+		lower.includes("presque")
+	) {
+		return "RATE_LIMIT_EXCEEDED";
 	}
 
 	if (lower.includes("500") || lower.includes("internal error") || lower.includes("internal server error")) {
@@ -302,6 +302,33 @@ export function calculateRateLimitBackoffMs(reason: RateLimitReason): number {
 		default:
 			return QUOTA_EXHAUSTED_BACKOFF_MS; // conservative default
 	}
+}
+
+/**
+ * Credential-block duration for a usage-limit failure.
+ *
+ * Provider retry hints on daily/account quota (Gemini "Please retry in 46s"
+ * next to `generate_content_free_tier_requests`) are per-minute windows, not
+ * the quota reset. Using them as the block lets session-hash reselect the
+ * exhausted key as soon as the hint elapses. Floor quota blocks to the
+ * exhausted-quota backoff; transient rate limits still honor the hint.
+ */
+export function usageLimitBlockRetryAfterMs(
+	errorMessage: string,
+	parsedRetryAfterMs: number | undefined,
+): { retryAfterMs: number; providerTimed: boolean } {
+	const reason = parseRateLimitReason(errorMessage);
+	const heuristic = calculateRateLimitBackoffMs(reason);
+	if (isQuotaExhaustedReason(reason)) {
+		return {
+			retryAfterMs: Math.max(parsedRetryAfterMs ?? 0, heuristic),
+			providerTimed: parsedRetryAfterMs !== undefined && parsedRetryAfterMs >= heuristic,
+		};
+	}
+	return {
+		retryAfterMs: parsedRetryAfterMs ?? heuristic,
+		providerTimed: parsedRetryAfterMs !== undefined,
+	};
 }
 
 /** Detect usage/quota limit errors in error messages (persistent, requires credential switch). */

@@ -19,7 +19,7 @@ import {
 } from "./auth/sqlite-credential-store";
 import type { ApiKeyResolver } from "./auth-retry";
 import * as AIError from "./error";
-import { isUsageLimitOutcome } from "./error/rate-limit";
+import { isUsageLimitOutcome, usageLimitBlockRetryAfterMs } from "./error/rate-limit";
 import { getProviderDefinition, PASTE_CODE_LOGIN_PROVIDERS } from "./registry";
 import { getOAuthApiKey, getOAuthProvider, normalizeOAuthCredentialExpiry, refreshOAuthToken } from "./registry/oauth";
 import type {
@@ -4887,7 +4887,39 @@ export class AuthStorage {
 		}
 		if (explicit) return undefined;
 		const sessionCredential = this.#getSessionCredential(provider, sessionId);
-		return sessionCredential ? { ...sessionCredential, explicit: false } : undefined;
+		if (sessionCredential) return { ...sessionCredential, explicit: false };
+		// No sticky pin (fresh process, never-resolved session, or a login-key
+		// pool whose hash pick was never recorded). Without a session id we
+		// cannot know which key just failed — round-robin would increment and
+		// burn a sibling. With a session id, burn the hash-home credential
+		// getApiKey would start on, even if a later resolve already skipped it.
+		if (!sessionId) return undefined;
+		const loginKeys = this.#getCredentialsForProvider(provider)
+			.map((credential, index) => ({ credential, index }))
+			.filter(
+				(entry): entry is { credential: ApiKeyCredential; index: number } =>
+					entry.credential.type === "api_key" && entry.credential.source === "login",
+			);
+		const pool =
+			loginKeys.length > 0
+				? loginKeys
+				: this.#getCredentialsForProvider(provider)
+						.map((credential, index) => ({ credential, index }))
+						.filter(
+							(entry): entry is { credential: ApiKeyCredential; index: number } =>
+								entry.credential.type === "api_key",
+						);
+		if (pool.length === 0) return undefined;
+		const providerKey = this.#getProviderTypeKey(provider, "api_key");
+		// Hash-home is only a safe stand-in for the failed key when nothing in
+		// the pool is already blocked. Otherwise getApiKey may have skipped
+		// the home key and the request used a sibling — burning home again
+		// would leave the actual exhausted bearer in rotation.
+		if (pool.some(entry => this.#isCredentialBlocked(provider, providerKey, entry.index))) {
+			return undefined;
+		}
+		const start = this.#getHashedIndex(sessionId, pool.length);
+		return { type: "api_key" as const, index: pool[start]!.index, explicit: false };
 	}
 
 	#credentialBlockRouting(
@@ -7197,12 +7229,14 @@ export class AuthStorage {
 		if (!accountPolicy && (AIError.isUsageLimit(error) || isUsageLimitOutcome(status, message))) {
 			// Thread the provider-specified reset window (e.g. Devin "Your limit
 			// will reset in 13 minutes") into the block duration so the credential
-			// is not reselected and hammered while the cap remains active.
-			const retryAfterMs = extractProviderRetryHint(provider, message);
+			// is not reselected and hammered while the cap remains active. Daily
+			// quota hints like Gemini "Please retry in 46s" are floored so the
+			// exhausted key stays skipped instead of being hash-reselected.
+			const retryAfter = usageLimitBlockRetryAfterMs(message ?? "", extractProviderRetryHint(provider, message));
 			return (
 				await this.markUsageLimitReached(provider, sessionId, {
-					retryAfterMs,
-					providerTimed: retryAfterMs !== undefined,
+					retryAfterMs: retryAfter.retryAfterMs,
+					providerTimed: retryAfter.providerTimed,
 					modelId: options?.modelId,
 					apiKey: options?.apiKey,
 					credentialId: options?.credentialId,

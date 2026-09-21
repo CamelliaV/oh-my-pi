@@ -17,7 +17,7 @@ import type {
 	ThinkingContent,
 	ToolChoice,
 } from "@oh-my-pi/pi-ai";
-import { calculateRateLimitBackoffMs, parseRateLimitReason } from "@oh-my-pi/pi-ai";
+import { calculateRateLimitBackoffMs, parseRateLimitReason, usageLimitBlockRetryAfterMs } from "@oh-my-pi/pi-ai";
 import * as AIError from "@oh-my-pi/pi-ai/error";
 import { extractProviderRetryHint } from "@oh-my-pi/pi-ai/utils/retry-after";
 import { resolveModelPolicy } from "@oh-my-pi/pi-catalog/compat/resolve";
@@ -764,16 +764,18 @@ export class TurnRecovery {
 		if (!recorded) {
 			const errorMessage = message.errorMessage || "Unknown error";
 			const parsedRetryAfterMs = this.#parseRetryAfterMsFromError(errorMessage);
-			const retryAfterMs = parsedRetryAfterMs ?? calculateRateLimitBackoffMs(parseRateLimitReason(errorMessage));
+			const retryAfter = usageLimitBlockRetryAfterMs(errorMessage, parsedRetryAfterMs);
+			const retryAfterMs = retryAfter.retryAfterMs;
 			recorded = (async (): Promise<UsageLimitOutcome> => {
 				const outcome = await this.#host.modelRegistry.authStorage.markUsageLimitReached(
 					activeModel.provider,
 					this.#host.sessionId(),
 					{
 						retryAfterMs,
-						// Provider-stated timing only when the error text parsed;
-						// the 30-minute fallback is a guess.
-						providerTimed: parsedRetryAfterMs !== undefined,
+						// Provider-stated timing only when the parsed hint is at
+						// least as long as the quota floor; Gemini's 46s retry
+						// is a per-minute window, not the daily reset.
+						providerTimed: retryAfter.providerTimed,
 						baseUrl: activeModel.baseUrl,
 						modelId: activeModel.id,
 					},

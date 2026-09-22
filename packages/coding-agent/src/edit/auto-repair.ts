@@ -16,8 +16,8 @@
 import { completeSimple, retryTransientCompletion } from "@oh-my-pi/pi-ai";
 import { diffLineRuns, editDiffString, summarizeCode } from "@oh-my-pi/pi-natives";
 import { logger, prompt } from "@oh-my-pi/pi-utils";
-import { resolveRoleSelection } from "../config/model-resolver";
 import type { WritethroughCallback } from "../lsp";
+import { collectOnlineTinyCandidates } from "../tiny/online-candidates";
 import type { ToolSession } from "../tools";
 import { invalidateFsScanAfterWrite } from "../tools/fs-cache-invalidation";
 import repairPromptSource from "./auto-repair.md" with { type: "text" };
@@ -291,13 +291,17 @@ export async function attemptEditAutoRepair(options: {
 	if (!session.settings.get("edit.autoRepair.enabled")) return undefined;
 	const registry = session.modelRegistry;
 	if (!registry) return undefined;
-	const model = resolveRoleSelection(["smol"], session.settings, registry.getAvailable())?.model;
-	if (!model) return undefined;
+	const candidates = collectOnlineTinyCandidates(["smol"], session.settings, registry.getAvailable());
+	if (candidates.length === 0) return undefined;
 	const sessionId = session.getSessionId?.() ?? undefined;
-	// Resolve the key eagerly so the session-sticky credential is recorded and
-	// an unauthenticated smol role bails before any region work.
-	const apiKey = await registry.getApiKey(model, sessionId);
-	if (!apiKey) return undefined;
+	let hasKey = false;
+	for (const candidate of candidates) {
+		if (await registry.getApiKey(candidate.model, sessionId)) {
+			hasKey = true;
+			break;
+		}
+	}
+	if (!hasKey) return undefined;
 
 	// Repair against the bytes on disk, not the snapshot: a later operation in
 	// the same call or a format-on-write pass may have moved the file since the
@@ -312,26 +316,41 @@ export async function attemptEditAutoRepair(options: {
 
 	const timeout = AbortSignal.timeout(REPAIR_TIMEOUT_MS);
 	const signal = options.signal ? AbortSignal.any([options.signal, timeout]) : timeout;
+	let usedModel = candidates[0]!.model;
 	const complete = async (builtPrompt: string): Promise<string> => {
-		const response = await retryTransientCompletion(
-			() =>
-				completeSimple(
-					model,
-					{ messages: [{ role: "user", content: builtPrompt, timestamp: Date.now() }] },
-					{
-						apiKey: registry.resolver(model, sessionId),
-						sessionId,
-						maxTokens: COMPLETION_MAX_TOKENS,
-						disableReasoning: true,
-						signal,
-					},
-				),
-			{ signal, provider: model.provider },
-		);
-		if (response.stopReason === "error") {
-			throw new Error(response.errorMessage ?? "auto-repair completion failed");
+		let lastError: Error | undefined;
+		for (const candidate of candidates) {
+			const model = candidate.model;
+			const apiKey = await registry.getApiKey(model, sessionId);
+			if (!apiKey) continue;
+			try {
+				const response = await retryTransientCompletion(
+					() =>
+						completeSimple(
+							model,
+							{ messages: [{ role: "user", content: builtPrompt, timestamp: Date.now() }] },
+							{
+								apiKey: registry.resolver(model, sessionId),
+								sessionId,
+								maxTokens: COMPLETION_MAX_TOKENS,
+								disableReasoning: true,
+								signal,
+							},
+						),
+					{ signal, provider: model.provider },
+				);
+				if (response.stopReason === "error") {
+					lastError = new Error(response.errorMessage ?? "auto-repair completion failed");
+					continue;
+				}
+				usedModel = model;
+				return response.content.map(block => (block.type === "text" ? block.text : "")).join("");
+			} catch (error) {
+				if (signal.aborted) throw error;
+				lastError = error instanceof Error ? error : new Error(String(error));
+			}
 		}
-		return response.content.map(block => (block.type === "text" ? block.text : "")).join("");
+		throw lastError ?? new Error("auto-repair completion failed");
 	};
 
 	const repair = await repairParseRegression({ ...snapshot, next: current }, complete);
@@ -345,5 +364,5 @@ export async function attemptEditAutoRepair(options: {
 		regionLines: repair.region.bEnd - repair.region.bStart,
 	});
 	const diffResult = editDiffString(current, repair.content, snapshot.path);
-	return { diff: diffResult.diff, model: `${model.provider}/${model.id}`, attempts: repair.attempts };
+	return { diff: diffResult.diff, model: `${usedModel.provider}/${usedModel.id}`, attempts: repair.attempts };
 }

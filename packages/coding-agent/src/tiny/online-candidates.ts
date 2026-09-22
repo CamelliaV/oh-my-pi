@@ -2,9 +2,8 @@ import type { Api, Model } from "@oh-my-pi/pi-ai";
 import { formatModelStringWithRouting, resolveModelOverride, resolveRoleSelection } from "../config/model-resolver";
 import type { Settings } from "../config/settings";
 import {
-	expandDefaultRetryFallbackChains,
+	expandRetryFallbackChains,
 	findRetryFallbackCandidates,
-	type RetryFallbackChains,
 	type RetryFallbackResolutionContext,
 	resolveRetryFallbackChainKey,
 } from "../session/retry-fallback-chains";
@@ -105,9 +104,10 @@ function expandFallbackCandidates(
 /**
  * Collect unique online models for lightweight background tasks.
  *
- * Order: each requested role's primary, then canonical retry fallback chains
- * traversed transitively (so a hop onto B also consults B's own chain).
- * Disabling model fallback restricts attempts to the first resolvable primary.
+ * Order: each requested role's primary, then that role's `modelRoles` list
+ * tail plus canonical retry fallback chains, traversed transitively (so a hop
+ * onto B also consults B's own chain). Disabling model fallback restricts
+ * attempts to the first resolvable primary.
  */
 export function collectOnlineTinyCandidates(
 	roles: readonly string[],
@@ -135,13 +135,16 @@ export function collectOnlineTinyCandidates(
 	}
 
 	const configuredChains = settings.get("retry.fallbackChains");
-	if (!configuredChains || typeof configuredChains !== "object") return out;
-
-	const context = createFallbackContext(
-		expandDefaultRetryFallbackChains(configuredChains, roles),
-		settings,
-		availableModels,
+	const chains = expandRetryFallbackChains(
+		configuredChains && typeof configuredChains === "object" && !Array.isArray(configuredChains)
+			? configuredChains
+			: {},
+		roles,
+		role => settings.getModelRole(role),
 	);
+	if (Object.keys(chains).length === 0) return out;
+
+	const context = createFallbackContext(chains, settings, availableModels);
 	expandFallbackCandidates(
 		primaries.map(({ role, model }) => ({
 			role,

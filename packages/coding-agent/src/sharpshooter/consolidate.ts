@@ -1,7 +1,7 @@
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
 import { type } from "@oh-my-pi/omptype";
-import { completeSimple, Effort, retryTransientCompletion } from "@oh-my-pi/pi-ai";
+import { type AssistantMessage, completeSimple, Effort, retryTransientCompletion } from "@oh-my-pi/pi-ai";
 import { clampThinkingLevelForModel } from "@oh-my-pi/pi-catalog/model-thinking";
 import { prompt, withFileLock } from "@oh-my-pi/pi-utils";
 
@@ -11,7 +11,7 @@ import { redactMemorySecrets as redactSecrets } from "../memory-backend/redact";
 import { truncateApproxTokens } from "../mnemopi/config";
 import consolidateInputTemplate from "../prompts/memories/sharpshooter-consolidate-input.md" with { type: "text" };
 import consolidateSystemTemplate from "../prompts/memories/sharpshooter-consolidate-system.md" with { type: "text" };
-import { resolveSharpshooterModel } from "./extract";
+import { resolveSharpshooterModels } from "./extract";
 import {
 	readSharpshooterState,
 	sharpshooterBankDir,
@@ -137,8 +137,8 @@ async function consolidateLocked(
 			return { ran: false, reason: "empty" };
 		}
 
-		const model = await resolveSharpshooterModel(options.settings, options.modelRegistry);
-		if (!model) return { ran: false, reason: "no_model" };
+		const models = await resolveSharpshooterModels(options.settings, options.modelRegistry);
+		if (models.length === 0) return { ran: false, reason: "no_model" };
 
 		const currentFiles = await readCurrentMemoryFiles(options.agentDir, options.cwd);
 		const projectDocs = await readProjectDocs(options.cwd);
@@ -154,28 +154,41 @@ async function consolidateLocked(
 			maxFileLines: SHARPSHOOTER_MAX_FILE_LINES,
 		});
 
-		const response = await retryTransientCompletion(
-			() =>
-				completeSimple(
-					model,
-					{
-						systemPrompt: [system],
-						messages: [{ role: "user", content: [{ type: "text", text: input }], timestamp: Date.now() }],
-						tools: [replaceMemoryFilesTool],
-					},
-					{
-						apiKey: options.modelRegistry.resolver(model, options.sessionId),
-						sessionId: options.sessionId,
-						maxTokens: 8192,
-						reasoning: clampThinkingLevelForModel(model, Effort.Medium),
-						toolChoice: "required",
-					},
-				),
-			{ provider: model.provider },
-		);
-		if (response.stopReason === "error") {
-			throw new Error(response.errorMessage || "sharpshooter consolidation model error");
+		let lastError: Error | undefined;
+		let response: AssistantMessage | undefined;
+		for (const model of models) {
+			if (!(await options.modelRegistry.getApiKey(model, options.sessionId))) continue;
+			try {
+				const attempt = await retryTransientCompletion(
+					() =>
+						completeSimple(
+							model,
+							{
+								systemPrompt: [system],
+								messages: [{ role: "user", content: [{ type: "text", text: input }], timestamp: Date.now() }],
+								tools: [replaceMemoryFilesTool],
+							},
+							{
+								apiKey: options.modelRegistry.resolver(model, options.sessionId),
+								sessionId: options.sessionId,
+								maxTokens: 8192,
+								reasoning: clampThinkingLevelForModel(model, Effort.Medium),
+								toolChoice: "required",
+							},
+						),
+					{ provider: model.provider },
+				);
+				if (attempt.stopReason === "error") {
+					lastError = new Error(attempt.errorMessage || "sharpshooter consolidation model error");
+					continue;
+				}
+				response = attempt;
+				break;
+			} catch (error) {
+				lastError = error instanceof Error ? error : new Error(String(error));
+			}
 		}
+		if (!response) throw lastError ?? new Error("sharpshooter consolidation model error");
 
 		const files = parseReplacementFiles(response.content, currentFiles);
 		await applyReplacementFiles(bankDir, files);

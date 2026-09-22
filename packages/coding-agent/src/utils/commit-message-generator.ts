@@ -8,11 +8,11 @@ import { completeSimple, retryTransientCompletion } from "@oh-my-pi/pi-ai";
 import { logger, prompt } from "@oh-my-pi/pi-utils";
 
 import type { ModelRegistry } from "../config/model-registry";
-import { getModelMatchPreferences, resolveModelRoleValue } from "../config/model-resolver";
 import type { Settings } from "../config/settings";
 import MODEL_PRIO from "../priority.json" with { type: "json" };
 import commitSystemPrompt from "../prompts/system/commit-message-system.md" with { type: "text" };
-import { concreteThinkingLevel, toReasoningEffort } from "../thinking";
+import { toReasoningEffort } from "../thinking";
+import { collectOnlineTinyCandidates } from "../tiny/online-candidates";
 
 const COMMIT_SYSTEM_PROMPT = prompt.render(commitSystemPrompt);
 const MAX_DIFF_CHARS = 4000;
@@ -55,12 +55,9 @@ function getSmolModelCandidates(
 		candidates.push({ model, thinkingLevel });
 	};
 
-	const matchPreferences = getModelMatchPreferences(settings);
-	const configuredSmol = resolveModelRoleValue(settings.getModelRole("smol"), availableModels, {
-		settings,
-		matchPreferences,
-	});
-	addCandidate(configuredSmol.model, concreteThinkingLevel(configuredSmol.thinkingLevel));
+	for (const candidate of collectOnlineTinyCandidates(["smol"], settings, availableModels)) {
+		addCandidate(candidate.model);
+	}
 
 	for (const pattern of MODEL_PRIO.smol) {
 		const needle = pattern.toLowerCase();

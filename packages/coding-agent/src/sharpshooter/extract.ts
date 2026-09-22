@@ -1,15 +1,16 @@
 import { type } from "@oh-my-pi/omptype";
 import type { AgentMessage } from "@oh-my-pi/pi-agent-core";
-import { completeSimple, Effort, type Model, retryTransientCompletion } from "@oh-my-pi/pi-ai";
+import { type AssistantMessage, completeSimple, Effort, type Model, retryTransientCompletion } from "@oh-my-pi/pi-ai";
 import { clampThinkingLevelForModel } from "@oh-my-pi/pi-catalog/model-thinking";
 import { logger, prompt } from "@oh-my-pi/pi-utils";
 import type { ModelRegistry } from "../config/model-registry";
-import { getModelMatchPreferences, resolveModelRoleValue, resolveRoleSelection } from "../config/model-resolver";
+import { getModelMatchPreferences, resolveModelRoleValue } from "../config/model-resolver";
 import type { Settings } from "../config/settings";
 import extractInputTemplate from "../prompts/memories/sharpshooter-extract-input.md" with { type: "text" };
 import extractSystemTemplate from "../prompts/memories/sharpshooter-extract-system.md" with { type: "text" };
 import type { AgentSession } from "../session/agent-session";
 import { customMessageContentText } from "../session/checkpoint-entries";
+import { collectOnlineTinyCandidates } from "../tiny/online-candidates";
 import { appendSharpshooterDelta } from "./queue";
 import type { SharpshooterDelta, SharpshooterDeltaKind, SharpshooterDeltaSource, SharpshooterFriction } from "./types";
 
@@ -148,24 +149,36 @@ export function buildSharpshooterEnvelope(
 	};
 }
 
-/** Resolve the configured extraction model, then fall back to the `smol` role. */
+/** Resolve the configured extraction model, then fall back to the `smol` role chain. */
 export async function resolveSharpshooterModel(
 	settings: Settings,
 	modelRegistry: ModelRegistry,
 ): Promise<Model | undefined> {
+	return (await resolveSharpshooterModels(settings, modelRegistry))[0];
+}
+
+/** Ordered sharpshooter models: explicit selector first, then the smol fallback chain. */
+export async function resolveSharpshooterModels(settings: Settings, modelRegistry: ModelRegistry): Promise<Model[]> {
 	const selector = settings.get("sharpshooter.model");
 	if (selector) {
 		const resolved = resolveModelRoleValue(selector, modelRegistry.getAll(), {
 			settings,
 			matchPreferences: getModelMatchPreferences(settings),
 		});
-		if (resolved.model) return resolved.model;
+		if (resolved.model) {
+			const rest = collectOnlineTinyCandidates(["smol"], settings, modelRegistry.getAvailable())
+				.map(candidate => candidate.model)
+				.filter(model => model.provider !== resolved.model!.provider || model.id !== resolved.model!.id);
+			return [resolved.model, ...rest];
+		}
 		logger.debug("Sharpshooter extraction model selector did not resolve", { selector });
 	}
 
-	const fallback = resolveRoleSelection(["smol"], settings, modelRegistry.getAvailable())?.model;
-	if (!fallback) logger.debug("Sharpshooter extraction skipped: no model available");
-	return fallback;
+	const fallbacks = collectOnlineTinyCandidates(["smol"], settings, modelRegistry.getAvailable()).map(
+		candidate => candidate.model,
+	);
+	if (fallbacks.length === 0) logger.debug("Sharpshooter extraction skipped: no model available");
+	return fallbacks;
 }
 
 /** Start best-effort extraction for one committed user prompt without blocking the caller. */
@@ -208,31 +221,46 @@ async function runSharpshooterExtraction(
 	envelope: SharpshooterEnvelope,
 ): Promise<void> {
 	const { session, settings, modelRegistry, agentDir } = options;
-	const model = await resolveSharpshooterModel(settings, modelRegistry);
-	if (!model || session.isDisposed) return;
+	const models = await resolveSharpshooterModels(settings, modelRegistry);
+	if (models.length === 0 || session.isDisposed) return;
 
 	const input = prompt.render(extractInputTemplate, { ...envelope });
-	const response = await retryTransientCompletion(
-		() =>
-			completeSimple(
-				model,
-				{
-					systemPrompt: [prompt.render(extractSystemTemplate)],
-					messages: [{ role: "user", content: [{ type: "text", text: input }], timestamp: Date.now() }],
-					tools: [recordDeltasTool],
-				},
-				{
-					apiKey: modelRegistry.resolver(model, session.sessionId),
-					sessionId: session.sessionId,
-					maxTokens: 2048,
-					reasoning: clampThinkingLevelForModel(model, Effort.Low),
-					toolChoice: "required",
-				},
-			),
-		{ provider: model.provider },
-	);
-	if (response.stopReason === "error") {
-		throw new Error(response.errorMessage || "Sharpshooter extraction model error");
+	let lastError: Error | undefined;
+	let response: AssistantMessage | undefined;
+	for (const model of models) {
+		if (!(await modelRegistry.getApiKey(model, session.sessionId))) continue;
+		try {
+			const attempt = await retryTransientCompletion(
+				() =>
+					completeSimple(
+						model,
+						{
+							systemPrompt: [prompt.render(extractSystemTemplate)],
+							messages: [{ role: "user", content: [{ type: "text", text: input }], timestamp: Date.now() }],
+							tools: [recordDeltasTool],
+						},
+						{
+							apiKey: modelRegistry.resolver(model, session.sessionId),
+							sessionId: session.sessionId,
+							maxTokens: 2048,
+							reasoning: clampThinkingLevelForModel(model, Effort.Low),
+							toolChoice: "required",
+						},
+					),
+				{ provider: model.provider },
+			);
+			if (attempt.stopReason === "error") {
+				lastError = new Error(attempt.errorMessage || "Sharpshooter extraction model error");
+				continue;
+			}
+			response = attempt;
+			break;
+		} catch (error) {
+			lastError = error instanceof Error ? error : new Error(String(error));
+		}
+	}
+	if (!response) {
+		throw lastError ?? new Error("Sharpshooter extraction model error");
 	}
 
 	for (const block of response.content) {

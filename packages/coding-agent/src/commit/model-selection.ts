@@ -12,6 +12,7 @@ import { MODEL_ROLE_IDS } from "../config/model-roles";
 import type { Settings } from "../config/settings";
 import MODEL_PRIO from "../priority.json" with { type: "json" };
 import { concreteThinkingLevel } from "../thinking";
+import { collectOnlineTinyCandidates } from "../tiny/online-candidates";
 
 export interface ResolvedCommitModel {
 	model: Model<Api>;
@@ -66,14 +67,12 @@ export async function resolveSmolModel(
 	fallbackApiKey: ApiKey,
 ): Promise<ResolvedCommitModel> {
 	const available = modelRegistry.getAvailable();
-	const resolvedSmol = resolveRoleSelection(["smol"], settings, available);
-	if (resolvedSmol?.model) {
-		const apiKey = await modelRegistry.getApiKey(resolvedSmol.model);
+	for (const resolved of collectOnlineTinyCandidates(["smol"], settings, available)) {
+		const apiKey = await modelRegistry.getApiKey(resolved.model);
 		if (apiKey) {
 			return {
-				model: resolvedSmol.model,
-				apiKey: modelRegistry.resolver(resolvedSmol.model),
-				thinkingLevel: concreteThinkingLevel(resolvedSmol.thinkingLevel),
+				model: resolved.model,
+				apiKey: modelRegistry.resolver(resolved.model),
 			};
 		}
 	}

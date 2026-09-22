@@ -252,6 +252,20 @@ describe("runEvalCompletion", () => {
 		});
 	});
 
+	it("uses later modelRoles.smol selectors after the primary model fails", async () => {
+		const fallback = makeModel("p", "fallback");
+		const session = makeSession({ available: [SMOL, fallback], roles: { smol: "p/smol,p/fallback" } });
+		const spy = vi
+			.spyOn(ai, "completeSimple")
+			.mockResolvedValueOnce(assistant({ stopReason: "error", errorMessage: "quota exhausted" }))
+			.mockResolvedValueOnce(assistant({ text: "fallback answer" }));
+
+		const result = await runEvalCompletionAndWait({ prompt: "q", model: "smol" }, { session });
+
+		expect(spy.mock.calls.map(call => (call[0] as Model<Api>).id)).toEqual(["smol", "fallback"]);
+		expect(result.text).toBe("fallback answer");
+	});
+
 	it("retries the same model at a lower effort when the fallback chain suffixes it", async () => {
 		const session = makeSession({ available: [SMOL, DEFAULT, REASONING_SLOW], roles: { slow: "p/slow" } });
 		session.settings.set("retry.fallbackChains", { slow: ["p/slow:low"] });

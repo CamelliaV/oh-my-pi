@@ -108,6 +108,23 @@ describe("online tiny fallback candidates", () => {
 		]);
 	});
 
+	it("walks later modelRoles.smol selectors after the primary on provider error", () => {
+		const settings = Settings.isolated();
+		settings.setModelRole("smol", `${secondarySelector},${fallbackSelector}`);
+		expect(collectOnlineTinyCandidates(["smol"], settings, models).map(candidate => candidate.model)).toEqual([
+			secondary,
+			fallback,
+		]);
+	});
+
+	it("does not hop a modelRoles list tail when model fallback is disabled", () => {
+		const settings = Settings.isolated({ "retry.modelFallback": false });
+		settings.setModelRole("smol", `${secondarySelector},${fallbackSelector}`);
+		expect(collectOnlineTinyCandidates(["smol"], settings, models).map(candidate => candidate.model)).toEqual([
+			secondary,
+		]);
+	});
+
 	it("strips upstream routing before expanding wildcard fallbacks", () => {
 		const routed = getBundledModel("openrouter", "google/gemini-2.5-flash")!;
 		const settings = Settings.isolated({

@@ -8,7 +8,7 @@ import type * as MnemopiDiagnoseNs from "@oh-my-pi/pi-mnemopi/diagnose";
 import type { DiagnosticSummary } from "@oh-my-pi/pi-mnemopi/diagnose";
 import { logger } from "@oh-my-pi/pi-utils";
 import type { ModelRegistry } from "../config/model-registry";
-import { resolveRoleSelection } from "../config/model-resolver";
+import { collectOnlineTinyCandidates } from "../tiny/online-candidates";
 import { formatCurrentTime } from "../hindsight/content";
 import { memoryBackendCapabilities } from "../memory-backend/types";
 import type {
@@ -658,9 +658,8 @@ async function resolveMnemopiProviderOptions(
 	}
 
 	try {
-		const resolved = resolveRoleSelection(["tiny", "smol"], settings, modelRegistry.getAvailable());
-		const model = resolved?.model;
-		if (!model) {
+		const candidates = collectOnlineTinyCandidates(["tiny", "smol"], settings, modelRegistry.getAvailable());
+		if (candidates.length === 0) {
 			logger.warn("Mnemopi: llmMode=smol but no tiny/smol model resolved; continuing without LLM.");
 			return base;
 		}
@@ -668,40 +667,54 @@ async function resolveMnemopiProviderOptions(
 			...base,
 			llm: async (prompt, opts) => {
 				const request = resolveMemoryCompletionInput(prompt, opts);
-				const hasApiKey = await modelRegistry.getApiKey(model, sessionId);
-				if (!hasApiKey) {
-					logger.warn("Mnemopi: smol completion requested but no current API key is available.", {
-						provider: model.provider,
-						model: model.id,
-					});
-					return null;
+				let lastError: string | undefined;
+				for (const resolved of candidates) {
+					const model = resolved.model;
+					const hasApiKey = await modelRegistry.getApiKey(model, sessionId);
+					if (!hasApiKey) {
+						lastError = `no API key for ${model.provider}/${model.id}`;
+						continue;
+					}
+					try {
+						const message = await retryTransientCompletion(
+							() =>
+								completeSimple(
+									model,
+									{
+										...(request.systemPrompt ? { systemPrompt: [request.systemPrompt] } : {}),
+										messages: [{ role: "user", content: request.prompt, timestamp: Date.now() }],
+									},
+									{
+										apiKey: modelRegistry.resolver(model, sessionId),
+										sessionId,
+										maxTokens: opts?.maxTokens,
+										temperature: opts?.temperature,
+										signal: opts?.signal,
+									},
+								),
+							{ provider: model.provider, signal: opts?.signal },
+						);
+						if (message.stopReason === "error") {
+							lastError = message.errorMessage ?? "smol completion failed";
+							continue;
+						}
+						return message.content
+							.filter(
+								(block): block is Extract<(typeof message.content)[number], { type: "text" }> =>
+									block.type === "text",
+							)
+							.map(block => block.text)
+							.join("\n")
+							.trim();
+					} catch (error) {
+						if (opts?.signal?.aborted) throw error;
+						lastError = error instanceof Error ? error.message : String(error);
+					}
 				}
-				const message = await retryTransientCompletion(
-					() =>
-						completeSimple(
-							model,
-							{
-								...(request.systemPrompt ? { systemPrompt: [request.systemPrompt] } : {}),
-								messages: [{ role: "user", content: request.prompt, timestamp: Date.now() }],
-							},
-							{
-								apiKey: modelRegistry.resolver(model, sessionId),
-								sessionId,
-								maxTokens: opts?.maxTokens,
-								temperature: opts?.temperature,
-								signal: opts?.signal,
-							},
-						),
-					{ provider: model.provider },
-				);
-				return message.content
-					.filter(
-						(block): block is Extract<(typeof message.content)[number], { type: "text" }> =>
-							block.type === "text",
-					)
-					.map(block => block.text)
-					.join("\n")
-					.trim();
+				logger.warn("Mnemopi: smol completion requested but no current API key is available.", {
+					error: lastError,
+				});
+				return null;
 			},
 		};
 	} catch (error) {

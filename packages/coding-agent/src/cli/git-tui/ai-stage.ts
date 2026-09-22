@@ -8,25 +8,18 @@
  * hunks are staged via `git apply --cached`; picked untracked and binary files
  * are staged whole.
  */
-import {
-	type Api,
-	type ApiKey,
-	type AssistantMessage,
-	completeSimple,
-	type Model,
-	retryTransientCompletion,
-} from "@oh-my-pi/pi-ai";
+import { type Api, type AssistantMessage, completeSimple, type Model, retryTransientCompletion } from "@oh-my-pi/pi-ai";
 import type { VcsHunkSelection } from "@oh-my-pi/pi-natives";
 import * as vcs from "@oh-my-pi/pi-natives/vcs";
 import { logger, prompt } from "@oh-my-pi/pi-utils";
 import { parseFileDiffs, parseFileHunks } from "../../commit/git/diff";
 import type { FileDiff } from "../../commit/types";
 import { ModelRegistry } from "../../config/model-registry";
-import { resolveRoleSelection } from "../../config/model-resolver";
 import { Settings } from "../../config/settings";
 import filesPromptTemplate from "../../prompts/system/git-ai-stage-files.md" with { type: "text" };
 import hunkPromptTemplate from "../../prompts/system/git-ai-stage-hunk.md" with { type: "text" };
 import { discoverAuthStorage, loadCliExtensionProviders } from "../../sdk";
+import { collectOnlineTinyCandidates } from "../../tiny/online-candidates";
 import type { ChangedFile } from "./state";
 
 /** Files per file-pass completion; larger trees fan out one call per batch. */
@@ -84,12 +77,18 @@ export async function aiStage(options: AiStageOptions): Promise<AiStageOutcome> 
 		const registry = new ModelRegistry(authStorage);
 		await registry.refresh();
 		await loadCliExtensionProviders(registry, settings, cwd);
-		const model = resolveRoleSelection(["tiny", "smol"], settings, registry.getAvailable())?.model;
-		if (!model) throw new Error("No tiny/smol model available for AI staging");
+		const models = collectOnlineTinyCandidates(["tiny", "smol"], settings, registry.getAvailable());
+		if (models.length === 0) throw new Error("No tiny/smol model available for AI staging");
 		const sessionId = Bun.randomUUIDv7();
-		if (!(await registry.getApiKey(model, sessionId)))
-			throw new Error(`No API key for ${model.provider}/${model.id}`);
-		const complete = createCompleter(model, registry.resolver(model, sessionId), sessionId, signal);
+		if (!(await Promise.all(models.map(c => registry.getApiKey(c.model, sessionId)))).some(Boolean)) {
+			throw new Error(`No API key for ${models[0]!.model.provider}/${models[0]!.model.id}`);
+		}
+		const complete = createCompleter(
+			models.map(c => c.model),
+			registry,
+			sessionId,
+			signal,
+		);
 
 		const rawDiff = tracked.length > 0 ? await repo.diffText({ files: tracked.map(file => file.path) }, signal) : "";
 		const fileDiffs = new Map(parseFileDiffs(rawDiff).map(entry => [entry.filename, entry]));
@@ -217,27 +216,49 @@ export async function aiStage(options: AiStageOptions): Promise<AiStageOutcome> 
 	}
 }
 
-/** One text completion against the resolved model. */
+/** One text completion against the tiny/smol fallback chain. */
 function createCompleter(
-	model: Model<Api>,
-	apiKey: ApiKey,
+	models: readonly Model<Api>[],
+	registry: ModelRegistry,
 	sessionId: string,
 	signal?: AbortSignal,
 ): (userPrompt: string) => Promise<string> {
 	return async userPrompt => {
-		const response = await retryTransientCompletion(
-			() =>
-				completeSimple(
-					model,
-					{ messages: [{ role: "user", content: userPrompt, timestamp: Date.now() }] },
-					{ apiKey, sessionId, maxTokens: SAFE_MAX_TOKENS, temperature: 0, disableReasoning: true, signal },
-				),
-			{ signal, provider: model.provider },
-		);
-		if (response.stopReason === "error") {
-			throw new Error(`AI staging request failed: ${response.errorMessage ?? "unknown error"}`);
+		let lastError: Error | undefined;
+		for (const model of models) {
+			const apiKey = await registry.getApiKey(model, sessionId);
+			if (!apiKey) {
+				lastError = new Error(`No API key for ${model.provider}/${model.id}`);
+				continue;
+			}
+			try {
+				const response = await retryTransientCompletion(
+					() =>
+						completeSimple(
+							model,
+							{ messages: [{ role: "user", content: userPrompt, timestamp: Date.now() }] },
+							{
+								apiKey: registry.resolver(model, sessionId),
+								sessionId,
+								maxTokens: SAFE_MAX_TOKENS,
+								temperature: 0,
+								disableReasoning: true,
+								signal,
+							},
+						),
+					{ signal, provider: model.provider },
+				);
+				if (response.stopReason === "error") {
+					lastError = new Error(`AI staging request failed: ${response.errorMessage ?? "unknown error"}`);
+					continue;
+				}
+				return extractText(response.content);
+			} catch (error) {
+				if (signal?.aborted) throw error;
+				lastError = error instanceof Error ? error : new Error(String(error));
+			}
 		}
-		return extractText(response.content);
+		throw lastError ?? new Error("AI staging request failed: unknown error");
 	};
 }
 

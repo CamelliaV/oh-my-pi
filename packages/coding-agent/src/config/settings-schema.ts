@@ -2010,7 +2010,7 @@ export const SETTINGS_SCHEMA = {
 			group: "Retry & Fallback",
 			label: "Retry Fallback Chains",
 			description:
-				'JSON object mapping model roles, model selectors ("provider/model-id"), or provider wildcards ("provider/*") to ordered fallback selectors, e.g. {"default":["openai/gpt-4o-mini"],"google-antigravity/*":["google/*","google-vertex/*"]}. Model-oriented keys apply whenever that model/provider is active, regardless of role; a "provider/*" entry keeps the failing model\'s id and swaps the provider. An id-prefixed wildcard ("openrouter/google/*") re-prefixes the failing model\'s bare id (google-antigravity/gemini-x -> openrouter/google/gemini-x) and, used as a key, matches only that provider\'s ids under the prefix. A fallback entry may carry an explicit thinking suffix ("provider/model:low", ":high", ":max", ":off"); a bare entry inherits the failing turn\'s effort, and "provider/*" entries always inherit.',
+				'JSON object mapping model roles, model selectors ("provider/model-id"), or provider wildcards ("provider/*") to ordered fallback selectors, e.g. {"default":["openai/gpt-4o-mini"],"google-antigravity/*":["google/*","google-vertex/*"]}. Model-oriented keys apply whenever that model/provider is active, regardless of role; a "provider/*" entry keeps the failing model\'s id and swaps the provider. An id-prefixed wildcard ("openrouter/google/*") re-prefixes the failing model\'s bare id (google-antigravity/gemini-x -> openrouter/google/gemini-x) and, used as a key, matches only that provider\'s ids under the prefix. A fallback entry may carry an explicit thinking suffix ("provider/model:low", ":high", ":max", ":off"); a bare entry inherits the failing turn\'s effort, and "provider/*" entries always inherit. A YAML array or comma-separated modelRoles value (e.g. smol: [a, b]) is itself a fallback chain when that role has no explicit retry.fallbackChains entry — first selector primary, the rest tried on provider error, reorderable in /models like web_search.',
 		},
 	},
 	"retry.fallbackRevertPolicy": {
@@ -3234,7 +3234,17 @@ export const SETTINGS_SCHEMA = {
 	"wiki.autoRetain": { type: "boolean", default: true },
 	"wiki.autoMaintain": { type: "boolean", default: true },
 	"wiki.autoRecall": { type: "boolean", default: false },
-	"wiki.timeoutSeconds": { type: "number", default: 30 },
+	"wiki.timeoutSeconds": {
+		type: "number",
+		default: 30,
+		ui: {
+			tab: "memory",
+			group: "Wiki",
+			label: "Wiki Timeout",
+			description:
+				"Seconds for each Wiki model request and the whole recall. Timed-out or failed recall retries on the session model, then falls back to FTS keyword search instead of hanging.",
+		},
+	},
 	"wiki.maintenanceBatchSize": { type: "number", default: 8 },
 	"wiki.recallLimit": { type: "number", default: 4 },
 	"wiki.contextTokenLimit": { type: "number", default: 1500 },

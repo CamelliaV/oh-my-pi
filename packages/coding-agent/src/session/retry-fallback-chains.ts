@@ -5,6 +5,7 @@ import {
 	formatModelSelectorValue,
 	formatModelString,
 	formatModelStringWithRouting,
+	normalizeModelPatternList,
 	parseModelString,
 } from "../config/model-resolver";
 import type { Settings } from "../config/settings";
@@ -150,11 +151,39 @@ export function expandDefaultRetryFallbackChains(
 	return chains;
 }
 
-/** Resolves configured fallback chains, applying the default chain to named roles. */
+/**
+ * Ordered fallbacks from a role's `modelRoles` list (everything after the
+ * first selector) plus configured `retry.fallbackChains`, then default-chain
+ * inheritance. A YAML array or comma-separated role value is itself a chain
+ * when that role has no explicit `retry.fallbackChains` entry: the first
+ * resolvable model is primary; the rest are tried on provider error. An
+ * explicit chain — including an empty one — wins so `/models` reorder stays
+ * the source of truth.
+ */
+export function expandRetryFallbackChains(
+	configuredChains: RetryFallbackChains,
+	roleNames: readonly string[],
+	getModelRole?: (role: string) => string | undefined,
+): RetryFallbackChains {
+	const chains: RetryFallbackChains = { ...configuredChains };
+	if (getModelRole) {
+		for (const role of roleNames) {
+			if (isRetryFallbackModelKey(role) || Array.isArray(chains[role])) continue;
+			const tail = normalizeModelPatternList(getModelRole(role)).slice(1);
+			if (tail.length === 0) continue;
+			chains[role] = tail;
+		}
+	}
+	return expandDefaultRetryFallbackChains(chains, roleNames);
+}
+
+/** Resolves configured fallback chains, applying role-list tails and the default chain. */
 export function getRetryFallbackChains(settings: Settings): RetryFallbackChains {
 	const configuredChains = settings.get("retry.fallbackChains");
 	if (!configuredChains || typeof configuredChains !== "object") return {};
-	return expandDefaultRetryFallbackChains(configuredChains, Object.keys(settings.getModelRoles()));
+	return expandRetryFallbackChains(configuredChains, Object.keys(settings.getModelRoles()), role =>
+		settings.getModelRole(role),
+	);
 }
 
 /**
@@ -247,8 +276,8 @@ function getRetryFallbackPrimarySelector(
 ): RetryFallbackSelector | undefined {
 	if (isRetryFallbackWildcardKey(chainKey)) return undefined;
 	if (isRetryFallbackModelKey(chainKey)) return parseRetryFallbackSelector(chainKey, context.modelLookup);
-	const configuredSelector = context.getModelRole(chainKey);
-	return configuredSelector ? parseRetryFallbackSelector(configuredSelector, context.modelLookup) : undefined;
+	const first = normalizeModelPatternList(context.getModelRole(chainKey))[0];
+	return first ? parseRetryFallbackSelector(first, context.modelLookup) : undefined;
 }
 
 /** How a chain key's primary selector matches the current selector. */

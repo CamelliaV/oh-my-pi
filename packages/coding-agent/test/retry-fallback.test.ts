@@ -3,6 +3,7 @@ import { ThinkingLevel } from "@oh-my-pi/pi-agent-core";
 import { getBundledModel } from "@oh-my-pi/pi-catalog/models";
 import {
 	expandDefaultRetryFallbackChains,
+	expandRetryFallbackChains,
 	findRetryFallbackCandidates,
 	type RetryFallbackResolutionContext,
 	resolveRetryFallbackChainKey,
@@ -136,6 +137,31 @@ describe("retry fallback selector resolution", () => {
 		]);
 		expect(expanded.task).toBe(defaultChain);
 		expect(expanded.slow).toEqual(["google/gemini-2.5-flash"]);
+	});
+
+	it("turns a comma-separated modelRoles list into that role's fallback chain", () => {
+		const expanded = expandRetryFallbackChains({}, ["smol"], role =>
+			role === "smol" ? "google/gemini-2.5-flash,openai/gpt-4o-mini" : undefined,
+		);
+		expect(expanded.smol).toEqual(["openai/gpt-4o-mini"]);
+	});
+
+	it("does not override an explicit role fallback chain with the modelRoles list tail", () => {
+		const expanded = expandRetryFallbackChains(
+			{ smol: ["google-vertex/gemini-2.5-flash"] },
+			["smol"],
+			() => "google/gemini-2.5-flash,openai/gpt-4o-mini",
+		);
+		expect(expanded.smol).toEqual(["google-vertex/gemini-2.5-flash"]);
+	});
+
+	it("lets an empty explicit role chain suppress the modelRoles list tail", () => {
+		const expanded = expandRetryFallbackChains(
+			{ smol: [] },
+			["smol"],
+			() => "google/gemini-2.5-flash,openai/gpt-4o-mini",
+		);
+		expect(expanded.smol).toEqual([]);
 	});
 
 	it("prefers an exact model+effort key over a different-effort key regardless of object order", () => {

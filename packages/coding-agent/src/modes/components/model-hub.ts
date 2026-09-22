@@ -2002,7 +2002,8 @@ export class ModelHubComponent implements Component {
 				text = `Recently used models${scopedSuffix}`;
 				break;
 			case "roles":
-				text = "Model roles — f adds a retry fallback, cleared roles fall back to auto-selection";
+				text =
+					"Model roles — f adds a retry fallback, comma/YAML lists are a chain, cleared roles fall back to auto-selection";
 				break;
 			case "provider":
 				if (entry.locked) {

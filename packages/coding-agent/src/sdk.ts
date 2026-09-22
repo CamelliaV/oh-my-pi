@@ -176,7 +176,7 @@ import {
 } from "./session/messages";
 import { clampProviderContextImages, dropUnreadableContextImages } from "./session/provider-image-budget";
 import {
-	expandDefaultRetryFallbackChains,
+	expandRetryFallbackChains,
 	findRetryFallbackCandidates,
 	type RetryFallbackResolutionContext,
 	resolveRetryFallbackChainKey,
@@ -2470,10 +2470,11 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 							return primaryPatterns;
 						}
 						const fallbackContext: RetryFallbackResolutionContext = {
-							chains: expandDefaultRetryFallbackChains(settings.get("retry.fallbackChains"), [
-								...Object.keys(settings.getModelRoles()),
-								resolved.configuredRole,
-							]),
+							chains: expandRetryFallbackChains(
+								settings.get("retry.fallbackChains"),
+								[...Object.keys(settings.getModelRoles()), resolved.configuredRole],
+								role => settings.getModelRole(role),
+							),
 							getModelRole: role => settings.getModelRole(role),
 							modelLookup: modelRegistry,
 						};

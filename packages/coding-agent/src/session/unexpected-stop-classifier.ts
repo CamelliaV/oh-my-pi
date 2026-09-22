@@ -1,11 +1,12 @@
 import { type AssistantMessage, completeSimple, retryTransientCompletion } from "@oh-my-pi/pi-ai";
+import * as AIError from "@oh-my-pi/pi-ai/error";
 import { logger, prompt } from "@oh-my-pi/pi-utils";
 
 import type { ModelRegistry } from "../config/model-registry";
-import { resolveRoleSelection } from "../config/model-resolver";
 import type { Settings } from "../config/settings";
 import unexpectedStopClassifierPrompt from "../prompts/system/unexpected-stop-classifier.md" with { type: "text" };
 import { isTinyMemoryLocalModelKey, ONLINE_MEMORY_MODEL_KEY } from "../tiny/models";
+import { collectOnlineTinyCandidates } from "../tiny/online-candidates";
 import { tinyModelClient } from "../tiny/title-client";
 
 const CLASSIFIER_SYSTEM_PROMPT = prompt.render(unexpectedStopClassifierPrompt);
@@ -85,47 +86,71 @@ export async function classifyUnexpectedStop(
 }
 
 async function classifyOnline(text: string, deps: ClassifyUnexpectedStopDeps): Promise<boolean | undefined> {
-	const resolved = resolveRoleSelection(["tiny", "smol"], deps.settings, deps.registry.getAvailable());
-	const model = resolved?.model;
-	if (!model) {
+	const candidates = collectOnlineTinyCandidates(["tiny", "smol"], deps.settings, deps.registry.getAvailable());
+	if (candidates.length === 0) {
 		throw new Error("unexpected-stop: no tiny/smol model available for classification");
 	}
-	const apiKey = await deps.registry.getApiKey(model, deps.sessionId);
-	if (!apiKey) {
-		throw new Error(`unexpected-stop: no API key for ${model.provider}/${model.id}`);
-	}
-	const metadata = deps.metadataResolver?.(model.provider);
 	const maxTokens = ONLINE_REASONING_SAFE_MAX_TOKENS;
+	let lastError: string | undefined;
+	for (const resolved of candidates) {
+		if (deps.signal?.aborted) {
+			throw deps.signal.reason instanceof Error
+				? deps.signal.reason
+				: new AIError.AbortError("unexpected-stop: classification aborted");
+		}
+		const model = resolved.model;
+		try {
+			const apiKey = await deps.registry.getApiKey(model, deps.sessionId);
+			if (!apiKey) {
+				lastError = `no API key for ${model.provider}/${model.id}`;
+				continue;
+			}
+			const metadata = deps.metadataResolver?.(model.provider);
+			const response = await retryTransientCompletion(
+				() =>
+					completeSimple(
+						model,
+						{
+							systemPrompt: [CLASSIFIER_SYSTEM_PROMPT],
+							messages: [{ role: "user", content: text, timestamp: Date.now() }],
+						},
+						{
+							apiKey: deps.registry.resolver(model, deps.sessionId),
+							sessionId: deps.sessionId,
+							maxTokens,
+							disableReasoning: true,
+							metadata,
+							signal: deps.signal,
+						},
+					),
+				{ signal: deps.signal, provider: model.provider },
+			);
 
-	const response = await retryTransientCompletion(
-		() =>
-			completeSimple(
-				model,
-				{
-					systemPrompt: [CLASSIFIER_SYSTEM_PROMPT],
-					messages: [{ role: "user", content: text, timestamp: Date.now() }],
-				},
-				{
-					apiKey: deps.registry.resolver(model, deps.sessionId),
-					sessionId: deps.sessionId,
-					maxTokens,
-					disableReasoning: true,
-					metadata,
-					signal: deps.signal,
-				},
-			),
-		{ signal: deps.signal, provider: model.provider },
-	);
+			if (response.stopReason === "error") {
+				lastError = response.errorMessage ?? "unknown error";
+				continue;
+			}
 
-	if (response.stopReason === "error") {
-		throw new Error(`unexpected-stop: online classification failed: ${response.errorMessage ?? "unknown error"}`);
+			const outputText = response.content
+				.filter((part): part is { type: "text"; text: string } => part.type === "text")
+				.map(part => part.text)
+				.join("\n");
+			return parseUnexpectedStopClassification(outputText);
+		} catch (err) {
+			if (deps.signal?.aborted) {
+				throw deps.signal.reason instanceof Error
+					? deps.signal.reason
+					: err instanceof Error
+						? err
+						: new AIError.AbortError("unexpected-stop: classification aborted");
+			}
+			if (err instanceof Error && (err.name === "AbortError" || err.name === "TimeoutError")) {
+				throw err;
+			}
+			lastError = err instanceof Error ? err.message : String(err);
+		}
 	}
-
-	const outputText = response.content
-		.filter((part): part is { type: "text"; text: string } => part.type === "text")
-		.map(part => part.text)
-		.join("\n");
-	return parseUnexpectedStopClassification(outputText);
+	throw new Error(`unexpected-stop: online classification failed: ${lastError ?? "unknown error"}`);
 }
 
 async function classifyLocal(

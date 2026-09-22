@@ -1,5 +1,8 @@
-import { afterEach, describe, expect, it } from "bun:test";
+import { afterEach, describe, expect, it, vi } from "bun:test";
 import { Tokenizer, type AgentMessage } from "@oh-my-pi/pi-agent-core";
+import type { Api, AssistantMessage, Model } from "@oh-my-pi/pi-ai";
+import * as ai from "@oh-my-pi/pi-ai";
+import type { ModelRegistry } from "@oh-my-pi/pi-coding-agent/config/model-registry";
 import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import { InternalUrlRouter } from "@oh-my-pi/pi-coding-agent/internal-urls";
 import { createMemoryRuntimeContext } from "@oh-my-pi/pi-coding-agent/memory-backend/runtime";
@@ -11,11 +14,46 @@ import { MemoryRecallTool } from "@oh-my-pi/pi-coding-agent/tools/memory-recall"
 import { MemoryRetainTool } from "@oh-my-pi/pi-coding-agent/tools/memory-retain";
 import { wikiBackend } from "@oh-my-pi/pi-coding-agent/wiki/backend";
 import { loadWikiConfig } from "@oh-my-pi/pi-coding-agent/wiki/config";
-import { setWikiState, WikiState, wikiTurnEvidence } from "@oh-my-pi/pi-coding-agent/wiki/state";
+import { createWikiComplete } from "@oh-my-pi/pi-coding-agent/wiki/model";
+import { formatWikiRecall, setWikiState, WikiState, wikiTurnEvidence } from "@oh-my-pi/pi-coding-agent/wiki/state";
 import { WikiStore } from "@oh-my-pi/pi-coding-agent/wiki/store";
 import type { WikiComplete, WikiEvidenceRole, WikiPage } from "@oh-my-pi/pi-coding-agent/wiki/types";
 import { TempDir } from "@oh-my-pi/pi-utils";
 
+function makeModel(provider: string, id: string): Model<Api> {
+	return {
+		id,
+		name: id,
+		api: "openai-responses",
+		provider,
+		baseUrl: "https://example.test/v1",
+		reasoning: false,
+		input: ["text"],
+		cost: { input: 1, output: 1, cacheRead: 0, cacheWrite: 1 },
+		contextWindow: 128000,
+		maxTokens: 4096,
+	} as Model<Api>;
+}
+
+function assistant(text: string): AssistantMessage {
+	return {
+		role: "assistant",
+		content: [{ type: "text", text }],
+		api: "openai-responses",
+		provider: "p",
+		model: "main",
+		usage: {
+			input: 0,
+			output: 0,
+			cacheRead: 0,
+			cacheWrite: 0,
+			totalTokens: 0,
+			cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+		},
+		stopReason: "stop",
+		timestamp: Date.now(),
+	};
+}
 const openStates: WikiState[] = [];
 afterEach(async () => {
 	for (const state of openStates.splice(0)) {
@@ -82,12 +120,13 @@ const compile: WikiComplete = async request => {
 	});
 };
 
-async function fixture(temp: TempDir, cwd: string, complete = compile) {
+async function fixture(temp: TempDir, cwd: string, complete = compile, extraSettings: Record<string, unknown> = {}) {
 	const settings = Settings.isolated({
 		"memory.backend": "wiki",
 		"wiki.root": temp.join("wiki"),
 		"wiki.autoMaintain": false,
 		"wiki.includeGlobal": false,
+		...extraSettings,
 	});
 	const obfuscator = new SecretObfuscator([{ type: "plain", content: "CONFIGUREDCREDENTIAL12345" }]);
 	const session = {
@@ -256,6 +295,74 @@ describe("native Wiki memory", () => {
 		expect((await fx.state.recall("deployment")).items).toEqual([]);
 		await fx.state.dispose();
 		openStates.length = 0;
+	});
+
+	it("falls back to FTS keyword search when the recall model fails", async () => {
+		await using temp = TempDir.createSync("wiki-fts-fallback-");
+		let recall = false;
+		const fx = await fixture(temp, temp.join("project"), async request => {
+			if (request.task === "recall" && recall) throw new Error("recall model down");
+			return compile(request);
+		});
+		await fx.state.capture({ content: "Deployment region west" });
+		await fx.state.maintain();
+		recall = true;
+		const result = await fx.state.recall("deployment");
+		expect(result.degraded).toContain("keyword search");
+		expect(formatWikiRecall(result)).toContain("keyword search");
+		await fx.state.dispose();
+		openStates.length = 0;
+	});
+
+	it("falls back to FTS when the whole recall exceeds wiki.timeoutSeconds", async () => {
+		await using temp = TempDir.createSync("wiki-recall-timeout-");
+		let hang = false;
+		const hung = Promise.withResolvers<string>();
+		const fx = await fixture(
+			temp,
+			temp.join("project"),
+			async request => {
+				if (request.task === "recall" && hang) return hung.promise;
+				return compile(request);
+			},
+			{ "wiki.timeoutSeconds": 1 },
+		);
+		await fx.state.capture({ content: "Deployment region west" });
+		await fx.state.maintain();
+		hang = true;
+		const result = await fx.state.recall("deployment");
+		expect(result.degraded).toContain("timed out");
+		expect(result.items.map(item => item.content).join("\n")).toContain("region west");
+		await fx.state.dispose();
+		openStates.length = 0;
+	});
+
+	it("retries a failed recall request on the session model", async () => {
+		const recall = makeModel("p", "recall");
+		const main = makeModel("p", "main");
+		const settings = Settings.isolated({ "providers.memoryModel": "online" });
+		const registry = {
+			getAvailable: () => [recall, main],
+			getApiKey: async () => "test-key",
+			resolver: () => async () => "test-key",
+		} as unknown as ModelRegistry;
+		const session = {
+			sessionId: "wiki-hop",
+			model: main,
+			obfuscator: new SecretObfuscator([]),
+		} as AgentSession;
+		const config = { ...loadWikiConfig(settings, "/tmp/agent", "/tmp/project") };
+		config.recallModel = "p/recall";
+		config.model = "p/recall";
+		const usage = { calls: 0, inputTokens: 0, outputTokens: 0, cost: 0 };
+		const spy = vi
+			.spyOn(ai, "completeSimple")
+			.mockRejectedValueOnce(new Error("recall down"))
+			.mockResolvedValueOnce(assistant("session ok"));
+		const complete = createWikiComplete(session, settings, registry, config, usage);
+		await expect(complete({ task: "recall", system: "s", prompt: "p", maxTokens: 16 })).resolves.toBe("session ok");
+		expect(spy.mock.calls.map(call => (call[0] as Model<Api>).id)).toEqual(["recall", "main"]);
+		spy.mockRestore();
 	});
 
 	it("captures observable results but excludes reasoning and memory feedback from automatic evidence", () => {

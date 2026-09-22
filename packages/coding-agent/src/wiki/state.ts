@@ -9,7 +9,7 @@ import type { WikiConfig } from "./config";
 import { wikiSourceEvidence } from "./evidence";
 import { maintainWiki, WikiMaintenanceError } from "./maintain";
 import type { WikiUsage } from "./model";
-import { recallWiki } from "./recall";
+import { recallWiki, WikiRecallError } from "./recall";
 import { WikiSkills } from "./skills";
 import { WikiStore } from "./store";
 import type {
@@ -404,13 +404,39 @@ export class WikiState {
 		const key = JSON.stringify([snapshot.version, safeQuery, limit]);
 		const cached = this.#cache.get(key);
 		if (cached) return cached;
-		const result = await recallWiki(safeQuery, snapshot.pages, this.#complete, {
-			signal: combined,
-			limit,
-			maxChars: this.config.contextTokenLimit * 4,
-			sources: snapshot.sources ?? snapshot.pending,
-			pending: snapshot.pending,
-		});
+		const started = Date.now();
+		const deadline = started + this.config.timeoutMs;
+		const budgeted: WikiComplete = request => {
+			combined.throwIfAborted();
+			const remaining = deadline - Date.now();
+			if (remaining <= 0) throw new Error("Wiki recall timed out");
+			const hop = AbortSignal.timeout(Math.min(this.config.timeoutMs, remaining));
+			return this.#complete({
+				...request,
+				signal: AbortSignal.any([combined, hop]),
+			});
+		};
+		let result;
+		try {
+			result = await withTimeout(
+				recallWiki(safeQuery, snapshot.pages, budgeted, {
+					signal: combined,
+					limit,
+					maxChars: this.config.contextTokenLimit * 4,
+					sources: snapshot.sources ?? snapshot.pending,
+					pending: snapshot.pending,
+				}),
+				this.config.timeoutMs,
+				"Wiki recall timed out",
+				combined,
+			);
+		} catch (error) {
+			combined.throwIfAborted();
+			if (error instanceof WikiRecallError && error.code === "snapshot") throw error;
+			if (error instanceof Error && error.message.startsWith("Wiki changed during recall")) throw error;
+			if (!isRecallFallbackError(error)) throw error;
+			result = await this.#ftsRecall(safeQuery, snapshot, limit, error);
+		}
 		const current = await this.snapshot();
 		if (current.version !== snapshot.version)
 			throw new Error("Wiki changed during recall; retry against the current revision");
@@ -424,15 +450,58 @@ export class WikiState {
 			items.push(safe);
 			rendered += fragment;
 		}
-		if (result.items.length && !items.length)
+		if (result.items.length && !items.length && !result.degraded) {
 			throw new Error(
 				"Wiki evidence exceeds the configured context budget; open its page directly or increase wiki.contextTokenLimit",
 			);
-		const bounded: WikiRecallResult = { ...result, status: items.length ? "found" : "not_found", items };
+		}
+		const bounded: WikiRecallResult = {
+			...result,
+			status: items.length ? "found" : "not_found",
+			items,
+			...(result.degraded ? { degraded: result.degraded } : {}),
+		};
 		if (this.#cache.size >= 32) this.#cache.delete(this.#cache.keys().next().value!);
 		this.#cache.set(key, bounded);
 		this.lastRecall = bounded;
 		return bounded;
+	}
+
+	async #ftsRecall(query: string, snapshot: WikiSnapshot, limit: number, error: unknown): Promise<WikiRecallResult> {
+		const reason = error instanceof Error ? error.message : String(error);
+		logger.warn("Wiki recall fell back to FTS", { error: reason });
+		const seen = new Set<string>();
+		const pages = [];
+		for (const store of this.#stores.values()) {
+			for (const page of await store.search(query, limit)) {
+				if (seen.has(page.id) || page.status === "invalidated") continue;
+				seen.add(page.id);
+				pages.push(page);
+				if (pages.length >= limit) break;
+			}
+			if (pages.length >= limit) break;
+		}
+		const maxChars = this.config.contextTokenLimit * 4;
+		const items = pages.map(page => {
+			const quote = page.evidence?.find(entry => entry.quote.trim())?.quote.trim();
+			const content = (quote || page.summary || page.body).slice(0, maxChars);
+			return {
+				id: page.id,
+				revision: page.revision,
+				title: page.title,
+				content,
+				kind: "page" as const,
+				sources: page.sources.map(ref => ({ ...ref })),
+				conflicted: page.status === "conflicted",
+				updatedAt: page.updatedAt,
+			};
+		});
+		return {
+			status: items.length ? "found" : "not_found",
+			items,
+			pending: snapshot.pending.length,
+			degraded: `Recall model failed (${reason}); used keyword search instead.`,
+		};
 	}
 
 	async mutate(id: string, mutation: WikiMutation): Promise<WikiMutationResult> {
@@ -551,6 +620,13 @@ export class WikiState {
 		this.lastError = this.#errorMessage(error);
 		logger.warn("Wiki memory background operation failed", { error: this.lastError });
 	}
+}
+
+function isRecallFallbackError(error: unknown): boolean {
+	if (error instanceof WikiRecallError) return error.code !== "snapshot";
+	if (!(error instanceof Error)) return false;
+	if (error.name === "AbortError" || error.name === "TimeoutError") return true;
+	return error.message === "Wiki recall timed out" || error.message === "Wiki model timed out";
 }
 
 export function formatWikiRecall(result: WikiRecallResult): string {

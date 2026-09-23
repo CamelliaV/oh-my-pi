@@ -21,8 +21,10 @@ import { discoverAuthStorage } from "../../sdk";
 import type { ToolSession } from "../../tools";
 import { throwIfAborted } from "../../tools/tool-errors";
 import {
+	createSearchProviderFailure,
 	formatSearchProviderFailure,
-	formatSearchProviderFailures,
+	formatSearchProviderFailureRecord,
+	formatSearchProviderFailureRecords,
 	getGroundedSearchProvider,
 	getSearchProvider,
 	type SearchProvider,
@@ -30,8 +32,10 @@ import {
 import { applyQueryConstraints, parseSearchQuery } from "./query";
 import {
 	DEFAULT_WEB_SEARCH_TIMEOUT_SECONDS,
+	getSearchProviderLabel,
 	MAX_WEB_SEARCH_TIMEOUT_SECONDS,
 	SearchProviderError,
+	type SearchProviderFailure,
 	type SearchResponse,
 	type SearchResultDetails,
 } from "./types";
@@ -149,6 +153,7 @@ async function executeSearch(
 	params: SearchQueryParams,
 	options: ExecuteSearchOptions,
 ): Promise<{ content: Array<{ type: "text"; text: string }>; details: SearchResultDetails }> {
+	const searchStartedAtMs = performance.now();
 	const { authStorage, sessionId, signal } = options;
 	const modelRegistry = options.modelRegistry ?? new ModelRegistry(authStorage, undefined, { settings });
 	const pool = roleCandidatePool("web", settings, modelRegistry);
@@ -179,7 +184,7 @@ async function executeSearch(
 		// Preserve the default for one-shot callers that do not initialize Settings.
 	}
 
-	const failures: Array<{ provider: { id: string; label: string }; error: unknown }> = [];
+	const failures: SearchProviderFailure[] = [];
 	let availableProviderCount = 0;
 	let lastProvider: { id: string; label: string } | undefined;
 	let failedResponseProvider: SearchResponse["provider"] = "none";
@@ -266,7 +271,7 @@ async function executeSearch(
 			// summary error), masking the cancellation.
 			throwIfAborted(signal);
 			failedResponseProvider = provider?.id ?? "none";
-			failures.push({ provider: provider ?? candidateMeta, error });
+			failures.push(createSearchProviderFailure(error, provider ?? candidateMeta));
 		}
 	}
 

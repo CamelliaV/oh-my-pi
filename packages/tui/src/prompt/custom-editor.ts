@@ -30,7 +30,7 @@ import { MacOSSpellingProvider, type SpellingFeatures } from "./macos-spelling";
 import { hasMagicKeyword, highlightMagicKeywords } from "./magic-keywords";
 import { isQueuedMessageList, parseQueueShorthand, QUEUE_LIST_MARKER_RE } from "./queue-input";
 import { fgOrPlain, theme } from "../theme/theme";
-import { ImageStrip } from "./image-strip";
+import { ImageStrip } from "../chat/image-strip";
 
 /** Max rows one draft-image preview may occupy — the composer must stay near the viewport bottom. */
 const DRAFT_PREVIEW_MAX_ROWS = 8;

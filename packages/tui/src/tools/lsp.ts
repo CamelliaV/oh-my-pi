@@ -214,10 +214,7 @@ export function renderResult(
 		} else if (isDiagnostics) {
 			label = "Diagnostics";
 			const diagnosticsFailed =
-				result.isError ||
-				result.details?.success === false ||
-				hasStatusError ||
-				diagnosticSummary.counts.error > 0;
+				result.isError || result.details?.success === false || hasStatusError || diagnosticSummary.counts.error > 0;
 			const diagnosticsWarned = hasStatusWarning || diagnosticSummary.counts.warning > 0;
 			state = diagnosticsFailed ? "error" : diagnosticsWarned ? "warning" : "success";
 			bodyLines = renderDiagnostics(diagnosticSummary, lines, expanded, theme, state, text.trim() === "OK");

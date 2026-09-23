@@ -51,6 +51,7 @@ export function isWaitingPollDetails(details: unknown): boolean {
  */
 export type HubOp =
 	| "send"
+	| "resume"
 	| "wait"
 	| "inbox"
 	| "list"

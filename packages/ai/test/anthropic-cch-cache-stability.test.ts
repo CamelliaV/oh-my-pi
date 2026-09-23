@@ -1,6 +1,5 @@
 import { describe, expect, it } from "bun:test";
-import { wrapFetchForCch } from "@oh-my-pi/pi-ai";
-import { convertAnthropicMessages } from "@oh-my-pi/pi-ai/providers/anthropic";
+import { convertAnthropicMessages, wrapFetchForCch } from "@oh-my-pi/pi-ai/providers/anthropic";
 import type { MessageParam } from "@oh-my-pi/pi-ai/providers/anthropic-wire";
 import type { FetchImpl, Message, Model } from "@oh-my-pi/pi-ai/types";
 import { buildModel } from "@oh-my-pi/pi-catalog/build";

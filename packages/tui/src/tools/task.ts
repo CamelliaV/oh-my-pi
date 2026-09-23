@@ -1,4 +1,4 @@
-import type { Usage } from "@oh-my-pi/pi-ai";
+import type { SubagentExecutionState } from "../overlays/session-observer-registry";
 import { isRecord } from "@oh-my-pi/pi-utils";
 import type { ThemeColor } from "../theme/theme";
 import type { ConfiguredThinkingLevel } from "../render/render-utils";
@@ -25,6 +25,7 @@ import {
 	formatBadge,
 	formatDuration,
 	formatExpandHint,
+	formatStatusIcon,
 	formatFeedModelBadge,
 	formatMoreItems,
 	formatNumber,
@@ -43,8 +44,6 @@ import { formatOutputInline, renderJsonTreeLines } from "./json-tree";
 import { repairDoubleEncodedJsonString } from "./task-repair-args";
 import { getSubprocessToolRenderer } from "./subprocess";
 import { assembleYieldResult } from "./task-yield-assembly";
-import { executionDisplayText, presentSubagentExecution } from "./task-execution-view";
-import type { AgentProgress, SingleResult, TaskItem, TaskParams, TaskToolDetails, YieldItem } from "./task-types";
 
 /** Render context threaded in from `ToolExecutionComponent.#buildRenderContext`. */
 interface TaskRenderContext {
@@ -70,7 +69,6 @@ const MAX_NESTED_TASK_RENDER_DEPTH = 8;
 function renderNestedCycleLine(theme: Theme): string {
 	return theme.fg("dim", "… nested task progress already shown");
 }
-
 
 function formatFindingSummary(findings: FindingDetails[], theme: Theme): string {
 	if (findings.length === 0) return theme.fg("dim", "Findings: none");
@@ -236,7 +234,7 @@ function renderTypedYieldSections(value: unknown, continuePrefix: string, expand
 export function formatTaskId(id: string): string {
 	// Ids are name-based (e.g. "Anna", "Anna-2"); a "." separates nesting levels
 	// (e.g. "Anna.Bob"). Render the hierarchy with a ">" breadcrumb.
-	const sanitizedId = executionDisplayText(id);
+	const sanitizedId = truncateToWidth(replaceTabs(sanitizeText(id)).replace(/\s*[\r\n]+\s*/g, " ↵ "), 120);
 	const segments = sanitizedId.split(".");
 	return segments.length < 2 ? sanitizedId : segments.join(">");
 }
@@ -458,7 +456,7 @@ function formatAgentHeaderLabel(args: Partial<TaskParams> | undefined): string |
 
 /** Dim `⟨agent⟩` badge for a non-default agent type; empty for the generic worker. */
 export function agentTypeBadge(agent: string | undefined, theme: Theme): string {
-	const trimmed = agent ? executionDisplayText(agent, 40).trim() : undefined;
+	const trimmed = agent ? truncateToWidth(replaceTabs(sanitizeText(agent)), 40).trim() : undefined;
 	if (!trimmed || trimmed === "task") return "";
 	return ` ${theme.fg("dim", `${theme.format.bracketLeft}${trimmed}${theme.format.bracketRight}`)}`;
 }
@@ -677,8 +675,13 @@ function renderAgentProgress(
 ): string[] {
 	const lines: string[] = [];
 
-	const view = presentSubagentExecution({ id: progress.id, progress, status: progress.status }, nowMs, expanded);
-	const iconColor = frozen ? "dim" : view.color;
+	const iconColor = frozen
+		? "dim"
+		: progress.status === "failed" || progress.status === "aborted"
+			? "error"
+			: progress.status === "completed"
+				? "success"
+				: "accent";
 	const fullDescription = progress.description ? replaceTabs(sanitizeText(progress.description)).trim() : undefined;
 	let statusBadge: string | undefined;
 	if (progress.retryState && progress.status === "running") {
@@ -713,13 +716,21 @@ function renderAgentProgress(
 	if (fullDescription && !row.descriptionShown) {
 		lines.push(...renderDescriptionLines(fullDescription, continuePrefix, maxWidth, theme));
 	}
-	for (const detail of view.details) lines.push(`${continuePrefix}${theme.tree.hook} ${theme.fg(iconColor, detail)}`);
-	for (const event of view.events) lines.push(`${continuePrefix}${theme.fg("dim", event)}`);
+	if (progress.retryState) {
+		const remaining = Math.max(0, progress.retryState.startedAtMs + progress.retryState.delayMs - nowMs);
+		lines.push(
+			`${continuePrefix}${theme.tree.hook} ${theme.fg("warning", `retry ${progress.retryState.attempt}/${progress.retryState.maxAttempts} in ${formatDuration(remaining)}`)}`,
+		);
+	} else if (progress.retryFailure) {
+		lines.push(
+			`${continuePrefix}${theme.tree.hook} ${theme.fg("error", previewLine(sanitizeText(progress.retryFailure.errorMessage), 180))}`,
+		);
+	}
 
 	lines.push(...renderTaskSection(progress.assignment ?? progress.task, continuePrefix, expanded, theme));
 
 	// Current tool (if running) or most recent completed tool
-	if (expanded && view.active) {
+	if (expanded && (progress.status === "running" || progress.status === "pending")) {
 		if (progress.currentTool) {
 			let toolLine = `${continuePrefix}${theme.tree.hook} ${theme.fg("muted", sanitizeText(progress.currentTool))}`;
 			const toolDetail = progress.lastIntent ?? progress.currentToolArgs;
@@ -974,17 +985,15 @@ function renderAgentResult(
 				? theme.styledSymbol("status.done", "text")
 				: theme.status.error;
 	const iconColor = needsWarning ? "warning" : success ? "success" : mergeFailed ? "warning" : "error";
-	const view = presentSubagentExecution(
-		{
-			id: result.id,
-			execution: result.execution,
-			status: aborted ? "aborted" : success ? "completed" : "failed",
-			error: result.error,
-		},
-		result.execution?.stoppedAt ?? result.execution?.updatedAt ?? 0,
-		expanded,
-	);
-	const statusText = needsWarning ? `${view.label} · 警告` : mergeFailed ? "合并失败" : view.summary;
+	const statusText = needsWarning
+		? "completed · warning"
+		: mergeFailed
+			? "merge failed"
+			: aborted
+				? "aborted"
+				: success
+					? "completed"
+					: "failed";
 
 	// Reserve the name and required badges before optional model metadata and details.
 	const fullDescription = result.description ? replaceTabs(sanitizeText(result.description)).trim() : undefined;
@@ -1041,8 +1050,11 @@ function renderAgentResult(
 	if (fullDescription && !description) {
 		lines.push(...renderDescriptionLines(fullDescription, continuePrefix, maxWidth, theme));
 	}
-	for (const detail of view.details) lines.push(`${continuePrefix}${theme.tree.hook} ${theme.fg(view.color, detail)}`);
-	for (const event of view.events) lines.push(`${continuePrefix}${theme.fg("dim", event)}`);
+	if (result.error) {
+		lines.push(
+			`${continuePrefix}${theme.tree.hook} ${theme.fg("error", previewLine(sanitizeText(result.error), 180))}`,
+		);
+	}
 
 	lines.push(...renderTaskSection(result.assignment ?? result.task, continuePrefix, expanded, theme));
 
@@ -1367,7 +1379,7 @@ export function renderResult(
 			// agents (and their current-tool lines) visible while one summary line
 			// stands in for everything above it.
 			const retainedFailures = ordered
-				.filter(progress => progress.execution?.phase === "failed" || progress.status === "failed")
+				.filter(progress => progress.status === "failed")
 				.slice(0, COLLAPSED_AGENT_LIMIT);
 			const retained = new Set(retainedFailures);
 			for (let index = ordered.length - 1; index >= 0 && retained.size < COLLAPSED_AGENT_LIMIT; index--)
@@ -1887,6 +1899,8 @@ export interface AgentProgress {
 	advisor?: boolean;
 	/** Data extracted by registered subprocess tool handlers (keyed by tool name) */
 	extractedToolData?: Record<string, unknown[]>;
+	/** Optional host execution snapshot. The tui reads only phase, run, and updatedAt. */
+	execution?: SubagentExecutionState;
 	/**
 	 * Auto-retry state when the subagent is sleeping between provider retries
 	 * (e.g. 429 rate-limit with retry-after). Cleared when the retry resolves

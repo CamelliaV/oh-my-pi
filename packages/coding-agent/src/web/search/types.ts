@@ -38,6 +38,8 @@ export const SEARCH_PROVIDER_OPTIONS = [
 		label: "Grok",
 		description:
 			"Grok web search via a declared OpenAI-Responses-compatible relay (GROK_SEARCH_BASE_URL/GROK_SEARCH_API_KEY or providers.webSearchGrokBaseUrl)",
+	},
+	{
 		value: "openrouter",
 		label: "OpenRouter",
 		description: "OpenRouter web-plugin grounding using the selected model's configured credentials",

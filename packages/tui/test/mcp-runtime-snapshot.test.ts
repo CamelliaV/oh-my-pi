@@ -175,4 +175,3 @@ describe("snapshotMcpRuntime", () => {
 		expect(snap.instructions).toBe("Prefer search_code");
 	});
 });
-

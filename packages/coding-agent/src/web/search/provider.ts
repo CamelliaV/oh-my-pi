@@ -1,6 +1,6 @@
 import type { WebSearchGrounding } from "@oh-my-pi/pi-catalog/types";
 import type { SearchProvider } from "./providers/base";
-import { getSearchProviderLabel, type SearchEngineId, SearchProviderError } from "./types";
+import { getSearchProviderLabel, type SearchEngineId, type SearchProviderFailure, SearchProviderError } from "./types";
 
 export type { SearchParams } from "./providers/base";
 export { SearchProvider } from "./providers/base";

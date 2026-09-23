@@ -2,11 +2,7 @@ import type { ThinkingLevel } from "@oh-my-pi/pi-agent-core";
 import type { Model } from "@oh-my-pi/pi-ai";
 import type { ModelRegistry } from "../config/model-registry";
 import { formatModelSelectorValue, parseModelString } from "@oh-my-pi/pi-tui/overlays/model-selector";
-import {
-	formatModelString,
-	formatModelStringWithRouting,
-	normalizeModelPatternList,
-} from "../config/model-resolver";
+import { formatModelString, formatModelStringWithRouting, normalizeModelPatternList } from "../config/model-resolver";
 import type { Settings } from "../config/settings";
 import {
 	type ConfiguredThinkingLevel,

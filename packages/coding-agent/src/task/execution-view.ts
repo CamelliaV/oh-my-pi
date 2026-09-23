@@ -1,8 +1,8 @@
-import { sanitizeText } from "@oh-my-pi/pi-utils";
-import { formatDuration, replaceTabs, truncateToWidth } from "../tools/render-utils";
-import { formatLocalDateTimeWithOffset } from "../utils/local-date";
+import { formatDuration, sanitizeText } from "@oh-my-pi/pi-utils";
+import { replaceTabs, truncateToWidth } from "@oh-my-pi/pi-tui/render/render-utils";
+import { formatLocalDateTimeWithOffset } from "@oh-my-pi/pi-tui/chrome/local-date";
+import type { AgentProgress } from "@oh-my-pi/pi-tui/tools/task";
 import type { SubagentExecutionPhase, SubagentExecutionState } from "./execution-state";
-import type { AgentProgress } from "./types";
 
 const PHASE_LABELS: Record<SubagentExecutionPhase, string> = {
 	queued: "排队中",

@@ -20,9 +20,9 @@ import type {
 	CustomToolResult,
 	RenderResultOptions,
 } from "../extensibility/custom-tools/types";
-import type { Theme } from "../modes/theme/theme";
-import { renderMCPCall, renderMCPResult } from "./render";
-import { createMCPToolName, type MCPToolDetails } from "./tool-bridge";
+import type { Theme } from "@oh-my-pi/pi-tui/theme";
+import { renderMCPCall, renderMCPResult, type MCPToolDetails } from "@oh-my-pi/pi-tui/tools/mcp";
+import { createMCPToolName } from "./tool-bridge";
 
 /** Outcome of an activation attempt, produced by the manager-owned callback. */
 export interface LazyGatewayActivation {

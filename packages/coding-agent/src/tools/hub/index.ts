@@ -63,9 +63,6 @@ import {
 	MAX_HUB_LIST_LIMIT,
 } from "./types";
 
-import { DEFAULT_HUB_LIST_LIMIT, type HubDetails, MAX_HUB_LIST_LIMIT } from "@oh-my-pi/pi-tui/tools/hub";
-import { hubErrorResult } from "./types";
-
 export type { LaunchParams, LaunchToolDetails } from "@oh-my-pi/pi-tui/tools/hub";
 export { isIrcEnabled } from "./messaging";
 export * from "./types";

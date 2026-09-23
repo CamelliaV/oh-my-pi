@@ -8,7 +8,7 @@ import { Ellipsis, padding, truncateToWidth, visibleWidth, wrapTextWithAnsi } fr
 import { getSixelLineMask } from "./sixel";
 import type { State } from "./types";
 import type { RenderCache } from "./utils";
-import { Hasher, padToWidth, truncateToWidth } from "./utils";
+import { Hasher, padToWidth } from "./utils";
 
 /** Sections and presentation options for a bordered output block. */
 export interface OutputBlockOptions {

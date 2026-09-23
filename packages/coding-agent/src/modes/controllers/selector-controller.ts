@@ -59,6 +59,7 @@ import type { SessionInfo } from "../../session/session-listing";
 import { SessionManager } from "../../session/session-manager";
 import { loadPinnedSessionIds } from "../../session/session-pins";
 import { FileSessionStorage } from "../../session/session-storage";
+import { createCommandHistorySource } from "../../session/shell-history";
 import { toLogoutAccounts } from "../../slash-commands/helpers/logout";
 import type { LogoutAccount } from "@oh-my-pi/pi-tui/overlays/logout-account-selector";
 import { describeRedeemOutcome, toResetUsageAccounts } from "../../slash-commands/helpers/reset-usage";

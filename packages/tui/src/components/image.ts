@@ -472,6 +472,7 @@ export class ImageBudget {
 	/** Whether `imageId`'s data still needs to be transmitted to the surface the in-flight pass paints. */
 	shouldTransmit(imageId: number): boolean {
 		return !this.#transmitted[this.#surface].has(imageId);
+	}
 
 	/**
 	 * Record which terminal screen buffer subsequent transmits target (the TUI

@@ -174,8 +174,13 @@ export class HistorySearchComponent extends OverlayPanel {
 	#onCancel: () => void;
 	#resultLimit = 100;
 
-	constructor(historyStorage: HistorySource, onSelect: (prompt: string) => void, onCancel: () => void) {
-		super("History");
+	constructor(
+		historyStorage: HistorySource,
+		onSelect: (prompt: string) => void,
+		onCancel: () => void,
+		options?: { title?: string; initialQuery?: string },
+	) {
+		super(options?.title ?? "History");
 		this.#historyStorage = historyStorage;
 		this.#onSelect = onSelect;
 		this.#onCancel = onCancel;

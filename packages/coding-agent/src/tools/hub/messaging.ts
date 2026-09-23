@@ -29,6 +29,25 @@ import {
 	type HubRosterCounts,
 	MAX_HUB_LIST_LIMIT,
 } from "@oh-my-pi/pi-tui/tools/hub";
+import type { Component } from "@oh-my-pi/pi-tui";
+import { Text } from "@oh-my-pi/pi-tui/components/text";
+import type { Theme } from "@oh-my-pi/pi-tui/theme";
+import { formatAge } from "@oh-my-pi/pi-utils";
+import { Ellipsis } from "@oh-my-pi/pi-tui/utils";
+import {
+	createCachedComponent,
+	formatBadge,
+	formatErrorDetail,
+	getPreviewLines,
+	PREVIEW_LIMITS,
+	replaceTabs,
+	truncateToWidth,
+	type ToolUIColor,
+} from "@oh-my-pi/pi-tui/render/render-utils";
+import { renderStatusLine } from "@oh-my-pi/pi-tui/render/status-line";
+import { renderTreeList } from "@oh-my-pi/pi-tui/render/tree-list";
+import type { RenderResultOptions } from "@oh-my-pi/pi-tui/tools/renderer";
+import type { HubRenderArgs, IrcDeliveryReceipt } from "@oh-my-pi/pi-tui/tools/hub";
 import { hubErrorResult } from "./types";
 
 export const DEFAULT_IRC_TIMEOUT_MS = 120_000;

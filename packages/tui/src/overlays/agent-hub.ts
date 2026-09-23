@@ -33,6 +33,7 @@ import { USER_INTERRUPT_LABEL } from "../chat/messages";
 import { shortenPath, truncateToWidth } from "../render/render-utils";
 import { formatLocalDateTimeWithOffset } from "../chrome/local-date";
 import type { ObservableSession, SessionObserverRegistry } from "./session-observer-registry";
+import { latestSubagentExecution, presentSubagentExecution } from "./session-observer-registry";
 import { theme } from "../theme/theme";
 import { matchesSelectDown, matchesSelectUp } from "../keybinding-matchers";
 import {

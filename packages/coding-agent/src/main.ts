@@ -1167,6 +1167,7 @@ export async function createSessionManager(
 		if (fuzzyMatches.length > 1) {
 			pauseStartupWatchdog();
 			const candidates = fuzzyMatches.map(m => m.session);
+			const selectSession = await loadSessionPicker();
 			const selected = await selectSession(candidates, {
 				initialQuery: sessionArg,
 				title: `Resume Session — "${sessionArg}" (${candidates.length} matches)`,

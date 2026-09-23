@@ -5,7 +5,6 @@ import { SearchProviderError } from "../../../web/search/types";
 import { formatQuery, parseSearchQuery, type QuerySyntax } from "../query";
 import { clampNumResults } from "../utils";
 import type { SearchParams } from "./base";
-import { clampNumResults } from "../utils";
 import { SearchProvider } from "./base";
 import { searchGrokResponses, type GrokResponsesTransport } from "./grok-responses";
 

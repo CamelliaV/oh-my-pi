@@ -314,7 +314,8 @@ export async function attemptEditAutoRepair(options: {
 	}
 	if (parsesSource(current, snapshot.path)) return undefined;
 
-	const modelName = `${model.provider}/${model.id}`;
+	const first = candidates[0]?.model;
+	const modelName = first ? `${first.provider}/${first.id}` : "none";
 	logger.debug("Edit auto-repair started", { path: snapshot.path, model: modelName });
 	// One budget across both attempts: the edit tool result blocks on this, so
 	// a slow repair model must not stall the turn past the ceiling.

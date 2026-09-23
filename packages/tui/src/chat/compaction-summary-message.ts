@@ -130,7 +130,6 @@ class SummaryMessageComponent implements Component {
 	}
 
 	#detailBox(): Box {
-		if (this.#detail) return this.#detail;
 		// Transparent card: the framed outline carries the block; a bg wash
 		// would defeat terminal background opacity.
 		const box = new Box(1, 1);

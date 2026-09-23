@@ -1,4 +1,3 @@
-import { type CoordinationDetails, type HubDetails } from "@oh-my-pi/pi-tui/tools/hub";
 /**
  * Shared types for the hub tool — the merged agent-coordination surface
  * covering peer messaging (IRC bus), background-job control, and supervised
@@ -7,12 +6,11 @@ import { type CoordinationDetails, type HubDetails } from "@oh-my-pi/pi-tui/tool
 
 import type { AgentToolResult } from "@oh-my-pi/pi-agent-core";
 import type { AsyncJobType } from "../../async";
-import type { IrcDeliveryReceipt, IrcMessage } from "../../irc/bus";
+import type { IrcDeliveryReceipt, IrcMessage, LaunchParams, LaunchToolDetails } from "@oh-my-pi/pi-tui/tools/hub";
 import type { SubagentExecutionState } from "../../task/execution-state";
-import type { OutputMeta } from "../output-meta";
-import type { StructuredSubagentOutput } from "../../task/types";
-import type { ConfiguredThinkingLevel } from "../../thinking";
-import type { LaunchParams, LaunchToolDetails } from "./launch";
+import type { OutputMeta } from "@oh-my-pi/pi-tui/tools/output-meta";
+import type { StructuredSubagentOutput } from "@oh-my-pi/pi-tui/tools/task";
+import type { ConfiguredThinkingLevel } from "@oh-my-pi/pi-tui/thinking";
 
 /**
  * Hub operations: messaging (`send`/`wait`/`inbox`/`list`), jobs

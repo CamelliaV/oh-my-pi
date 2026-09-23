@@ -133,7 +133,7 @@ import { STTController, type SttState } from "../stt";
 import { resolveCliEntryCmd } from "../subprocess/worker-client";
 import { discoverTitleSystemPromptFile, resolvePromptInput } from "../system-prompt";
 import { labelEchoesHandle } from "../task/label";
-import { presentSubagentExecution } from "../task/execution-view";
+import { presentSubagentExecution } from "@oh-my-pi/pi-tui/overlays/session-observer-registry";
 import { agentTypeBadge, formatTaskId } from "@oh-my-pi/pi-tui/tools/task";
 import type { ConfiguredThinkingLevel } from "@oh-my-pi/pi-tui/thinking";
 import { tinyTitleClient } from "../tiny/title-client";

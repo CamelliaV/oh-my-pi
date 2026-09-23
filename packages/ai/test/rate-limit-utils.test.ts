@@ -766,7 +766,10 @@ describe("calculateRateLimitBackoffMs", () => {
 
 describe("usageLimitBlockRetryAfterMs", () => {
 	it("floors a short Gemini retry hint to the quota backoff", () => {
-		const block = usageLimitBlockRetryAfterMs("Quota exceeded for metric generate_content_free_tier_requests", 46_000);
+		const block = usageLimitBlockRetryAfterMs(
+			"Quota exceeded for metric generate_content_free_tier_requests",
+			46_000,
+		);
 		expect(block.retryAfterMs).toBe(30 * 60 * 1000);
 		expect(block.providerTimed).toBe(false);
 	});

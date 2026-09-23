@@ -4,9 +4,9 @@ import type { Usage } from "@oh-my-pi/pi-ai";
 import { Container, Spacer, Text } from "@oh-my-pi/pi-tui";
 import { formatDuration, formatNumber } from "@oh-my-pi/pi-utils";
 import type { SessionEntry } from "../../session/session-entries";
-import { theme } from "../theme/theme";
-import { DynamicBorder } from "./dynamic-border";
-import { markUsageRowBlock } from "./usage-row";
+import { theme } from "@oh-my-pi/pi-tui/theme";
+import { DynamicBorder } from "@oh-my-pi/pi-tui/chrome/dynamic-border";
+import { markUsageRowBlock } from "@oh-my-pi/pi-tui/overlays/usage-row";
 
 type AssistantMessage = Extract<AgentMessage, { role: "assistant" }>;
 type ToolResultMessage = Extract<AgentMessage, { role: "toolResult" }>;

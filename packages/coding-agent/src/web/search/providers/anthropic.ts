@@ -22,7 +22,7 @@ import {
 import { isOfficialAnthropicApiUrl } from "@oh-my-pi/pi-catalog/compat/anthropic";
 import { classifyModel, compareRevision, parseRevision } from "@oh-my-pi/pi-catalog/identity";
 import { buildAnthropicSystemBlocks, wrapFetchForCch } from "@oh-my-pi/pi-ai/providers/anthropic";
-import { compareRevision, parseRevision } from "@oh-my-pi/pi-catalog/identity";
+
 import { $env } from "@oh-my-pi/pi-utils";
 import type { AnthropicApiResponse, AnthropicCitation } from "../../../web/search/types";
 import type { SearchCitation, SearchResponse, SearchSource } from "../types";

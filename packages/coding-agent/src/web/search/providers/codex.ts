@@ -18,24 +18,18 @@ import { readSseJson, USER_AGENT } from "@oh-my-pi/pi-utils";
 import type { SearchResponse, SearchSource } from "../types";
 import { SearchProviderError } from "../../../web/search/types";
 import { formatQuery, GOOGLE_QUERY_SYNTAX, parseSearchQuery } from "../query";
-import { RequestPacer } from "../utils";
-import type { SearchParams, SearchProviderAvailabilityContext } from "./base";
+import type { SearchParams } from "./base";
 import { SearchProvider } from "./base";
-import { isCodexSearchAffinityModel } from "./codex-affinity";
 import { classifyProviderHttpError, withHardTimeout } from "./utils";
 
 const DEFAULT_INSTRUCTIONS =
 	"You are a helpful assistant with web search capabilities. Search the web to answer the user's question accurately and cite your sources.";
 
 interface CodexSearchTransport {
-	provider: string;
 	baseUrl: string;
 	url: string;
 	headers: Record<string, string>;
-	protocol: "codex" | "responses";
-	authMode: "api-key" | "codex-oauth";
-	rejectOfficialOAuth: boolean;
-	searchDelayMs: number;
+	customEndpoint: boolean;
 }
 
 interface CodexSearchResult {
@@ -284,14 +278,10 @@ async function resolveCodexSearchTransport(params: SearchParams): Promise<CodexS
 	const url = resolveCodexResponsesUrl(baseUrl);
 	const headers = await params.modelRegistry.resolveModelHeaders(params.model, params.signal);
 	return {
-		provider: "openai-codex",
 		baseUrl,
 		url,
 		headers: { ...headers },
-		protocol: "codex",
-		authMode: customEndpoint ? "api-key" : "codex-oauth",
-		rejectOfficialOAuth: customEndpoint,
-		searchDelayMs: modelRegistry?.getProviderWebSearchDelayMs?.("openai-codex") ?? 0,
+		customEndpoint: url !== resolveCodexResponsesUrl(CODEX_BASE_URL),
 	};
 }
 
@@ -302,28 +292,20 @@ function buildCodexHeaders(
 	accessToken: string,
 	accountId: string | undefined,
 	configuredHeaders: Record<string, string>,
-	protocol: CodexSearchTransport["protocol"],
 ): Headers {
 	const headers = new Headers(configuredHeaders);
 	headers.delete("x-api-key");
 	headers.set("Authorization", `Bearer ${accessToken}`);
-	if (protocol === "codex") {
-		if (accountId) {
-			headers.set(OPENAI_HEADERS.ACCOUNT_ID, accountId);
-		} else {
-			headers.delete(OPENAI_HEADERS.ACCOUNT_ID);
-		}
-		headers.set(OPENAI_HEADERS.BETA, OPENAI_HEADER_VALUES.BETA_RESPONSES);
-		headers.set(OPENAI_HEADERS.ORIGINATOR, OPENAI_HEADER_VALUES.ORIGINATOR_CODEX);
-		headers.set(OPENAI_HEADERS.VERSION, CODEX_CLIENT_VERSION);
+	if (accountId) {
+		headers.set(OPENAI_HEADERS.ACCOUNT_ID, accountId);
+	} else {
+		headers.delete(OPENAI_HEADERS.ACCOUNT_ID);
 	}
 	applyCodexResidencyHeader(headers, accessToken);
 	headers.set(OPENAI_HEADERS.BETA, OPENAI_HEADER_VALUES.BETA_RESPONSES);
 	headers.set(OPENAI_HEADERS.ORIGINATOR, OPENAI_HEADER_VALUES.ORIGINATOR_CODEX);
 	headers.set(OPENAI_HEADERS.VERSION, CODEX_CLIENT_VERSION);
-	// Relay User-Agent whitelists: keep a provider-configured UA intact; only
-	// stamp the default when none is present.
-	if (!headers.has("User-Agent")) headers.set("User-Agent", USER_AGENT);
+	headers.set("User-Agent", USER_AGENT);
 	headers.set("Accept", "text/event-stream");
 	headers.set("Content-Type", "application/json");
 	return headers;
@@ -336,25 +318,19 @@ function buildCodexHeaders(
  * Without this the nested shapes collapse to `Codex error (): Unknown error`,
  * discarding the backend diagnostic — e.g. a regional/model-snapshot rejection (#7200).
  */
-function extractCodexSseError(rawEvent: unknown): { code: string; message: string } {
-	const candidates: unknown[] = [rawEvent];
-	if (rawEvent && typeof rawEvent === "object") {
-		if ("error" in rawEvent) candidates.push(rawEvent.error);
-		if ("response" in rawEvent && rawEvent.response && typeof rawEvent.response === "object") {
-			if ("error" in rawEvent.response) candidates.push(rawEvent.response.error);
-		}
-	}
-
+function extractCodexSseError(rawEvent: Record<string, unknown>): { code: string; message: string } {
+	const candidates: unknown[] = [
+		rawEvent,
+		rawEvent.error,
+		(rawEvent.response as { error?: unknown } | undefined)?.error,
+	];
 	let code = "";
 	let message = "";
 	for (const candidate of candidates) {
 		if (!candidate || typeof candidate !== "object") continue;
-		if (!code && "code" in candidate && typeof candidate.code === "string" && candidate.code) {
-			code = candidate.code;
-		}
-		if (!message && "message" in candidate && typeof candidate.message === "string" && candidate.message) {
-			message = candidate.message;
-		}
+		const record = candidate as Record<string, unknown>;
+		if (!code && typeof record.code === "string" && record.code) code = record.code;
+		if (!message && typeof record.message === "string" && record.message) message = record.message;
 	}
 	return { code, message };
 }
@@ -371,194 +347,6 @@ function classifyCodexSseErrorStatus(code: string, message: string): number {
 /**
  * Calls the Codex Responses API with web search enabled for the exact selected model.
  */
-interface CodexSearchEventState {
-	answerParts: string[];
-	streamedAnswerParts: string[];
-	sources: SearchSource[];
-	model: string;
-	requestId: string;
-	usage?: { inputTokens: number; outputTokens: number; totalTokens: number };
-	webSearchInvoked: boolean;
-}
-
-function addCodexWebSearchSources(target: SearchSource[], value: unknown): void {
-	if (!Array.isArray(value)) return;
-	for (const source of value) {
-		if (!source || typeof source !== "object") continue;
-		const primaryUrl = "url" in source && typeof source.url === "string" ? source.url : undefined;
-		const fallbackUrl =
-			"source_website_url" in source && typeof source.source_website_url === "string"
-				? source.source_website_url
-				: undefined;
-		const url = primaryUrl ?? fallbackUrl;
-		if (!url) continue;
-		const title = "title" in source && typeof source.title === "string" ? source.title : undefined;
-		const caption = "caption" in source && typeof source.caption === "string" ? source.caption : undefined;
-		addSource(target, { title: title ?? caption ?? url, url });
-	}
-}
-
-function processCodexSearchEvent(state: CodexSearchEventState, rawEvent: unknown): void {
-	if (!rawEvent || typeof rawEvent !== "object" || !("type" in rawEvent) || typeof rawEvent.type !== "string") {
-		return;
-	}
-	const eventType = rawEvent.type;
-	if (eventType.startsWith("response.web_search_call")) state.webSearchInvoked = true;
-
-	if (eventType === "response.created") {
-		if (!("response" in rawEvent) || !rawEvent.response || typeof rawEvent.response !== "object") return;
-		const response = rawEvent.response;
-		if ("id" in response && typeof response.id === "string") state.requestId = response.id;
-		if ("model" in response && typeof response.model === "string") state.model = response.model;
-		return;
-	}
-
-	if (eventType === "response.output_text.delta") {
-		if ("delta" in rawEvent && typeof rawEvent.delta === "string" && rawEvent.delta) {
-			state.streamedAnswerParts.push(rawEvent.delta);
-		}
-		return;
-	}
-
-	if (eventType === "response.output_item.done") {
-		if (!("item" in rawEvent) || !rawEvent.item || typeof rawEvent.item !== "object") return;
-		const item = rawEvent.item;
-		if (!("type" in item) || typeof item.type !== "string") return;
-
-		if (item.type === "web_search_call") {
-			state.webSearchInvoked = true;
-			if ("action" in item && item.action && typeof item.action === "object" && "sources" in item.action) {
-				addCodexWebSearchSources(state.sources, item.action.sources);
-			}
-			if ("sources" in item) addCodexWebSearchSources(state.sources, item.sources);
-			if ("results" in item) addCodexWebSearchSources(state.sources, item.results);
-		}
-
-		if (item.type === "message" && "content" in item && Array.isArray(item.content)) {
-			for (const part of item.content) {
-				if (!part || typeof part !== "object") continue;
-				if (!("type" in part) || part.type !== "output_text") continue;
-				if (!("text" in part) || typeof part.text !== "string" || !part.text) continue;
-				state.answerParts.push(part.text);
-				if (!("annotations" in part) || !Array.isArray(part.annotations)) continue;
-				for (const annotation of part.annotations) {
-					if (!annotation || typeof annotation !== "object") continue;
-					if (!("type" in annotation) || annotation.type !== "url_citation") continue;
-					if (!("url" in annotation) || typeof annotation.url !== "string" || !annotation.url) continue;
-					const title =
-						"title" in annotation && typeof annotation.title === "string" ? annotation.title : annotation.url;
-					const startIndex =
-						"start_index" in annotation && typeof annotation.start_index === "number"
-							? annotation.start_index
-							: undefined;
-					const endIndex =
-						"end_index" in annotation && typeof annotation.end_index === "number"
-							? annotation.end_index
-							: undefined;
-					addSource(state.sources, {
-						title,
-						url: annotation.url,
-						snippet: extractCitationSnippet(part.text, startIndex, endIndex),
-					});
-				}
-			}
-		}
-
-		if (item.type === "reasoning" && "summary" in item && Array.isArray(item.summary)) {
-			for (const part of item.summary) {
-				if (!part || typeof part !== "object") continue;
-				if (!("type" in part) || part.type !== "summary_text") continue;
-				if ("text" in part && typeof part.text === "string" && part.text) state.answerParts.push(part.text);
-			}
-		}
-		return;
-	}
-
-	if (eventType === "response.completed" || eventType === "response.done") {
-		if (!("response" in rawEvent) || !rawEvent.response || typeof rawEvent.response !== "object") return;
-		const response = rawEvent.response;
-		if ("model" in response && typeof response.model === "string") state.model = response.model;
-		if ("id" in response && typeof response.id === "string") state.requestId = response.id;
-		if ("usage" in response && response.usage && typeof response.usage === "object") {
-			const usage = response.usage;
-			const inputTokens = "input_tokens" in usage && typeof usage.input_tokens === "number" ? usage.input_tokens : 0;
-			const outputTokens =
-				"output_tokens" in usage && typeof usage.output_tokens === "number" ? usage.output_tokens : 0;
-			const totalTokens = "total_tokens" in usage && typeof usage.total_tokens === "number" ? usage.total_tokens : 0;
-			let cachedTokens = 0;
-			if (
-				"input_tokens_details" in usage &&
-				usage.input_tokens_details &&
-				typeof usage.input_tokens_details === "object" &&
-				"cached_tokens" in usage.input_tokens_details &&
-				typeof usage.input_tokens_details.cached_tokens === "number"
-			) {
-				cachedTokens = usage.input_tokens_details.cached_tokens;
-			}
-			state.usage = {
-				inputTokens: inputTokens - cachedTokens,
-				outputTokens,
-				totalTokens,
-			};
-		}
-		return;
-	}
-
-	if (eventType === "error") {
-		const { code, message } = extractCodexSseError(rawEvent);
-		throw new SearchProviderError(
-			"codex",
-			`Codex error (${code}): ${message || "Unknown error"}`,
-			classifyCodexSseErrorStatus(code, message),
-		);
-	}
-
-	if (eventType === "response.failed") {
-		const { code, message } = extractCodexSseError(rawEvent);
-		const detail = code
-			? `Codex request failed (${code}): ${message || "Request failed"}`
-			: `Codex request failed: ${message || "Request failed"}`;
-		throw new SearchProviderError("codex", detail, classifyCodexSseErrorStatus(code, message));
-	}
-}
-
-function finalizeCodexSearchEventState(state: CodexSearchEventState): CodexSearchResult {
-	if (!state.webSearchInvoked) {
-		throw new CodexNoWebSearchError();
-	}
-	const finalAnswer = state.answerParts.join("\n\n").trim();
-	const streamedAnswer = state.streamedAnswerParts.join("").trim();
-	const finalIsPlaceholder = finalAnswer.length > 0 && isImagePlaceholderAnswer(finalAnswer);
-	const streamedIsPlaceholder = streamedAnswer.length > 0 && isImagePlaceholderAnswer(streamedAnswer);
-	const hasFinalText = finalAnswer.length > 0 && !finalIsPlaceholder;
-	const hasStreamedText = streamedAnswer.length > 0 && !streamedIsPlaceholder;
-	if (!hasFinalText && !hasStreamedText && state.sources.length === 0) {
-		throw new SearchProviderError("codex", "Codex returned image-only response", 502);
-	}
-	const answer = hasFinalText ? finalAnswer : hasStreamedText ? streamedAnswer : "";
-	if (state.sources.length === 0 && answer.length > 0) {
-		for (const source of extractTextSources(answer)) {
-			addSource(state.sources, source);
-		}
-	}
-	return {
-		answer,
-		sources: state.sources,
-		model: state.model,
-		requestId: state.requestId,
-		usage: state.usage,
-	};
-}
-
-function parseObservedCodexSseEvent(event: RawSseEvent): unknown {
-	if (!event.data || event.data === "[DONE]") return undefined;
-	try {
-		return JSON.parse(event.data) as unknown;
-	} catch {
-		return undefined;
-	}
-}
-
 async function callCodexSearch(
 	auth: { accessToken: string; accountId?: string },
 	query: string,
@@ -606,12 +394,14 @@ async function callCodexSearch(
 		body: JSON.stringify(body),
 		signal: withHardTimeout(options.signal, options.timeoutMs),
 	});
+
 	if (!response.ok) {
 		const errorText = await response.text();
 		const classified = classifyProviderHttpError("codex", response.status, errorText);
 		if (classified) throw classified;
 		throw new SearchProviderError("codex", `Codex API error (${response.status}): ${errorText}`, response.status);
 	}
+
 	if (!response.body) {
 		throw new SearchProviderError("codex", "Codex API returned no response body", 500);
 	}
@@ -760,106 +550,6 @@ async function callCodexSearch(
 		requestId,
 		usage,
 	};
-	for await (const rawEvent of readSseJson<Record<string, unknown>>(response.body, options.signal)) {
-		processCodexSearchEvent(state, rawEvent);
-	}
-	return finalizeCodexSearchEventState(state);
-}
-
-/**
- * Run hosted search through the canonical Codex request context used by normal
- * turns. API-key relays depend on its client metadata and compatibility headers;
- * Responses Lite cannot force a hosted tool after moving tools into input.
- */
-async function callCodexSearchWithProviderTransport(
-	accessToken: string,
-	query: string,
-	options: {
-		signal?: AbortSignal;
-		timeoutMs?: number;
-		systemPrompt?: string;
-		searchContextSize?: "low" | "medium" | "high";
-		model: CodexSearchModel;
-		fetch?: FetchImpl;
-		headers: Record<string, string>;
-		sessionId?: string;
-		provider: string;
-		searchDelayMs: number;
-	},
-): Promise<CodexSearchResult> {
-	await codexSearchPacer.wait(options.provider, options.searchDelayMs, options.signal);
-	const requestedModel = options.model.requestModelId ?? options.model.id;
-	const state: CodexSearchEventState = {
-		answerParts: [],
-		streamedAnswerParts: [],
-		sources: [],
-		model: requestedModel,
-		requestId: "",
-		webSearchInvoked: false,
-	};
-	const requestSignal = withHardTimeout(options.signal, options.timeoutMs);
-	let observedError: unknown;
-	const response = await streamOpenAICodexResponses(
-		options.model,
-		{
-			systemPrompt: [options.systemPrompt ?? DEFAULT_INSTRUCTIONS],
-			messages: [{ role: "user", content: query, timestamp: Date.now() }],
-		},
-		{
-			apiKey: accessToken,
-			headers: options.headers,
-			sessionId: options.sessionId,
-			signal: requestSignal,
-			fetch: options.fetch,
-			preferWebsockets: false,
-			responsesLite: false,
-			onPayload(payload) {
-				if (!payload || typeof payload !== "object") return payload;
-				// The shared payload hook is `unknown`; this callback receives the provider's request body.
-				const requestBody = payload as Record<string, unknown>;
-				const body = { ...requestBody };
-				const include = Array.isArray(body.include)
-					? body.include.filter((value): value is string => typeof value === "string")
-					: [];
-				if (!include.includes("web_search_call.action.sources")) {
-					include.push("web_search_call.action.sources");
-				}
-				body.include = include;
-				body.parallel_tool_calls = true;
-				body.tools = [
-					{
-						type: "web_search",
-						search_context_size: options.searchContextSize ?? "high",
-					},
-				];
-				body.tool_choice = { type: "web_search" };
-				return body;
-			},
-			onSseEvent(event) {
-				const rawEvent = parseObservedCodexSseEvent(event);
-				if (!rawEvent) return;
-				try {
-					processCodexSearchEvent(state, rawEvent);
-				} catch (error) {
-					observedError = error;
-				}
-			},
-		},
-	).result();
-
-	if (requestSignal.aborted) {
-		const reason = requestSignal.reason;
-		if (reason instanceof Error) throw reason;
-		throw new DOMException("Codex web search aborted", "AbortError");
-	}
-	if (response.stopReason === "error" || response.stopReason === "aborted") {
-		if (observedError) throw observedError;
-		throw new SearchProviderError(
-			"codex",
-			response.errorMessage ?? `Codex web search ended with stop reason ${response.stopReason}`,
-		);
-	}
-	return finalizeCodexSearchEventState(state);
 }
 
 /** Execute web search through the selected Codex model and transport. */
@@ -874,7 +564,6 @@ export async function searchCodex(params: SearchParams): Promise<SearchResponse>
 	// byte-identical.
 	const parsed = params.parsedQuery ?? parseSearchQuery(params.query);
 	const query = parsed.hasDirectives ? formatQuery(parsed, GOOGLE_QUERY_SYNTAX) : params.query;
-	const modelSelectionWasExplicit = activeModel !== undefined || configuredModel !== undefined;
 
 	let result: CodexSearchResult;
 	if (transport.customEndpoint) {

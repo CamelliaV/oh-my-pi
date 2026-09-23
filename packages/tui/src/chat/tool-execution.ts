@@ -261,6 +261,11 @@ export function resolveToolCallIntent(intent: unknown, args: unknown): string | 
 export class ToolExecutionComponent extends Container {
 	#contentBox: Box; // Used for custom tools and bash visual truncation
 	#bodyBox: Box;
+	#bodyComponent: {
+		render(width: number): readonly string[];
+		invalidate(): void;
+		setIgnoreTight(ignore: boolean): void;
+	};
 	#contentText: WidthAwareText; // Generic fallback (no custom/built-in renderer)
 	// Which container the constructor mounted: bespoke/built-in renderers use
 	// #contentBox, everything else the generic #contentText fallback.

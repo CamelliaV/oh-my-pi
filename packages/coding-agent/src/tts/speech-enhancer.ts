@@ -101,20 +101,12 @@ export class SpeechEnhancer {
 							metadata,
 							signal: signal ? AbortSignal.any([signal, timeout]) : timeout,
 						},
-						{ signal, provider: model.provider },
 					);
-					if (response.stopReason === "error") {
-						lastError = response.errorMessage ?? "rewrite errored";
-						continue;
-					}
-					return extractText(response.content);
-				} catch (error) {
-					if (signal?.aborted) throw error;
-					lastError = error instanceof Error ? error.message : String(error);
-				}
-			}
-			if (lastError) logger.debug("speech-enhancer: rewrite errored", { error: lastError });
-			return null;
+				},
+				{ signal, provider: model.provider },
+			);
+			if (response.stopReason === "error" || response.stopReason === "aborted") return null;
+			return extractText(response.content);
 		} catch (error) {
 			if (!signal?.aborted) {
 				logger.debug("speech-enhancer: rewrite failed", {

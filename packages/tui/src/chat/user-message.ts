@@ -1,5 +1,7 @@
 import type { ImageContent } from "@oh-my-pi/pi-ai";
-import { Box, type ImageBudget, Text } from "../tui";
+import { Box } from "../components/box";
+import { ImageBudget } from "../components/image";
+import { Text } from "../components/text";
 import { applyBackgroundToLine, padding, visibleWidth } from "../utils";
 import { type Component, Container } from "../tui";
 import { Disclosure } from "../components/disclosure";
@@ -17,26 +19,21 @@ import {
 	skillChipStyle,
 } from "../prompt/composer-attachments";
 import { MODEL_MENTION_TAG_RE } from "../prompt/model-mention-syntax";
-import { fileHyperlink } from "../render";
+import type { ImageContent } from "@oh-my-pi/pi-ai";
 import { imageReferenceHyperlink } from "../prompt/image-references";
-import { highlightMagicKeywords } from "../prompt/magic-keywords";
 import { ImageStrip } from "./image-strip";
 import { resolveImageOptions } from "../render/render-utils";
 import type { ReactionTarget } from "./reaction";
-import { formatSessionUsageRow, type SessionUsageSnapshot } from "./work-usage";
+export interface SessionUsageSnapshot {
+	durationMs: number;
+	input: number;
+	output: number;
+	cacheRead: number;
+	cacheWrite: number;
+	requests: number;
+}
 
-// OSC 133 shell integration: marks prompt zones for terminal multiplexers.
-//
-// The zone must be *closed* within the same render. `133;B` sets a sticky
-// cursor semantic of `.input` in Ghostty (and Ghostty-derived terminals such
-// as cmux) that only a command-start marker clears; leaving it latched makes
-// `cursorIsAtPrompt()` permanently true and tags every subsequently painted
-// cell as `.input`. Combined with `cursor-click-to-move = true` (Ghostty's
-// default) that turns every left-click inside the pane into a burst of
-// synthesized arrow keys on omp's pty, slamming the editor caret to column 0
-// (#8030, #6115).
-//
-// `133;C` is therefore emitted immediately followed by `133;D;0` at the end of
+
 // the bubble. That clears the input state without reintroducing the grouping
 // problem the marker was originally omitted to avoid: the command zone opens
 // and finishes inside this component, so later assistant/tool output can never
@@ -56,7 +53,8 @@ export interface UserBubbleOptions {
 	/** SKILL.md path for a skill chip by name; `undefined` leaves the chip unlinked. */
 	skillPath?: (name: string) => string | undefined;
 	/** Cumulative session usage snapshot rendered as a dedicated row in the card. */
-	sessionUsage?: SessionUsageSnapshot;
+	/** Preformatted cumulative session usage line rendered inside the card. */
+	sessionUsageText?: string;
 	/** Inline image payloads rendered inside the bubble below the text. */
 	images?: readonly ImageContent[];
 	/** Shared graphics budget the inline image strip allocates placements from. */
@@ -150,7 +148,7 @@ export class UserMessageComponent extends Container implements ReactionTarget {
 	#reaction: string | undefined;
 
 	constructor(text: string, options: UserBubbleOptions = {}) {
-		const { sessionUsage, images, imageBudget, requestRepaint, imageKeyPrefix = "user" } = options;
+		const { sessionUsageText, images, imageBudget, requestRepaint, imageKeyPrefix = "user" } = options;
 		super();
 		ensureThemeSync();
 		// Display-only collapse: the stored/wire text carries bracketed `[Image #N, WxH]` markers,
@@ -205,7 +203,7 @@ export class UserMessageComponent extends Container implements ReactionTarget {
 			this.#frame.addChild(strip);
 		}
 		this.addChild(this.#frame);
-		if (sessionUsage) this.setSessionUsage(sessionUsage);
+		if (sessionUsageText) this.setSessionUsage(sessionUsageText);
 	}
 
 	/**
@@ -226,12 +224,11 @@ export class UserMessageComponent extends Container implements ReactionTarget {
 	}
 
 	/** Show cumulative completed-session usage as a dedicated row inside this input card. */
-	setSessionUsage(snapshot: SessionUsageSnapshot | undefined): void {
-		if (!snapshot) {
+	setSessionUsage(text: string | undefined): void {
+		if (!text) {
 			if (this.#sessionLine) this.#frame.removeChild(this.#sessionLine);
 			this.#sessionLine = undefined;
 		} else {
-			const text = formatSessionUsageRow(snapshot);
 			if (this.#sessionLine) {
 				this.#sessionLine.setText(text);
 			} else {

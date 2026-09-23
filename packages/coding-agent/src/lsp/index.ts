@@ -1,11 +1,12 @@
 export type { LspServerStatus } from "./client";
-export type { FileDiagnosticsResult, FormatContentResult } from "./diagnostics";
-export { FileFormatResult } from "./diagnostics";
+export type { FileDiagnosticsResult } from "@oh-my-pi/pi-tui/tools/lsp";
+export type { FormatContentResult } from "./diagnostics";
+export { FileFormatResult } from "@oh-my-pi/pi-tui/tools/lsp";
 export type { LspNavigationAction, LspNavigationLocation, LspNavigationQuery } from "./navigation";
 export { queryLspLocations } from "./navigation";
 export type { LspStartupServerInfo, LspWarmupOptions, LspWarmupResult } from "./servers";
 export { discoverStartupLspServers, getLspStatus, LSP_READONLY_ACTIONS, warmupLspServers } from "./servers";
 export { LspTool } from "./tool";
-export type { LspToolDetails } from "./types";
+export type { LspToolDetails } from "@oh-my-pi/pi-tui/tools/lsp";
 export type { WritethroughCallback, WritethroughDeferredHandle, WritethroughOptions } from "./writethrough";
 export { createLspWritethrough, flushLspWritethroughBatch, writethroughNoop } from "./writethrough";

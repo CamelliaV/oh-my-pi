@@ -107,12 +107,14 @@ function expandFallbackCandidates(
  * Order: each requested role's primary, then that role's `modelRoles` list
  * tail plus canonical retry fallback chains, traversed transitively (so a hop
  * onto B also consults B's own chain). Disabling model fallback restricts
- * attempts to the first resolvable primary.
+ * attempts to the first resolvable primary, unless `tryAllRoles` asks for the
+ * explicit role chain without configured retry-chain expansion.
  */
 export function collectOnlineTinyCandidates(
 	roles: readonly string[],
 	settings: Settings,
 	availableModels: Model<Api>[],
+	options?: { tryAllRoles?: boolean },
 ): OnlineTinyCandidate[] {
 	const seen = new Set<string>();
 	const out: OnlineTinyCandidate[] = [];
@@ -125,14 +127,16 @@ export function collectOnlineTinyCandidates(
 	};
 
 	// Retain every role even if primaries coincide: their fallback chains can differ.
+	const fallbackEnabled = settings.get("retry.modelFallback") !== false;
 	const primaries: OnlineTinyCandidate[] = [];
 	for (const role of roles) {
 		const resolved = resolveRoleSelection([role], settings, availableModels);
 		if (!resolved?.model) continue;
 		addPrimary(resolved.role, resolved.model);
-		if (settings.get("retry.modelFallback") === false) return out;
-		primaries.push({ role: resolved.role, model: resolved.model });
+		if (!fallbackEnabled && !options?.tryAllRoles) return out;
+		if (fallbackEnabled) primaries.push({ role: resolved.role, model: resolved.model });
 	}
+	if (!fallbackEnabled) return out;
 
 	const configuredChains = settings.get("retry.fallbackChains");
 	const chains = expandRetryFallbackChains(

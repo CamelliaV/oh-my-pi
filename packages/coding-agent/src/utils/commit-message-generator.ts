@@ -11,7 +11,7 @@ import type { ModelRegistry } from "../config/model-registry";
 import type { Settings } from "../config/settings";
 import MODEL_PRIO from "../priority.json" with { type: "json" };
 import commitSystemPrompt from "../prompts/system/commit-message-system.md" with { type: "text" };
-import { toReasoningEffort } from "../thinking";
+import { concreteThinkingLevel, toReasoningEffort } from "@oh-my-pi/pi-tui/thinking";
 import { collectOnlineTinyCandidates } from "../tiny/online-candidates";
 
 const COMMIT_SYSTEM_PROMPT = prompt.render(commitSystemPrompt);

@@ -1,3 +1,4 @@
+import { LIST_STATUS_ORDER } from "@oh-my-pi/pi-tui/tools/hub";
 /**
  * Hub messaging half — agent-to-agent messaging over the process-global IrcBus.
  *
@@ -10,41 +11,27 @@
  */
 
 import type { AgentToolResult } from "@oh-my-pi/pi-agent-core";
-import { type Component, Text } from "@oh-my-pi/pi-tui";
-import { formatAge, formatDuration } from "@oh-my-pi/pi-utils";
+
+import { formatDuration } from "@oh-my-pi/pi-utils";
 import type { Settings } from "../../config/settings";
-import type { RenderResultOptions } from "../../extensibility/custom-tools/types";
-import { IrcAwaitTargetStopped, IrcBus, type IrcDeliveryReceipt, type IrcMessage } from "../../irc/bus";
-import type { Theme } from "../../modes/theme/theme";
+
+import { IrcAwaitTargetStopped, IrcBus } from "../../irc/bus";
+import { type IrcMessage } from "@oh-my-pi/pi-tui/tools/hub";
+
 import { type AgentRegistry, MAIN_AGENT_ID } from "../../registry/agent-registry";
 import { ensurePersistedRoster, isCurrentSessionRosterRef } from "../../registry/persisted-agents";
 import { canSpawnAtDepth } from "../../task/types";
-import { Ellipsis, renderStatusLine, renderTreeList, truncateToWidth } from "../../tui";
-import {
-	createCachedComponent,
-	formatBadge,
-	formatErrorDetail,
-	getPreviewLines,
-	PREVIEW_LIMITS,
-	replaceTabs,
-	type ToolUIColor,
-} from "../render-utils";
+
 import {
 	type CoordinationDetails,
 	DEFAULT_HUB_LIST_LIMIT,
 	type HubListStatus,
-	type HubRenderArgs,
 	type HubRosterCounts,
-	hubErrorResult,
 	MAX_HUB_LIST_LIMIT,
-} from "./types";
-
-export { DEFAULT_HUB_LIST_LIMIT, MAX_HUB_LIST_LIMIT } from "./types";
+} from "@oh-my-pi/pi-tui/tools/hub";
+import { hubErrorResult } from "./types";
 
 export const DEFAULT_IRC_TIMEOUT_MS = 120_000;
-
-/** Hub roster ordering (running before idle before parked) shared with the child prompt's live-row cap. */
-export const LIST_STATUS_ORDER: Record<string, number> = { running: 0, idle: 1, parked: 2 };
 
 export interface HubListParams {
 	status?: HubListStatus;
@@ -243,16 +230,14 @@ export async function executeSend(
 			to,
 		});
 	}
-	// A direct send may address a parked id that another root's scan (or a
-	// prior list) restored into this process-global registry. Refresh this
-	// caller's persisted roster once before the bus resolves the target, so a
-	// same-named parked ref (and the revival that follows it) targets this
-	// root's transcript — never requiring a prior `list`. Broadcasts address
-	// no id and fan out to live peers only, so they skip the refresh. A
-	// missing caller session hint keeps the existing in-memory behavior: no
-	// root is guessed from the registry or cwd.
+	// Discovery can retarget parked refs to the caller's root, but cannot
+	// replace a live peer. Never gate live control messages on filesystem
+	// discovery: the recipient may be waiting for this message to finish work.
 	if (!isBroadcast && sessionFileHint) {
-		await ensurePersistedRoster(registry, sessionFileHint);
+		const recipient = registry.get(to);
+		if (!recipient || recipient.status === "parked") {
+			await ensurePersistedRoster(registry, sessionFileHint);
+		}
 	}
 
 	const bus = IrcBus.global();

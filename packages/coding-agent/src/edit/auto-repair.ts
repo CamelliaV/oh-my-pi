@@ -32,7 +32,7 @@ const MAX_PAIR_SEARCH_HUNKS = 24;
 /** Initial attempt plus one feedback retry. */
 const MAX_ATTEMPTS = 2;
 const COMPLETION_MAX_TOKENS = 8192;
-const REPAIR_TIMEOUT_MS = 60_000;
+const REPAIR_TIMEOUT_MS = 20_000;
 
 /** One changed line run in pre-image (`a`) / post-image (`b`) coordinates. */
 interface EditHunk {
@@ -314,6 +314,10 @@ export async function attemptEditAutoRepair(options: {
 	}
 	if (parsesSource(current, snapshot.path)) return undefined;
 
+	const modelName = `${model.provider}/${model.id}`;
+	logger.debug("Edit auto-repair started", { path: snapshot.path, model: modelName });
+	// One budget across both attempts: the edit tool result blocks on this, so
+	// a slow repair model must not stall the turn past the ceiling.
 	const timeout = AbortSignal.timeout(REPAIR_TIMEOUT_MS);
 	const signal = options.signal ? AbortSignal.any([options.signal, timeout]) : timeout;
 	let usedModel = candidates[0]!.model;

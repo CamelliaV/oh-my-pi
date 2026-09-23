@@ -1058,6 +1058,14 @@ export function importFromDict(beam: BeamMemoryState, data: Record<string, unkno
 	const importedAt = toUtcIso();
 	const oldToNewRowid = new Map<number, number>();
 
+	// Hoisted out of the per-row loops: `db.query` is Bun's cached-statement
+	// API (no per-row prepare/finalize churn), and the vec availability probe
+	// is loop-invariant (schema is fixed at open).
+	const workingExists = db.query("SELECT 1 FROM working_memory WHERE id = ?");
+	const episodicExists = db.query("SELECT 1 FROM episodic_memory WHERE id = ?");
+	const episodicRowid = db.query("SELECT rowid FROM episodic_memory WHERE id = ?");
+	const scratchExists = db.query("SELECT 1 FROM scratchpad WHERE id = ?");
+	const vecEpisodesAvailable = vecAvailable(db);
 	transaction(db, () => {
 		// Cascading a replaced source can remove an episode before its own import
 		// pass. Report that as replacement, not a newly inserted logical record.
@@ -1073,8 +1081,7 @@ export function importFromDict(beam: BeamMemoryState, data: Record<string, unkno
 			const item = jsonObject(raw);
 			const id = String(item.id ?? "");
 			if (id.length === 0) continue;
-			using existsStatement = db.prepare("SELECT 1 FROM working_memory WHERE id = ?");
-			const exists = existsStatement.get(id) !== null;
+			const exists = workingExists.get(id) !== null;
 			if (exists && !force) {
 				stats.working_memory.skipped++;
 				continue;
@@ -1129,14 +1136,22 @@ export function importFromDict(beam: BeamMemoryState, data: Record<string, unkno
 			const item = jsonObject(raw);
 			const id = String(item.id ?? "");
 			if (id.length === 0) continue;
-			using existsStatement = db.prepare("SELECT 1 FROM episodic_memory WHERE id = ?");
-			const exists = existsStatement.get(id) !== null;
+			const exists = episodicExists.get(id) !== null;
 			if (exists && !force) {
 				stats.episodic_memory.skipped++;
 				continue;
 			}
-			using rowidStatement = db.prepare("SELECT rowid FROM episodic_memory WHERE id = ?");
 			if (exists) {
+				const existingRow = episodicRowid.get(id) as {
+					rowid: number;
+				} | null;
+				if (existingRow !== null && vecEpisodesAvailable) {
+					try {
+						db.run("DELETE FROM vec_episodes WHERE rowid = ?", [existingRow.rowid]);
+					} catch {
+						// sqlite-vec cleanup is best-effort; import correctness takes precedence.
+					}
+				}
 				purgeMemoryArtifacts(db, [id]);
 				db.run("DELETE FROM episodic_memory WHERE id = ?", [id]);
 			}
@@ -1182,7 +1197,7 @@ export function importFromDict(beam: BeamMemoryState, data: Record<string, unkno
 			);
 			resyncFtsEpisodes(db, id);
 			const oldRowid = Number(item.rowid);
-			const newRow = rowidStatement.get(id) as {
+			const newRow = episodicRowid.get(id) as {
 				rowid: number;
 			} | null;
 			if (Number.isFinite(oldRowid) && newRow !== null) oldToNewRowid.set(oldRowid, newRow.rowid);
@@ -1196,7 +1211,7 @@ export function importFromDict(beam: BeamMemoryState, data: Record<string, unkno
 			if (mappedRowid === undefined || embedding === null || embedding.some(v => !Number.isFinite(v))) {
 				continue;
 			}
-			if (!vecAvailable(db)) continue;
+			if (!vecEpisodesAvailable) continue;
 			try {
 				vecInsert(db, mappedRowid, embedding);
 				stats.episodic_memory.embeddings_inserted++;
@@ -1209,8 +1224,7 @@ export function importFromDict(beam: BeamMemoryState, data: Record<string, unkno
 			const item = jsonObject(raw);
 			const id = String(item.id ?? "");
 			if (id.length === 0) continue;
-			using existsStatement = db.prepare("SELECT 1 FROM scratchpad WHERE id = ?");
-			const exists = existsStatement.get(id) !== null;
+			const exists = scratchExists.get(id) !== null;
 			if (exists) {
 				db.run("UPDATE scratchpad SET content = ?, session_id = ?, created_at = ?, updated_at = ? WHERE id = ?", [
 					sqlBinding(item.content, ""),

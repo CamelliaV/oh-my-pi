@@ -226,7 +226,7 @@ export function formatIntentText(uiTheme: Theme, intent: string, textBudget: num
 // Text Truncation Utilities
 // =============================================================================
 /** Keep both ends of a single-line label without splitting wide characters. */
-function truncateMiddleToWidth(text: string, maxWidth: number): string {
+export function truncateMiddleToWidth(text: string, maxWidth: number): string {
 	const width = visibleWidth(text);
 	if (width <= maxWidth) return text;
 	if (maxWidth <= 1) return maxWidth === 1 ? "…" : "";

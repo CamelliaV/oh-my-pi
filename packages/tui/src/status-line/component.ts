@@ -1460,7 +1460,7 @@ export class StatusLineComponent<TSession extends StatusLineSession = StatusLine
 		// hold this repository's counts (keyed by repo root, one-shot). Adopting
 		// them here puts the counts in the FIRST paint instead of one async
 		// fetch + repaint later, while startup init still owns the event loop.
-		const prewarmed = takePrewarmedVcsStatus(repository.root());
+		const prewarmed = this.host.takePrewarmedVcsStatus?.(repository.root());
 		if (prewarmed !== undefined) {
 			this.#cachedGitStatus = prewarmed;
 			this.#cachedGitStatusCwd = gitCwd;
@@ -2075,7 +2075,7 @@ export class StatusLineComponent<TSession extends StatusLineSession = StatusLine
 		// value computed mid-turn (estimate of the active tail) would survive after
 		// the turn ends/aborts, since clearing the snapshot touches no message.
 		const contextUsageRevision = this.session.contextUsageRevision ?? 0;
-		const usesCodexRemoteAutoCompaction = this.session.usesCodexRemoteAutoCompaction;
+		const usesCodexRemoteAutoCompaction = this.session.usesCodexRemoteAutoCompaction ?? false;
 
 		const systemPrompt = this.session.systemPrompt;
 		const tools = this.session.agent?.state?.tools;

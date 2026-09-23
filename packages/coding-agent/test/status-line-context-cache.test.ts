@@ -203,7 +203,7 @@ describe("StatusLineComponent context breakdown", () => {
 			messages: [userMessage("hi")],
 			usage: { tokens: 5_000, contextWindow: 272_000, percent: 1.8 },
 		});
-		const comp = new StatusLineComponent(fake.session);
+		const comp = new StatusLineComponent(fake.session, statusLineHost);
 		expect(comp.getCachedContextBreakdown().usedTokens).toBe(5_000);
 
 		fake.setUsage({ tokens: 5_500, contextWindow: 272_000, percent: 2.0 });

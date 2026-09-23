@@ -19,8 +19,9 @@ import {
 	skillChipStyle,
 } from "../prompt/composer-attachments";
 import { MODEL_MENTION_TAG_RE } from "../prompt/model-mention-syntax";
-import type { ImageContent } from "@oh-my-pi/pi-ai";
 import { imageReferenceHyperlink } from "../prompt/image-references";
+import { fileHyperlink } from "../render/hyperlink";
+import { highlightMagicKeywords } from "../prompt/magic-keywords";
 import { ImageStrip } from "./image-strip";
 import { resolveImageOptions } from "../render/render-utils";
 import type { ReactionTarget } from "./reaction";

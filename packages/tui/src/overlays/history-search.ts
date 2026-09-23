@@ -21,6 +21,8 @@ import {
 export interface HistorySearchEntry {
 	prompt: string;
 	created_at: number;
+	/** Display-only provenance. Command history tags session-sourced rows `omp`. */
+	origin?: "omp" | "shell";
 }
 
 /** Searchable prompt history supplied by the host. */

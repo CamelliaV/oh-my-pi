@@ -4,7 +4,8 @@ import type { AgentRegistry } from "../registry/agent-registry";
 import type { ToolSession } from "../tools";
 import { emitSubagentFrame } from "../utils/event-bus";
 import { createSubagentExecution, readSubagentExecution, type SubagentExecutionState } from "./execution-state";
-import { type AgentProgress, type SubagentProgressPayload, TASK_SUBAGENT_PROGRESS_CHANNEL } from "./types";
+import type { AgentProgress } from "@oh-my-pi/pi-tui/tools/task";
+import { type SubagentProgressPayload, TASK_SUBAGENT_PROGRESS_CHANNEL } from "./types";
 
 /** Initial observable task identity, before a session or model request exists. */
 export function createQueuedSubagentProgress(

@@ -102,6 +102,7 @@ export interface SubagentExecutionState {
 	updatedAt: number;
 	run: number;
 	startedAt: number;
+	runStartedAt?: number;
 	lastActivityAt: number;
 	lastProgressAt?: number;
 	lastProgress?: string;
@@ -217,7 +218,7 @@ export function presentSubagentExecution(
 	const stoppedHistory = Boolean(input.historical && phase && !isExecutionTerminal(phase));
 	const active = !stoppedHistory && !failed && !cancelled && !completed && status !== "idle" && status !== "parked";
 	const label = stoppedHistory
-		? `已停止（历史：${PHASE_LABELS[phase]}）`
+		? `已停止（历史：${phase ? PHASE_LABELS[phase] : "未知"}）`
 		: phase
 			? PHASE_LABELS[phase]
 			: legacyRetry

@@ -156,6 +156,7 @@ async function consolidateLocked(
 
 		let lastError: Error | undefined;
 		let response: AssistantMessage | undefined;
+		let served: (typeof models)[number] | undefined;
 		for (const model of models) {
 			if (!(await options.modelRegistry.getApiKey(model, options.sessionId))) continue;
 			try {
@@ -183,6 +184,7 @@ async function consolidateLocked(
 					continue;
 				}
 				response = attempt;
+				served = model;
 				break;
 			} catch (error) {
 				lastError = error instanceof Error ? error : new Error(String(error));
@@ -204,7 +206,7 @@ async function consolidateLocked(
 				at,
 				sessions: groups.length,
 				deltas: deltaCount,
-				model: model.id,
+				model: (served ?? models[0])?.id ?? "unknown",
 			},
 		});
 		return { ran: true, sessions: groups.length, deltas: deltaCount };

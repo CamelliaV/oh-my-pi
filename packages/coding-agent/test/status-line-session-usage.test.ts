@@ -1,12 +1,12 @@
 import { beforeAll, describe, expect, it } from "bun:test";
 import { stripVTControlCharacters } from "node:util";
 import type { AgentMessage } from "@oh-my-pi/pi-agent-core";
-import { renderSegment } from "@oh-my-pi/pi-coding-agent/modes/components/status-line/segments";
+import { renderSegment } from "@oh-my-pi/pi-tui/status-line/segments";
 import type { SessionEntry } from "@oh-my-pi/pi-coding-agent/session/session-entries";
-import type { SegmentContext } from "@oh-my-pi/pi-coding-agent/modes/components/status-line/types";
-import type { SessionUsageSnapshot } from "@oh-my-pi/pi-coding-agent/modes/components/work-usage";
-import { buildSessionUsageTimeline } from "@oh-my-pi/pi-coding-agent/modes/components/work-usage";
-import { initTheme } from "@oh-my-pi/pi-coding-agent/modes/theme/theme";
+import type { SegmentContext } from "@oh-my-pi/pi-tui/status-line/types";
+import type { SessionUsageSnapshot } from "@oh-my-pi/pi-tui/chat/work-usage";
+import { buildSessionUsageTimeline } from "@oh-my-pi/pi-tui/chat/work-usage";
+import { initTheme } from "@oh-my-pi/pi-tui/theme/theme";
 
 beforeAll(async () => {
 	await initTheme();

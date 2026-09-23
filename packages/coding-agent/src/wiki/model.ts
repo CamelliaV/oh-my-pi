@@ -5,8 +5,8 @@ import { formatModelString, resolveModelRoleValue } from "../config/model-resolv
 import type { Settings } from "../config/settings";
 import { redactSecrets } from "../secrets/redact";
 import type { AgentSession } from "../session/agent-session";
-import { concreteThinkingLevel, shouldDisableReasoning, toReasoningEffort } from "../thinking";
-import { isTinyMemoryLocalModelKey, ONLINE_MEMORY_MODEL_KEY } from "../tiny/models";
+import { concreteThinkingLevel, shouldDisableReasoning, toReasoningEffort } from "@oh-my-pi/pi-tui/thinking";
+import { isTinyMemoryLocalModelKey } from "../tiny/models";
 import { tinyModelClient } from "../tiny/title-client";
 import type { WikiConfig } from "./config";
 import type { WikiComplete } from "./types";
@@ -29,8 +29,8 @@ export function createWikiComplete(
 	return async request => {
 		request.signal?.throwIfAborted();
 		const input = redactSecrets(request.prompt, session.obfuscator);
-		const local = settings.get("providers.memoryModel");
-		if (local !== ONLINE_MEMORY_MODEL_KEY && isTinyMemoryLocalModelKey(local)) {
+		const local = settings.getModelRole("memory");
+		if (local && isTinyMemoryLocalModelKey(local)) {
 			usage.calls++;
 			const attempt = attemptSignal(request.signal, config.timeoutMs);
 			try {

@@ -1,6 +1,12 @@
 import type { WebSearchGrounding } from "@oh-my-pi/pi-catalog/types";
 import type { SearchProvider } from "./providers/base";
-import { getSearchProviderLabel, type SearchEngineId, type SearchProviderFailure, SearchProviderError } from "./types";
+import {
+	getSearchProviderLabel,
+	SearchProviderError,
+	type SearchEngineId,
+	type SearchProviderFailure,
+	type SearchProviderId,
+} from "./types";
 
 export type { SearchParams } from "./providers/base";
 export { SearchProvider } from "./providers/base";
@@ -36,6 +42,7 @@ const PROVIDER_LOADERS: ProviderRegistry<SearchEngineId> = {
 	startpage: () => import("./providers/startpage").then(m => new m.StartpageProvider()),
 	mojeek: () => import("./providers/mojeek").then(m => new m.MojeekProvider()),
 	public: () => import("./providers/public").then(m => new m.PublicWebProvider()),
+	grok: () => import("./providers/grok").then(m => new m.GrokProvider()),
 };
 
 const GROUNDED_PROVIDER_LOADERS: ProviderRegistry<WebSearchGrounding> = {
@@ -84,7 +91,7 @@ export function formatSearchProviderFailures(
 /** Convert an internal provider error into safe, serializable fallback metadata. */
 export function createSearchProviderFailure(
 	error: unknown,
-	provider: Pick<SearchProvider, "id" | "label">,
+	provider: { id: SearchProviderId; label: string },
 	durationMs?: number,
 ): SearchProviderFailure {
 	return {

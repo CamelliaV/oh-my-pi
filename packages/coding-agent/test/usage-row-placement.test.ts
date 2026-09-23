@@ -18,7 +18,7 @@ import type { SessionEntry } from "@oh-my-pi/pi-coding-agent/session/session-ent
 import { Container, TUI } from "@oh-my-pi/pi-tui";
 import { formatNumber } from "@oh-my-pi/pi-utils";
 import { VirtualTerminal } from "../../tui/test/virtual-terminal";
-import { UserMessageComponent } from "../src/modes/components/user-message";
+import { UserMessageComponent } from "@oh-my-pi/pi-tui/chat/user-message";
 import {
 	buildSessionUsageTimeline,
 	cumulativeSessionUsageForWork,
@@ -26,7 +26,7 @@ import {
 	formatWorkUsageRow,
 	restoreLiveSessionUsage,
 	WorkUsageAccumulator,
-} from "../src/modes/components/work-usage";
+} from "@oh-my-pi/pi-tui/chat/work-usage";
 
 // 4242 → "4.2K": distinctive enough not to collide with a read group's render.
 const USAGE_INPUT = 4242;
@@ -660,7 +660,7 @@ describe("work usage accounting", () => {
 		expect(timeline[1]!.session.wallMs).toBe(1_000);
 		expect(formatSessionUsageRow(timeline[1]!.session)).toContain("SESSION");
 		expect(formatSessionUsageRow(timeline[1]!.session)).toContain("3 req");
-		const rendered = new UserMessageComponent("next request", { sessionUsage: timeline[1]!.session })
+		const rendered = new UserMessageComponent("next request", { sessionUsageText: formatSessionUsageRow(timeline[1]!.session) })
 			.render(160)
 			.join("\n");
 		const lines = Bun.stripANSI(rendered).split("\n");

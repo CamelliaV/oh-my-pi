@@ -63,6 +63,7 @@ import {
 	buildSessionUsageTimeline,
 	createWorkUsageRowBlock,
 	cumulativeSessionUsageForWork,
+	formatSessionUsageRow,
 	type SessionUsageSnapshot,
 	WorkUsageAccumulator,
 } from "../components/work-usage";
@@ -307,7 +308,9 @@ export class UiHelpers {
 						userComponent = new UserMessageComponent(userText, {
 							synthetic: isSynthetic,
 							imageLinks,
-							sessionUsage: options?.sessionUsage,
+							sessionUsageText: options?.sessionUsage
+								? formatSessionUsageRow(options.sessionUsage)
+								: undefined,
 							images,
 							imageBudget: this.ctx.ui.imageBudget,
 							requestRepaint: () => this.ctx.ui.requestRender(),

@@ -54,7 +54,7 @@ describe("applyMcpToggleRuntime", () => {
 			loadConfigs: async () => ({
 				configs: { github: { command: "github-mcp-server" } },
 				sources: {},
-				exaApiKeys: [],
+				exaApiKeys: [], lazyConfigs: {}, lazySources: {},
 			}),
 			manager: {
 				getConnectionStatus: () => "disconnected",
@@ -87,7 +87,7 @@ describe("applyMcpToggleRuntime", () => {
 			discovery: { enableProjectConfig: false, filterExa: true, filterBrowser: true },
 			loadConfigs: async (cwd, options) => {
 				loads.push({ cwd, options });
-				return { configs: {}, sources: {}, exaApiKeys: [] };
+				return { configs: {}, sources: {}, exaApiKeys: [], lazyConfigs: {}, lazySources: {} };
 			},
 			manager: {
 				getConnectionStatus: () => "disconnected",

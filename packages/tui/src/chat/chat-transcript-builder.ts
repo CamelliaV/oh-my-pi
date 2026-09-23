@@ -61,7 +61,12 @@ import { resolveToolCallIntent, ToolExecutionComponent } from "./tool-execution"
 import { TranscriptContainer } from "../chrome/transcript-container";
 import { createUsageRowBlock, turnElapsedMs } from "../overlays/usage-row";
 import { CollapsedSyntheticMessageComponent, UserMessageComponent } from "./user-message";
-import { createWorkUsageRowBlock, SessionUsageAccumulator, WorkUsageAccumulator } from "./work-usage";
+import {
+	createWorkUsageRowBlock,
+	formatSessionUsageRow,
+	SessionUsageAccumulator,
+	WorkUsageAccumulator,
+} from "./work-usage";
 
 export interface ChatTranscriptBuilderDeps {
 	ui: TUI;
@@ -342,7 +347,10 @@ export class ChatTranscriptBuilder {
 							: undefined;
 						this.container.addChild(
 							new UserMessageComponent(userText, {
-								sessionUsage: this.#sessionUsage.current(),
+								sessionUsageText: (() => {
+									const sessionUsage = this.#sessionUsage.current();
+									return sessionUsage ? formatSessionUsageRow(sessionUsage) : undefined;
+								})(),
 								images,
 								imageBudget: this.#deps.ui.imageBudget,
 								requestRepaint: () => this.#deps.ui.requestRender(),

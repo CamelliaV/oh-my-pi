@@ -3,7 +3,7 @@ import { settings } from "../config/settings";
 import type { AgentSession } from "../session/agent-session";
 import { getSessionCompactionBoundaries } from "../session/context-usage-runtime";
 import { limitMatchesActiveAccount } from "../slash-commands/helpers/active-oauth-account";
-import { resolveActiveRepoContextSync } from "../utils/active-repo-context";
+import { resolveActiveRepoContextSync, takePrewarmedVcsStatus } from "../utils/active-repo-context";
 import { GH_COMMAND_TIMEOUT_MS, github } from "../utils/github";
 import { calculateTokensPerSecond } from "../utils/token-rate";
 
@@ -40,6 +40,7 @@ export const statusLineHost: StatusLineHost<StatusLineHostSession> = {
 	canFetchUsageReports: session => typeof session.fetchUsageReports === "function",
 	fetchUsageReports: (session, signal) => session.fetchUsageReports?.(signal) ?? Promise.resolve(null),
 	resolveActiveRepo: resolveActiveRepoContextSync,
+	takePrewarmedVcsStatus,
 	lookupPullRequest: cwd =>
 		github.run(cwd, ["pr", "view", "--json", "number,url"], AbortSignal.timeout(GH_COMMAND_TIMEOUT_MS)),
 	calculateTokensPerSecond,

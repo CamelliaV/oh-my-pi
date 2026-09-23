@@ -1,9 +1,9 @@
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "bun:test";
 import type { ImageContent } from "@oh-my-pi/pi-ai";
-import { CustomEditor } from "@oh-my-pi/pi-coding-agent/modes/components/custom-editor";
-import { TranscriptContainer } from "@oh-my-pi/pi-coding-agent/modes/components/transcript-container";
-import { UserMessageComponent } from "@oh-my-pi/pi-coding-agent/modes/components/user-message";
-import { getEditorTheme, initTheme } from "@oh-my-pi/pi-coding-agent/modes/theme/theme";
+import { CustomEditor } from "@oh-my-pi/pi-tui/prompt/custom-editor";
+import { TranscriptContainer } from "@oh-my-pi/pi-tui/chrome/transcript-container";
+import { UserMessageComponent } from "@oh-my-pi/pi-tui/chat/user-message";
+import { getEditorTheme, initTheme } from "@oh-my-pi/pi-tui/theme/theme";
 import { ImageBudget, ImageProtocol, setTerminalImageProtocol, TERMINAL } from "@oh-my-pi/pi-tui";
 
 const PNG_1X1 = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAADElEQVR4nGP4z8AAAAMBAQDJ/pLvAAAAAElFTkSuQmCC";

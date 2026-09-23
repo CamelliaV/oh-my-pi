@@ -4,6 +4,7 @@ import type { SearchCitation, SearchResponse, SearchSource, SearchUsage } from "
 import { SearchProviderError } from "../../../web/search/types";
 import { formatQuery, parseSearchQuery, type QuerySyntax } from "../query";
 import { clampNumResults } from "../utils";
+import { classifyProviderHttpError, withHardTimeout } from "./utils";
 import type { SearchParams } from "./base";
 import { SearchProvider } from "./base";
 import { searchGrokResponses, type GrokResponsesTransport } from "./grok-responses";

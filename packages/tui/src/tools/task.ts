@@ -1,3 +1,4 @@
+import type { Usage } from "@oh-my-pi/pi-ai";
 import type { SubagentExecutionState } from "../overlays/session-observer-registry";
 import { isRecord } from "@oh-my-pi/pi-utils";
 import type { ThemeColor } from "../theme/theme";
@@ -1992,6 +1993,8 @@ export interface SingleResult {
 	resolvedModelIsFallback?: boolean;
 	/** Mirrors {@link AgentProgress.resolvedModelRoute} onto the settled result. */
 	resolvedModelRoute?: string;
+	/** Mirrors {@link AgentProgress.execution} onto the settled result. */
+	execution?: SubagentExecutionState;
 	/** Retains {@link AgentProgress.advisor} after the advised session is disposed. */
 	advisor?: boolean;
 	error?: string;

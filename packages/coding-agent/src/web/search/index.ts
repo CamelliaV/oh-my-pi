@@ -36,6 +36,7 @@ import {
 	MAX_WEB_SEARCH_TIMEOUT_SECONDS,
 	SearchProviderError,
 	type SearchProviderFailure,
+	type SearchProviderId,
 	type SearchResponse,
 	type SearchResultDetails,
 } from "./types";
@@ -190,7 +191,10 @@ async function executeSearch(
 	let failedResponseProvider: SearchResponse["provider"] = "none";
 	for (const candidate of candidates) {
 		let provider: SearchProvider | undefined;
-		const candidateMeta = { id: candidate.model.id, label: candidate.model.name };
+		const candidateMeta = {
+			id: candidate.model.id as SearchProviderId,
+			label: candidate.model.name,
+		};
 		lastProvider = candidateMeta;
 		try {
 			if (modelKind(candidate.model) === "search") {

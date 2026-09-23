@@ -1,5 +1,7 @@
-import type { AgentMessage, ThinkingLevel } from "@oh-my-pi/pi-agent-core";
+import type { AgentMessage } from "@oh-my-pi/pi-agent-core";
+import { type ThinkingLevel } from "@oh-my-pi/pi-agent-core/thinking";
 import type { Model } from "@oh-my-pi/pi-ai";
+import type { SubagentExecutionState } from "./session-observer-registry";
 
 /** Identity of the ambient main session in the agent roster. */
 export const MAIN_AGENT_ID = "Main";
@@ -50,6 +52,7 @@ export interface AgentRecordLike {
 		resolvedModelIsFallback?: boolean;
 		metrics?: AgentMetricsSummary;
 		readOnly?: boolean;
+		execution?: SubagentExecutionState;
 		outputPath?: string;
 		patchPath?: string;
 		branchName?: string;

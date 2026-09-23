@@ -4,7 +4,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { type KeyId, type TUI, visibleWidth } from "@oh-my-pi/pi-tui";
 import type { ExtensionAPI } from "../src/extensibility/extensions";
-import { initTheme } from "../src/modes/theme/theme";
+import { initTheme } from "@oh-my-pi/pi-tui/theme/theme";
 import { createWorkspaceInspectorExtension } from "../src/workspace-inspector";
 import { WorkspaceInspectorComponent } from "../src/workspace-inspector/component";
 import { loadCommitDiff, loadDiff, loadHistory, loadWorkspaceSnapshot } from "../src/workspace-inspector/git-snapshot";

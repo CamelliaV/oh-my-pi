@@ -78,6 +78,26 @@
       "types": "./src/render/index.ts",
       "import": "./src/render/index.ts"
     },
+    "./chat/*": {
+      "types": "./src/chat/*.ts",
+      "import": "./src/chat/*.ts"
+    },
+    "./prompt/*": {
+      "types": "./src/prompt/*.ts",
+      "import": "./src/prompt/*.ts"
+    },
+    "./chrome/*": {
+      "types": "./src/chrome/*.ts",
+      "import": "./src/chrome/*.ts"
+    },
+    "./tools/*": {
+      "types": "./src/tools/*.ts",
+      "import": "./src/tools/*.ts"
+    },
+    "./status-line/*": {
+      "types": "./src/status-line/*.ts",
+      "import": "./src/status-line/*.ts"
+    },
     "./chrome": {
       "types": "./src/chrome/index.ts",
       "import": "./src/chrome/index.ts"

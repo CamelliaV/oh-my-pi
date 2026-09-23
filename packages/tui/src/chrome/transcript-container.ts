@@ -1,6 +1,7 @@
 import { type Component, Container, type HistoryBatch } from "../tui";
 import * as logger from "@oh-my-pi/pi-utils/logger";
 import { isToolActivityComponent } from "./tool-activity";
+import { TERMINAL } from "../terminal-capabilities";
 
 /** Shared animation time supplied by the constrained transcript root. */
 export interface AnimationFrame {

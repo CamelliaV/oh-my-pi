@@ -105,8 +105,8 @@ describe("mergeCommandHistories", () => {
 			[{ command: "git status", timestamp: 400 }],
 		);
 		expect(merged).toEqual([
-			{ id: 0, prompt: "git status", created_at: 400, origin: "omp" },
-			{ id: 0, prompt: "ls", created_at: 200, origin: "shell" },
+			{ id: 0, prompt: "git status", created_at: 400, origin: "omp", useCount: 1 },
+			{ id: 0, prompt: "ls", created_at: 200, origin: "shell", useCount: 1 },
 		]);
 	});
 

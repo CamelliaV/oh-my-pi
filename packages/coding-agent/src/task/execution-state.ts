@@ -322,18 +322,3 @@ export function readSubagentExecution(value: unknown): SubagentExecutionState | 
 		events: events.slice(-MAX_EXECUTION_EVENTS),
 	});
 }
-
-declare module "@oh-my-pi/pi-tui/tools/task" {
-	interface AgentProgress {
-		execution?: SubagentExecutionState;
-	}
-	interface SingleResult {
-		execution?: SubagentExecutionState;
-	}
-}
-
-declare module "@oh-my-pi/pi-tui/overlays/session-observer-registry" {
-	interface SubagentProgressPayload {
-		execution?: SubagentExecutionState;
-	}
-}

@@ -143,11 +143,6 @@ export interface SearchResponse {
 	authMode?: string;
 }
 
-export interface SearchResultDetails {
-	response: SearchResponse;
-	error?: string;
-}
-
 /** Default hard timeout for each web-search provider transport. */
 export const DEFAULT_WEB_SEARCH_TIMEOUT_SECONDS = 60;
 

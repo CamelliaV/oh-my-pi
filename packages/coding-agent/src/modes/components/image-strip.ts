@@ -1,7 +1,7 @@
 import type { ImageContent } from "@oh-my-pi/pi-ai";
 import { ImageStrip as TuiImageStrip, type ImageStripOptions as TuiImageStripOptions } from "@oh-my-pi/pi-tui/chat/image-strip";
 import { isSettingsInitialized, settings } from "../../config/settings";
-import { convertImageToPng } from "../../utils/image-loading";
+import { convertImageToPng } from "@oh-my-pi/pi-tui/chat/image-loading";
 
 export type ImageStripOptions = Omit<TuiImageStripOptions, "showImages" | "convertToPng">;
 

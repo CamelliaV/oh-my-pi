@@ -182,7 +182,7 @@ export function mergeCommandHistories(shell: ShellCommandRecord[], session: Shel
 		if (!key) return;
 		const existing = merged.get(key);
 		if (existing && existing.created_at >= record.timestamp) return;
-		merged.set(key, { id: 0, prompt: record.command, created_at: record.timestamp, origin });
+		merged.set(key, { id: 0, prompt: record.command, created_at: record.timestamp, origin, useCount: 1 });
 	};
 	for (const record of shell) add(record, "shell");
 	for (const record of session) add(record, "omp");

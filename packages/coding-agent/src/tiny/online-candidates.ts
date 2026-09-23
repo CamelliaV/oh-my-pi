@@ -4,6 +4,7 @@ import type { Settings } from "../config/settings";
 import {
 	expandRetryFallbackChains,
 	findRetryFallbackCandidates,
+	type RetryFallbackChains,
 	type RetryFallbackResolutionContext,
 	resolveRetryFallbackChainKey,
 } from "../session/retry-fallback-chains";

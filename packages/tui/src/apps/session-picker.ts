@@ -18,6 +18,8 @@ export interface SessionPickerHost<T extends SessionSelectorEntry = SessionSelec
 /** Presentation and capability controls for the standalone session picker. */
 export interface SessionPickerOptions<T extends SessionSelectorEntry = SessionSelectorEntry> {
 	allSessions?: T[];
+	/** Prefill the search box. Fuzzy `--resume` uses this to disambiguate. */
+	initialQuery?: string;
 	title?: string;
 	scopeLabel?: string | false;
 	showCwd?: boolean;
@@ -70,6 +72,7 @@ export async function selectSession<T extends SessionSelectorEntry>(
 					getTerminalRows: () => ui.terminal.rows,
 					fillHeight: true,
 					title: options.title,
+					initialQuery: options.initialQuery,
 					scopeLabel: options.scopeLabel,
 					showCwd: options.showCwd,
 					pinnedIds,

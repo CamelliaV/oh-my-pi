@@ -1,4 +1,5 @@
 import type { AgentMessage, ThinkingLevel } from "@oh-my-pi/pi-agent-core";
+import type { CompactionRequestUsage } from "@oh-my-pi/pi-agent-core/compaction";
 import type { Tool, UsageLimit, UsageReport } from "@oh-my-pi/pi-ai";
 import type { Model } from "@oh-my-pi/pi-catalog/types";
 import type { CompactionBoundaries } from "./context-usage";
@@ -31,9 +32,17 @@ export interface StatusLineSession {
 	agent?: { state?: { tools?: readonly Pick<Tool, "name" | "description" | "parameters">[] }; tokenizer?: unknown };
 	skills?: readonly unknown[];
 	compactionSpeculation?: "idle" | "running" | "armed";
+	/** True when the session's compaction runs on the Codex server. Absent on display-only sessions. */
+	usesCodexRemoteAutoCompaction?: boolean;
 	sessionManager: {
 		getSessionName(): string | undefined;
 		getSessionId(): string;
+		getBranch?(): readonly {
+			type: string;
+			timestamp?: string;
+			message?: AgentMessage;
+			requestUsage?: CompactionRequestUsage;
+		}[];
 		getUsageStatistics(): {
 			input: number;
 			output: number;
@@ -86,6 +95,8 @@ export interface StatusLineHost<TSession extends StatusLineSession = StatusLineS
 	canFetchUsageReports(session: TSession): boolean;
 	fetchUsageReports(session: TSession, signal: AbortSignal): Promise<unknown>;
 	resolveActiveRepo(cwd: string): ActiveRepoContext | null;
+	/** One-shot startup git status for this repo root, if the host prewarmed it. */
+	takePrewarmedVcsStatus?(root: string): { staged: number; unstaged: number; untracked: number } | undefined;
 	lookupPullRequest(cwd: string): Promise<{ stdout: string; exitCode: number }>;
 	calculateTokensPerSecond(messages: readonly AgentMessage[], isStreaming: boolean): number | null;
 	limitMatchesActiveAccount(report: UsageReport, limit: UsageLimit, identity: StatusAccountIdentity): boolean;

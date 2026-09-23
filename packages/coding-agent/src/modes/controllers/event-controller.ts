@@ -50,6 +50,7 @@ import {
 	buildSessionUsageTimeline,
 	createWorkUsageRowBlock,
 	restoreLiveSessionUsage,
+	formatSessionUsageRow,
 	SessionUsageAccumulator,
 	WorkUsageAccumulator,
 } from "../components/work-usage";
@@ -1049,7 +1050,8 @@ export class EventController {
 				const userComponent = this.ctx.chatContainer?.children.findLast(
 					(component): component is UserMessageComponent => component instanceof UserMessageComponent,
 				);
-				userComponent?.setSessionUsage(this.#sessionUsage.current());
+				const sessionUsage = this.#sessionUsage.current();
+				userComponent?.setSessionUsage(sessionUsage ? formatSessionUsageRow(sessionUsage) : undefined);
 			}
 
 			// Never clear the editor here. A local submission (optimistic or

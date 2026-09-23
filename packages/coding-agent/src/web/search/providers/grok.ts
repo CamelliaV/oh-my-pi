@@ -29,11 +29,10 @@
  * real-search gate rejects that shape so this channel never surfaces
  * fabricated citations.
  */
-import { type AuthStorage } from "@oh-my-pi/pi-ai";
+import { type AuthStorage, type Model } from "@oh-my-pi/pi-ai";
 import { $env } from "@oh-my-pi/pi-utils";
 import type { ModelRegistry } from "../../../config/model-registry";
 import { settings } from "../../../config/settings";
-import type { SearchProviderAvailabilityContext } from "./base";
 import type { SearchParams } from "./base";
 import { SearchProvider } from "./base";
 import { searchGrokResponses } from "./grok-responses";
@@ -116,9 +115,9 @@ export class GrokProvider extends SearchProvider {
 	readonly id = "grok";
 	readonly label = "Grok";
 
-	isAvailable(authStorage: AuthStorage, context?: SearchProviderAvailabilityContext): boolean {
+	isAvailable(authStorage: AuthStorage, _model?: Model): boolean {
 		if (!resolveGrokBaseUrl()) return false;
-		return hasGrokSearchCredential(authStorage, context?.modelRegistry);
+		return hasGrokSearchCredential(authStorage, undefined);
 	}
 
 	async search(params: SearchParams): Promise<SearchResponse> {

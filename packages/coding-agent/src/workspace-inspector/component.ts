@@ -9,7 +9,7 @@ import {
 	wrapTextWithAnsi,
 } from "@oh-my-pi/pi-tui";
 import { type LspNavigationAction, type LspNavigationLocation, queryLspLocations } from "../lsp";
-import { renderDiff } from "../modes/components/diff";
+import { renderDiff } from "@oh-my-pi/pi-tui/chrome/diff";
 import {
 	bottomBorder,
 	dividerSplit,
@@ -17,9 +17,9 @@ import {
 	splitBodyWidth,
 	splitRow,
 	topBorderSplit,
-} from "../modes/components/overlay-box";
-import { theme } from "../modes/theme/theme";
-import { replaceTabs } from "../tools/render-utils";
+} from "@oh-my-pi/pi-tui/chrome/overlay-box";
+import { theme } from "@oh-my-pi/pi-tui/theme";
+import { replaceTabs } from "@oh-my-pi/pi-tui";
 import {
 	type GitSnapshotResult,
 	type HistoryEntry,

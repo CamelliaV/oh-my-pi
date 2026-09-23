@@ -484,7 +484,7 @@ export class RewindSelectorComponent implements Component {
 			}
 			lines.push(line);
 		}
-		return { lines, selStart, selEnd };
+		return { lines, selStart, selEnd, hit: Array<undefined>(lines.length).fill(undefined) };
 	}
 
 	/** Two caption rows leading a strip column: `⎇ i/n · label` plus a spacer. */

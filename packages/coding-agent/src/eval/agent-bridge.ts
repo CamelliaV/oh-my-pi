@@ -218,8 +218,9 @@ export async function runEvalAgent(args: unknown, options: EvalAgentBridgeOption
 			description: parsed.label,
 			modelRole: policy.modelRole,
 		});
+		const queuedExecution = queued?.execution;
+		if (!queued) throw new ToolError("agent() failed to reserve a subagent");
 		publishSubagentProgress(options.session, queued, { detached: false });
-		const queuedExecution = queued.execution;
 		manager.register(
 			"task",
 			id,

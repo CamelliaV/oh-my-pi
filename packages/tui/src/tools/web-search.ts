@@ -12,18 +12,56 @@ import { getMarkdownTheme, type Theme } from "../theme/theme";
 import {
 	formatAge,
 	formatCount,
+	formatDuration,
 	formatExpandHint,
 	formatMoreItems,
 	formatStatusIcon,
 	getDomain,
 	PREVIEW_LIMITS,
 	replaceTabs,
+	TRUNCATE_LENGTHS,
 	truncateToWidth,
 } from "../render/render-utils";
 import { renderStatusLine, renderTreeList, urlHyperlink } from "../render";
 import { framedToolCard } from "../render/tool-card";
 
 const MAX_COLLAPSED_ITEMS = PREVIEW_LIMITS.COLLAPSED_ITEMS;
+/** One failed provider attempt, shaped so the card can name the route. */
+export interface SearchRenderFailure {
+	provider: string;
+	label: string;
+	message: string;
+	status?: number;
+	durationMs?: number;
+}
+
+const MIN_THROUGHPUT_DURATION_MS = 500;
+
+function searchMetaFragments(usage: SearchUsage | undefined, durationMs: number | undefined): string[] {
+	const fragments: string[] = [];
+	const outputTokens = usage?.outputTokens;
+	if (
+		outputTokens !== undefined &&
+		Number.isFinite(outputTokens) &&
+		outputTokens > 0 &&
+		durationMs !== undefined &&
+		Number.isFinite(durationMs) &&
+		durationMs >= MIN_THROUGHPUT_DURATION_MS
+	) {
+		fragments.push(`${((outputTokens * 1000) / durationMs).toFixed(1)} tok/s`);
+	}
+	if (durationMs !== undefined && Number.isFinite(durationMs)) fragments.push(formatDuration(durationMs));
+	return fragments;
+}
+
+function formatFailureRecord(failure: SearchRenderFailure): string {
+	const status =
+		failure.status !== undefined && !failure.message.includes(String(failure.status))
+			? ` (HTTP ${failure.status})`
+			: "";
+	return `${failure.label}: ${failure.message}${status}`;
+}
+
 
 function renderFallbackText(contentText: string, expanded: boolean, theme: Theme): Component {
 	const lines = contentText.split("\n").filter(line => line.trim());
@@ -57,6 +95,10 @@ function renderFallbackText(contentText: string, expanded: boolean, theme: Theme
 export interface SearchRenderDetails {
 	response: SearchResponse;
 	error?: string;
+	/** Failed attempts that preceded a successful fallback, or every attempt when all failed. */
+	providerFailures?: readonly SearchRenderFailure[];
+	/** Wall-clock cost of the provider chain, in milliseconds. */
+	durationMs?: number;
 }
 
 /** Render a web search failure as a framed error panel, matching the success layout. */
@@ -108,25 +150,29 @@ export function renderSearchResult(
 	const contentText = answerText || rawText;
 
 	const providerLabel = provider !== "none" ? getSearchProviderLabel(provider) : "None";
+	const providerFailures = details?.providerFailures ?? [];
+	const usedFallback = providerFailures.length > 0;
 	const queryPreview = args?.query
 		? truncateToWidth(args.query, 80)
 		: searchQueries[0]
 			? truncateToWidth(searchQueries[0], 80)
 			: undefined;
 	const success = sourceCount > 0;
+	const timingMeta = searchMetaFragments(response.usage, details?.durationMs);
 	const header = renderStatusLine(
 		success
 			? {
-					iconOverride: theme.styledSymbol("tool.webSearch", "accent"),
+					iconOverride: usedFallback ? undefined : theme.styledSymbol("tool.webSearch", "accent"),
+					icon: usedFallback ? "warning" : undefined,
 					title: "Web Search",
 					description: providerLabel,
-					meta: [formatCount("source", sourceCount)],
+					meta: [...(usedFallback ? ["fallback"] : []), formatCount("source", sourceCount), ...timingMeta],
 				}
 			: {
 					icon: "warning",
 					title: "Web Search",
 					description: providerLabel,
-					meta: [formatCount("source", sourceCount)],
+					meta: [formatCount("source", sourceCount), ...timingMeta],
 				},
 		theme,
 	);
@@ -136,14 +182,43 @@ export function renderSearchResult(
 	let providerInfo = response.model ? `${response.model} @ ${providerLabel}` : providerLabel;
 	if (authShort) providerInfo += ` (${authShort})`;
 	const metaLines: string[] = [`${theme.fg("muted", "Provider:")} ${theme.fg("text", providerInfo)}`];
-	if (response.usage) {
+	if (providerFailures.length > 0) {
+		const route = truncateToWidth(
+			`${[...providerFailures.map(failure => failure.label), providerLabel].join(" → ")} (fallback)`,
+			TRUNCATE_LENGTHS.LINE,
+		);
+		metaLines.push(`${theme.fg("warning", "Route:")} ${theme.fg("text", route)}`);
+		for (const failure of providerFailures) {
+			const text = truncateToWidth(replaceTabs(formatFailureRecord(failure)), TRUNCATE_LENGTHS.LINE);
+			metaLines.push(`${theme.fg("warning", "Fallback:")} ${theme.fg("text", text)}`);
+		}
+	}
+	const usage = response.usage;
+	if (usage) {
 		const usageParts: string[] = [];
-		if (response.usage.inputTokens !== undefined) usageParts.push(`in ${response.usage.inputTokens}`);
-		if (response.usage.outputTokens !== undefined) usageParts.push(`out ${response.usage.outputTokens}`);
-		if (response.usage.totalTokens !== undefined) usageParts.push(`total ${response.usage.totalTokens}`);
-		if (response.usage.searchRequests !== undefined) usageParts.push(`search ${response.usage.searchRequests}`);
+		if (usage.inputTokens !== undefined) usageParts.push(`in ${usage.inputTokens}`);
+		if (usage.outputTokens !== undefined) usageParts.push(`out ${usage.outputTokens}`);
+		if (usage.totalTokens !== undefined) usageParts.push(`total ${usage.totalTokens}`);
+		if (usage.searchRequests !== undefined) usageParts.push(`search ${usage.searchRequests}`);
 		if (usageParts.length > 0)
 			metaLines.push(`${theme.fg("muted", "Usage:")} ${theme.fg("text", usageParts.join(theme.sep.dot))}`);
+		const outputTokens = usage.outputTokens;
+		const durationMs = details?.durationMs;
+		if (
+			outputTokens !== undefined &&
+			outputTokens > 0 &&
+			durationMs !== undefined &&
+			Number.isFinite(durationMs) &&
+			durationMs >= MIN_THROUGHPUT_DURATION_MS
+		) {
+			const tokensPerSecond = (outputTokens * 1000) / durationMs;
+			metaLines.push(
+				`${theme.fg("muted", "Throughput:")} ${theme.fg("text", `${tokensPerSecond.toFixed(1)} tok/s`)} ${theme.fg("dim", `(${outputTokens} tokens in ${formatDuration(durationMs)})`)}`,
+			);
+		}
+	}
+	if (details?.durationMs !== undefined && Number.isFinite(details.durationMs)) {
+		metaLines.push(`${theme.fg("muted", "Duration:")} ${theme.fg("text", formatDuration(details.durationMs))}`);
 	}
 
 	const answerMarkdown = contentText ? new Markdown(contentText, 0, 0, getMarkdownTheme()) : undefined;
@@ -289,6 +364,12 @@ export const SEARCH_PROVIDER_OPTIONS = [
 		label: "xAI",
 		description:
 			"Grok web search via xAI Responses API (uses SuperGrok/X Premium+ OAuth via /login xai-oauth, or XAI_API_KEY)",
+	},
+	{
+		value: "grok",
+		label: "Grok",
+		description:
+			"Grok web search via a declared OpenAI-Responses-compatible relay (GROK_SEARCH_BASE_URL or providers.webSearchGrokBaseUrl)",
 	},
 	{
 		value: "openrouter",

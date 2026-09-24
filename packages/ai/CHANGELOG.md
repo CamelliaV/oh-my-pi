@@ -2,6 +2,16 @@
 
 ## [Unreleased]
 
+## [18.3.0] - 2026-09-24
+
+### Added
+
+- Added support for Anthropic User Profiles, including schema-validated API responses.
+- Added support for Apple Foundation Models running on-device, including tool calling and vision capabilities.
+- Added multi-account authentication and authorization for Codex cyber access programs, including automatic request replay after access-program rejections.
+- Added credential-aware authentication routing with per-account OAuth policies, deterministic account selection, protected quota reserves, persistent rate-limit tracking, automatic recovery, and sticky session-to-credential affinity.
+- Added deprecated `getApiKey` and `reload` methods for backward compatibility.
+
 ## [18.2.11] - 2026-09-23
 
 ### Fixed

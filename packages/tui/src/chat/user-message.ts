@@ -23,6 +23,7 @@ import { imageReferenceHyperlink } from "../prompt/image-references";
 import { fileHyperlink } from "../render/hyperlink";
 import { highlightMagicKeywords } from "../prompt/magic-keywords";
 import { ImageStrip } from "./image-strip";
+import { convertImageToPng } from "./image-loading";
 import { resolveImageOptions } from "../render/render-utils";
 import type { ReactionTarget } from "./reaction";
 export interface SessionUsageSnapshot {
@@ -194,6 +195,7 @@ export class UserMessageComponent extends Container implements ReactionTarget {
 				maxWidthCells: caps.maxWidthCells,
 				maxRows: caps.maxHeightCells ?? 20,
 				maxImages: 8,
+				convertToPng: image => convertImageToPng(image),
 				requestRender: () => {
 					this.#blockVersion++;
 					requestRepaint?.();

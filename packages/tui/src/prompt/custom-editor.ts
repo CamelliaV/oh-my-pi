@@ -32,6 +32,7 @@ import { hasMagicKeyword, highlightMagicKeywords } from "./magic-keywords";
 import { isQueuedMessageList, parseQueueShorthand, QUEUE_LIST_MARKER_RE } from "./queue-input";
 import { fgOrPlain, theme } from "../theme/theme";
 import { ImageStrip } from "../chat/image-strip";
+import { convertImageToPng } from "../chat/image-loading";
 
 /** Max rows one draft-image preview may occupy — the composer must stay near the viewport bottom. */
 const DRAFT_PREVIEW_MAX_ROWS = 8;
@@ -564,6 +565,7 @@ export class CustomEditor extends Editor {
 			maxRows: Math.min(DRAFT_PREVIEW_MAX_ROWS, caps.maxHeightCells ?? DRAFT_PREVIEW_MAX_ROWS),
 			maxImages: DRAFT_PREVIEW_MAX_IMAGES,
 			maxWidthCells: caps.maxWidthCells,
+			convertToPng: image => convertImageToPng(image),
 			requestRender,
 		});
 		// The strip renders inside the editor frame via the leading-rows hook, so

@@ -547,7 +547,6 @@ export const BUILTIN_LIFECYCLE_SLASH_COMMANDS: ReadonlyArray<SlashCommandSpec> =
 			if (!didRetry) {
 				runtime.ctx.showStatus("Nothing to retry");
 			}
-			runtime.ctx.editor.setText("");
 		},
 	},
 	{

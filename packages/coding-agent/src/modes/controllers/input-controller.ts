@@ -1564,9 +1564,7 @@ export class InputController {
 			return;
 		}
 		const didRetry = await this.ctx.viewSession.retry();
-		if (didRetry) {
-			this.ctx.editor.clearDraft();
-		} else {
+		if (!didRetry) {
 			this.ctx.showStatus("Nothing to retry");
 		}
 	}

@@ -23,7 +23,7 @@ function createRuntime(didRetry: boolean) {
 }
 
 describe("/retry slash command", () => {
-	it("clears the editor after starting a retry", async () => {
+	it("leaves the editor alone after starting a retry", async () => {
 		const harness = createRuntime(true);
 
 		const handled = await executeBuiltinSlashCommand("/retry", harness.runtime);
@@ -31,10 +31,10 @@ describe("/retry slash command", () => {
 		expect(handled).toBe(true);
 		expect(harness.retry).toHaveBeenCalledTimes(1);
 		expect(harness.showStatus).not.toHaveBeenCalled();
-		expect(harness.setText).toHaveBeenCalledWith("");
+		expect(harness.setText).not.toHaveBeenCalled();
 	});
 
-	it("reports when there is no failed turn to retry", async () => {
+	it("reports when there is no failed turn to retry without clearing the editor", async () => {
 		const harness = createRuntime(false);
 
 		const handled = await executeBuiltinSlashCommand("/retry", harness.runtime);
@@ -42,7 +42,7 @@ describe("/retry slash command", () => {
 		expect(handled).toBe(true);
 		expect(harness.retry).toHaveBeenCalledTimes(1);
 		expect(harness.showStatus).toHaveBeenCalledWith("Nothing to retry");
-		expect(harness.setText).toHaveBeenCalledWith("");
+		expect(harness.setText).not.toHaveBeenCalled();
 	});
 });
 

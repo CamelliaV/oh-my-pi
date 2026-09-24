@@ -96,7 +96,7 @@ function resolveGrokSearchKey(params: GrokSearchCredentialParams) {
 	// (providers.<name>.apiKey), runtime overrides, and stored credentials.
 	return (
 		params.modelRegistry?.resolver?.(resolverProvider, resolverOptions) ??
-		params.authStorage.resolver(resolverProvider, resolverOptions)
+		params.authStorage.keys.resolver(resolverProvider, resolverOptions)
 	);
 }
 
@@ -105,9 +105,10 @@ function hasGrokSearchCredential(authStorage: AuthStorage, _modelRegistry: Model
 	if ($env.GROK_SEARCH_API_KEY?.trim()) return true;
 	const declaredProvider = resolveGrokProviderName();
 	if (declaredProvider) {
-		return authStorage.hasAuth(declaredProvider);
+		return authStorage.credentials.has(declaredProvider);
 	}
-	return authStorage.hasAuth(GROK_SEARCH_AUTH_PROVIDER);
+	return authStorage.credentials.has(GROK_SEARCH_AUTH_PROVIDER);
+
 }
 
 /** Search provider for Grok hosted search through a declared relay endpoint. */

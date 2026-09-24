@@ -23,7 +23,7 @@ import { type EditMode, type PerFileDiffPreview, renderStreamingFallback } from 
 import { EVAL_DEFAULT_PREVIEW_LINES } from "../tools/eval";
 import { taskCardAgentIds } from "../tools/task";
 import { TODO_STRIKE_TOTAL_FRAMES, type TodoToolDetails } from "../tools/todo";
-import { isWaitingPollDetails } from "../tools/hub";
+import { isWaitingPollDetails } from "../tools/wait";
 import { formatStatusIcon, replaceTabs, resolveImageOptions } from "../render/render-utils";
 import type { XdevMountedState } from "../tools/xdev";
 import { isFramedBlockComponent, markFramedBlockComponent, renderStatusLine, WidthAwareText } from "../render/index";
@@ -36,7 +36,7 @@ import { type AnimationFrame, trimBlankEdges } from "../chrome/transcript-contai
 export function toolRenderName(wireName: string, tool: AgentTool | undefined): string {
 	return tool?.name ?? wireName;
 }
-type DisplaceableToolName = "hub" | "todo";
+type DisplaceableToolName = "wait" | "todo";
 
 function isTodoToolDetails(details: unknown): details is TodoToolDetails {
 	return (
@@ -68,7 +68,7 @@ function displaceableToolName(
 	isPartial: boolean,
 ): DisplaceableToolName | undefined {
 	if (result.isError === true) return undefined;
-	if (toolName === "hub" && isWaitingPollDetails(result.details)) return "hub";
+	if (toolName === "wait" && isWaitingPollDetails(result.details)) return "wait";
 	if (toolName === "todo" && !isPartial && isTodoToolDetails(result.details)) return "todo";
 	return undefined;
 }
@@ -340,7 +340,7 @@ export class ToolExecutionComponent extends Container {
 	// late result can update its streaming preview.
 	#sealed = false;
 	// Tool result snapshots that may be superseded by a later same-tool call
-	// while still in the mutable viewport. `hub` uses this for repeated all-running polls; `todo` uses
+	// while still in the mutable viewport. `wait` uses this for repeated all-running polls; `todo` uses
 	// it for per-turn state snapshots so only the latest list remains visible.
 	#displaceableByToolName: DisplaceableToolName | undefined;
 	// Execution start on the presentation clock (performance.now domain, the
@@ -683,7 +683,7 @@ export class ToolExecutionComponent extends Container {
 			this.#toolName !== "todo" &&
 			!isBackgroundAsyncRunning &&
 			(pendingCallConsumesSpinner || partialResultConsumesSpinner);
-		const needsSpinner = isStreamingArgs || isLivePartialTool || this.#displaceableByToolName === "hub";
+		const needsSpinner = isStreamingArgs || isLivePartialTool || this.#displaceableByToolName === "wait";
 		if (needsSpinner && !this.#spinnerActive) {
 			const frameCount = theme.spinnerFrames.length;
 			const frame = sharedSpinnerFrame(frameCount);
@@ -928,8 +928,8 @@ export class ToolExecutionComponent extends Container {
 		if (this.#allocation < 3) {
 			// A squeezed allocation degrades only blocks that genuinely overflow it.
 			// The allocator measures blocks by trimmed height and never squeezes one
-			// below that, so inline tools whose real content is 1-2 rows (hub
-			// receipts, one-line results) keep that content instead of an equally
+			// below that, so inline tools whose real content is 1-2 rows (wait
+			// results, one-line receipts) keep that content instead of an equally
 			// tall but contentless frame.
 			const trimmed = trimBlankEdges(lines);
 			if (trimmed.length > this.#allocation) return this.#renderCompact(width);
@@ -974,7 +974,7 @@ export class ToolExecutionComponent extends Container {
 		});
 		if (summary !== undefined) {
 			if (summary.detail) return summary;
-			// A detail-less custom summary (e.g. hub before its streamed args
+			// A detail-less custom summary (e.g. wait before its result
 			// parse) must not fold to a bare `╭─ Label` frame under viewport
 			// pressure — keep the generic liveness hint for in-flight calls.
 			return this.#isRunning() ? { ...summary, detail: "running" } : summary;

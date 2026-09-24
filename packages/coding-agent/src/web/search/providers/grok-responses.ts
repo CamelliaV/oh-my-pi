@@ -512,5 +512,5 @@ export async function searchGrokResponses(params: GrokResponsesSearchParams): Pr
 
 /** Reusable auth-storage credential accessor for shared-core channels. */
 export function grokAuthStorageKey(authStorage: AuthStorage, provider: string, sessionId: string | undefined): ApiKey {
-	return authStorage.resolver(provider, { sessionId });
+	return authStorage.keys.resolver(provider, { sessionId });
 }

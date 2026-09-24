@@ -110,7 +110,7 @@ describe("partial-stream death continuation", () => {
 
 	beforeEach(() => {
 		tempDir = TempDir.createSync("@pi-partial-death-");
-		authStorage.setRuntimeApiKey("anthropic", "test-key");
+		authStorage.keys.setRuntime("anthropic", "test-key");
 	});
 
 	afterEach(async () => {

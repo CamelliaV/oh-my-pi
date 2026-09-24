@@ -74,8 +74,8 @@ describe("AuthStorage api-key login upsert", () => {
 			onPrompt: async () => "same-kagi-key",
 		};
 
-		await authStorage.login("kagi", controller);
-		await authStorage.login("kagi", controller);
+		await authStorage.oauth.login("kagi", controller);
+		await authStorage.oauth.login("kagi", controller);
 
 		expect(countCredentialRows(dbPath, "kagi")).toBe(1);
 		const credentials = store.listAuthCredentials("kagi");
@@ -87,7 +87,7 @@ describe("AuthStorage api-key login upsert", () => {
 		}
 		expect(stored.credential.key).toBe("same-kagi-key");
 		expect(store.getApiKey("kagi")).toBe("same-kagi-key");
-		expect(await authStorage.getApiKey("kagi", "session-kagi-relogin")).toBe("same-kagi-key");
+		expect(await authStorage.keys.get("kagi", "session-kagi-relogin")).toBe("same-kagi-key");
 	});
 
 	it("appends a different api-key row when re-login returns a new key", async () => {
@@ -99,8 +99,8 @@ describe("AuthStorage api-key login upsert", () => {
 			onPrompt: async () => keys.shift() ?? "",
 		};
 
-		await authStorage.login("kagi", controller);
-		await authStorage.login("kagi", controller);
+		await authStorage.oauth.login("kagi", controller);
+		await authStorage.oauth.login("kagi", controller);
 
 		expect(countCredentialRows(dbPath, "kagi")).toBe(2);
 		expect(countCredentialRowsByDisabledState(dbPath, "kagi", false)).toBe(2);
@@ -111,7 +111,7 @@ describe("AuthStorage api-key login upsert", () => {
 			{ type: "api_key", key: "first-kagi-key", source: "login" },
 			{ type: "api_key", key: "second-kagi-key", source: "login" },
 		]);
-		const rotatedKeys = [await authStorage.getApiKey("kagi"), await authStorage.getApiKey("kagi")].sort();
+		const rotatedKeys = [await authStorage.keys.get("kagi"), await authStorage.keys.get("kagi")].sort();
 		expect(rotatedKeys).toEqual(["first-kagi-key", "second-kagi-key"]);
 	});
 
@@ -119,21 +119,21 @@ describe("AuthStorage api-key login upsert", () => {
 		if (!store || !authStorage) throw new Error("test setup failed");
 
 		for (let i = 0; i < 12; i++) {
-			store.upsertAuthCredentialForProvider("google", {
+			await store.upsertAuthCredential("google", {
 				type: "api_key",
 				key: `sk-fake-${String(i).padStart(2, "0")}`,
 				source: "login",
 			});
 		}
-		await authStorage.reload();
+		await authStorage.credentials.reload();
 
 		const sessionId = "sess-google-pool";
-		const first = await authStorage.getApiKey("google", sessionId);
+		const first = await authStorage.keys.get("google", sessionId);
 		expect(first).toMatch(/^sk-fake-\d{2}$/);
 
 		// Drop the in-memory sticky the resolve just wrote, matching a fresh
 		// process / turn-recovery mark that does not pass the exhausted bearer.
-		expect(authStorage.releaseSessionCredentialForReselection("google", sessionId)).toBe(true);
+		expect(authStorage.sessions.release("google", sessionId)).toBe(true);
 
 		const geminiQuota = Object.assign(
 			new Error(
@@ -141,33 +141,33 @@ describe("AuthStorage api-key login upsert", () => {
 			),
 			{ status: 429 },
 		);
-		const switched = await authStorage.rotateSessionCredential("google", sessionId, {
+		const switched = await authStorage.limits.rotate("google", sessionId, {
 			error: geminiQuota,
 			modelId: "gemini-3.8-flash",
 		});
 		expect(switched).toBe(true);
 
-		const next = await authStorage.getApiKey("google", sessionId);
+		const next = await authStorage.keys.get("google", sessionId);
 		expect(next).toMatch(/^sk-fake-\d{2}$/);
 		expect(next).not.toBe(first);
 	});
 
-	it("replaces Token Plan Cookies by API-token identity without collapsing different tokens", () => {
+	it("replaces Token Plan Cookies by API-token identity without collapsing different tokens", async () => {
 		if (!store) throw new Error("test setup failed");
 		const firstToken = "sk-sp-first";
 		const secondToken = "sk-sp-second";
 
-		store.upsertAuthCredentialForProvider("alibaba-token-plan", {
+		await store.upsertAuthCredential("alibaba-token-plan", {
 			type: "api_key",
 			key: serializeAlibabaTokenPlanCredential(firstToken, "session=old"),
 			source: "login",
 		});
-		store.upsertAuthCredentialForProvider("alibaba-token-plan", {
+		await store.upsertAuthCredential("alibaba-token-plan", {
 			type: "api_key",
 			key: serializeAlibabaTokenPlanCredential(firstToken, "session=fresh"),
 			source: "login",
 		});
-		store.upsertAuthCredentialForProvider("alibaba-token-plan", {
+		await store.upsertAuthCredential("alibaba-token-plan", {
 			type: "api_key",
 			key: serializeAlibabaTokenPlanCredential(secondToken, "session=second"),
 			source: "login",
@@ -186,7 +186,7 @@ describe("AuthStorage api-key login upsert", () => {
 			},
 		]);
 
-		store.upsertAuthCredentialForProvider("alibaba-token-plan", {
+		await store.upsertAuthCredential("alibaba-token-plan", {
 			type: "api_key",
 			key: firstToken,
 			source: "login",
@@ -201,11 +201,11 @@ describe("AuthStorage api-key login upsert", () => {
 		]);
 	});
 
-	it("hard-deletes superseded api-key rows when a different key replaces them", () => {
+	it("hard-deletes superseded api-key rows when a different key replaces them", async () => {
 		if (!store || !dbPath) throw new Error("test setup failed");
 
-		store.saveApiKey("kagi", "old-key-123");
-		store.saveApiKey("kagi", "new-key-456");
+		await store.saveApiKey("kagi", "old-key-123");
+		await store.saveApiKey("kagi", "new-key-456");
 
 		expect(countCredentialRows(dbPath, "kagi")).toBe(1);
 		expect(countCredentialRowsByDisabledState(dbPath, "kagi", false)).toBe(1);
@@ -221,8 +221,8 @@ describe("AuthStorage api-key login upsert", () => {
 			onPrompt: async () => "same-ollama-cloud-key",
 		};
 
-		await authStorage.login("ollama-cloud", controller);
-		await authStorage.login("ollama-cloud", controller);
+		await authStorage.oauth.login("ollama-cloud", controller);
+		await authStorage.oauth.login("ollama-cloud", controller);
 
 		expect(countCredentialRows(dbPath, "ollama-cloud")).toBe(1);
 		const credentials = store.listAuthCredentials("ollama-cloud");
@@ -234,7 +234,7 @@ describe("AuthStorage api-key login upsert", () => {
 		}
 		expect(stored.credential.key).toBe("same-ollama-cloud-key");
 		expect(store.getApiKey("ollama-cloud")).toBe("same-ollama-cloud-key");
-		expect(await authStorage.getApiKey("ollama-cloud", "session-ollama-cloud-relogin")).toBe("same-ollama-cloud-key");
+		expect(await authStorage.keys.get("ollama-cloud", "session-ollama-cloud-relogin")).toBe("same-ollama-cloud-key");
 	});
 
 	it("stores DeepSeek login credentials as a reusable api-key credential", async () => {
@@ -246,8 +246,8 @@ describe("AuthStorage api-key login upsert", () => {
 			fetch: async () => Response.json({ object: "list", data: [] }),
 		};
 
-		await authStorage.login("deepseek", controller);
-		await authStorage.login("deepseek", controller);
+		await authStorage.oauth.login("deepseek", controller);
+		await authStorage.oauth.login("deepseek", controller);
 
 		expect(countCredentialRows(dbPath, "deepseek")).toBe(1);
 		const credentials = store.listAuthCredentials("deepseek");
@@ -259,7 +259,7 @@ describe("AuthStorage api-key login upsert", () => {
 		}
 		expect(stored.credential.key).toBe("same-deepseek-key");
 		expect(store.getApiKey("deepseek")).toBe("same-deepseek-key");
-		expect(await authStorage.getApiKey("deepseek", "session-deepseek-relogin")).toBe("same-deepseek-key");
+		expect(await authStorage.keys.get("deepseek", "session-deepseek-relogin")).toBe("same-deepseek-key");
 	});
 
 	it("uses a fresh OpenCode Go login over an existing env fallback", async () => {
@@ -267,12 +267,12 @@ describe("AuthStorage api-key login upsert", () => {
 
 		getEnvApiKeySpy.mockImplementation(provider => (provider === "opencode-go" ? "old-opencode-key" : undefined));
 
-		await authStorage.login("opencode-go", {
+		await authStorage.oauth.login("opencode-go", {
 			onAuth: () => {},
 			onPrompt: async () => "new-opencode-key",
 		});
 
-		expect(await authStorage.getApiKey("opencode-go", "session-opencode-go-login")).toBe("new-opencode-key");
-		expect(await authStorage.peekApiKey("opencode-go")).toBe("new-opencode-key");
+		expect(await authStorage.keys.get("opencode-go", "session-opencode-go-login")).toBe("new-opencode-key");
+		expect(await authStorage.keys.peek("opencode-go")).toBe("new-opencode-key");
 	});
 });

@@ -69,7 +69,7 @@ describe("ModelRegistry models.yml apiKeys pools", () => {
 		// Same result for a second caller — first-fill, not round-robin.
 		expect(await registry.getApiKey(model)).toBe("sk-alpha");
 
-		const mark = await authStorage.markUsageLimitReached("relay", undefined, { apiKey: "sk-alpha" });
+		const mark = await authStorage.limits.markReached("relay", undefined, { apiKey: "sk-alpha" });
 		expect(mark.switched).toBe(true);
 		expect(await registry.getApiKey(model)).toBe("sk-beta");
 	});

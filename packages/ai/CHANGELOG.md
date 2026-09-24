@@ -15,6 +15,16 @@
 - Anthropic user turns always serialize as content blocks, so a message no longer changes wire shape depending on whether it holds the rolling prompt-cache anchor — previously each user turn rewrote a byte inside the cached prefix, truncating the reusable region at that point.
 - Fixed Bun's `unknown certificate verification error` (a transient relay/MITM-proxy TLS handshake blip) being classified as terminal, so provider streams now auto-retry it like `tls: bad record MAC`; the config-level `tls: failed to verify certificate` wording stays non-retryable.
 - Fixed Codex (ChatGPT-subscription) turns dying on `invalid_prompt` moderation false positives — the backend spuriously flags long code-laden prompts, so those failure events now retry instead of aborting the turn.
+## [18.3.0] - 2026-09-24
+
+### Added
+
+- Added support for Anthropic User Profiles, including schema-validated API responses.
+- Added support for Apple Foundation Models running on-device, including tool calling and vision capabilities.
+- Added multi-account authentication and authorization for Codex cyber access programs, including automatic request replay after access-program rejections.
+- Added credential-aware authentication routing with per-account OAuth policies, deterministic account selection, protected quota reserves, persistent rate-limit tracking, automatic recovery, and sticky session-to-credential affinity.
+- Added deprecated `getApiKey` and `reload` methods for backward compatibility.
+
 ## [18.2.11] - 2026-09-23
 
 ### Fixed

@@ -411,6 +411,11 @@ cost exactly ONE trivial conflict (159 files, +6398−774); v18.0.10→v18.1.10
 the v18.1.10 incremental merge added only 8 (541 files, +31953−15683);
 v18.1.10→v18.2.3 (2026-09-20) went through `trial/v18.1.19-master` then
 `upgrade/v18.2.3` (synthetic `upstream/v18.2.3` parented on `6e64dd0`).
+v18.2.3→v18.3.0 (2026-09-24) went through `upgrade/v18.2.8` and `trial/v18.2.11`,
+then `upgrade/v18.3.0` (synthetic `upstream/v18.3.0` parented on `558cdc0a`, 918
+files). The hub tool was deleted upstream; fork resume moved to
+`write agent://<id>?resume=1`. Config `apiKeys` pools moved onto
+`authStorage.keys.setConfigPool`.
 
 
 Legacy alternative: replace the worktree with the tarball and re-apply the
@@ -428,7 +433,7 @@ patch series by hand/cherry-pick.
    PTY probes for extensions (`/tools`) — debug sessions MUST use `--no-session`.
 
 
-### Patch list (v18.2.3 baseline)
+### Patch list (v18.3.0 baseline)
 
 Index only. Full rationale, wire measurements, and verification recipes live in
 [`docs/fork-patches.md`](docs/fork-patches.md) — read it before rebasing, before

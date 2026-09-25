@@ -29,15 +29,15 @@
  * real-search gate rejects that shape so this channel never surfaces
  * fabricated citations.
  */
-import { type AuthStorage, type Model } from "@oh-my-pi/pi-ai";
+import type { AuthStorage, Model } from "@oh-my-pi/pi-ai";
 import { $env } from "@oh-my-pi/pi-utils";
 import type { ModelRegistry } from "../../../config/model-registry";
 import { settings } from "../../../config/settings";
+import type { SearchResponse } from "../../../web/search/types";
+import { SearchProviderError } from "../../../web/search/types";
 import type { SearchParams } from "./base";
 import { SearchProvider } from "./base";
 import { searchGrokResponses } from "./grok-responses";
-import type { SearchResponse } from "../../../web/search/types";
-import { SearchProviderError } from "../../../web/search/types";
 
 /** Auth provider id under which a dedicated Grok search key may be stored. */
 const GROK_SEARCH_AUTH_PROVIDER = "grok-search";
@@ -52,7 +52,10 @@ const GROK_SEARCH_MISSING_KEY_HINT =
 	'Grok relay search needs an API key. Set GROK_SEARCH_API_KEY, store one for provider "grok-search", or declare the models.yml provider holding it via providers.webSearchGrokProvider.';
 
 function readSetting(
-	path: "providers.webSearchGrokBaseUrl" | "providers.webSearchGrokModel" | "providers.webSearchGrokProvider",
+	path:
+		| "providers.webSearchGrokBaseUrl"
+		| "providers.webSearchGrokModel"
+		| "providers.webSearchGrokProvider",
 ): string | undefined {
 	try {
 		const value = settings.get(path);
@@ -64,17 +67,25 @@ function readSetting(
 
 /** Declared models.yml provider name whose apiKey/headers the channel borrows (e.g. `wong`). */
 function resolveGrokProviderName(): string | undefined {
-	return readSetting("providers.webSearchGrokProvider") ?? ($env.GROK_SEARCH_PROVIDER?.trim() || undefined);
+	return (
+		readSetting("providers.webSearchGrokProvider") ??
+		($env.GROK_SEARCH_PROVIDER?.trim() || undefined)
+	);
 }
 
 /** Declared relay base URL (OpenAI-Responses-compatible, `/responses` is appended). */
 export function resolveGrokBaseUrl(): string | undefined {
-	return readSetting("providers.webSearchGrokBaseUrl") ?? ($env.GROK_SEARCH_BASE_URL?.trim() || undefined);
+	return (
+		readSetting("providers.webSearchGrokBaseUrl") ??
+		($env.GROK_SEARCH_BASE_URL?.trim() || undefined)
+	);
 }
 
 /** Declared wire model id. */
 export function resolveGrokSearchModel(): string {
-	const configured = readSetting("providers.webSearchGrokModel") ?? $env.GROK_SEARCH_MODEL?.trim();
+	const configured =
+		readSetting("providers.webSearchGrokModel") ??
+		$env.GROK_SEARCH_MODEL?.trim();
 	return configured || DEFAULT_GROK_SEARCH_MODEL;
 }
 
@@ -101,14 +112,13 @@ function resolveGrokSearchKey(params: GrokSearchCredentialParams) {
 }
 
 /** Channel availability: an endpoint plus at least one credential source. */
-function hasGrokSearchCredential(authStorage: AuthStorage, _modelRegistry: ModelRegistry | undefined): boolean {
+function hasGrokSearchCredential(authStorage: AuthStorage): boolean {
 	if ($env.GROK_SEARCH_API_KEY?.trim()) return true;
 	const declaredProvider = resolveGrokProviderName();
-	if (declaredProvider) {
-		return authStorage.credentials.has(declaredProvider);
-	}
-	return authStorage.credentials.has(GROK_SEARCH_AUTH_PROVIDER);
-
+	return (
+		authStorage.keys.source(declaredProvider ?? GROK_SEARCH_AUTH_PROVIDER) !==
+		undefined
+	);
 }
 
 /** Search provider for Grok hosted search through a declared relay endpoint. */
@@ -118,7 +128,7 @@ export class GrokProvider extends SearchProvider {
 
 	isAvailable(authStorage: AuthStorage, _model?: Model): boolean {
 		if (!resolveGrokBaseUrl()) return false;
-		return hasGrokSearchCredential(authStorage, undefined);
+		return hasGrokSearchCredential(authStorage);
 	}
 
 	async search(params: SearchParams): Promise<SearchResponse> {

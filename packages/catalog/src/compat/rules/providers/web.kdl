@@ -12,6 +12,13 @@ provider "web" {
 			limits
 			supports-tools #false
 		}
+		model "grok" name="Grok" {
+			reasoning #false
+			input "text"
+			cost input=0 output=0 cache-read=0 cache-write=0
+			limits
+			supports-tools #false
+		}
 		model "perplexity" name="Perplexity" {
 			reasoning #false
 			input "text"

@@ -18,12 +18,31 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { configureCredentialRedaction } from "@oh-my-pi/pi-ai/providers/transform-messages";
 import { configureProviderMaxInFlightRequests } from "@oh-my-pi/pi-ai/stream";
+import { setChatTranscriptDisplayPreferences } from "@oh-my-pi/pi-tui/chat/display-preferences";
+import { setEditorGapComposerShape } from "@oh-my-pi/pi-tui/prompt/editor-top-gap";
+import { setEmojiAutocompleteEnabled } from "@oh-my-pi/pi-tui/prompt/prompt-action-autocomplete";
+import { applyHyperlinkSetting } from "@oh-my-pi/pi-tui/render/hyperlink";
+import {
+	setFeedModelBadgeEnabled,
+	setInlineImageMaxColumns,
+	setInlineImageMaxRows,
+} from "@oh-my-pi/pi-tui/render/render-utils";
+import { STATUS_LINE_SEGMENT_IDS } from "@oh-my-pi/pi-tui/status-line/schema";
+import { setShimmerMode } from "@oh-my-pi/pi-tui/theme/shimmer";
+import {
+	isLightTheme,
+	setAutoThemeMapping,
+	setColorBlindMode,
+	setSymbolPreset,
+} from "@oh-my-pi/pi-tui/theme/theme";
+import type { EditMode } from "@oh-my-pi/pi-tui/tools/edit";
+import { setMcpRenderMarkdownResults } from "@oh-my-pi/pi-tui/tools/mcp";
 import {
 	getAgentDbPath,
 	getAgentDir,
 	getLastChangelogVersionPath,
-	getProjectDir,
 	getProjectAgentDir,
+	getProjectDir,
 	isEnoent,
 	logger,
 	MAIN_CONFIG_FILENAMES,
@@ -31,32 +50,24 @@ import {
 	setWorktreesDir,
 } from "@oh-my-pi/pi-utils";
 import { withFileLock } from "@oh-my-pi/pi-utils/file-lock";
-import { setShimmerMode } from "@oh-my-pi/pi-tui/theme/shimmer";
-import { setChatTranscriptDisplayPreferences } from "@oh-my-pi/pi-tui/chat/display-preferences";
-import { setEditorGapComposerShape } from "@oh-my-pi/pi-tui/prompt/editor-top-gap";
-import { setEmojiAutocompleteEnabled } from "@oh-my-pi/pi-tui/prompt/prompt-action-autocomplete";
-import { setMcpRenderMarkdownResults } from "@oh-my-pi/pi-tui/tools/mcp";
-import { isLightTheme, setAutoThemeMapping, setColorBlindMode, setSymbolPreset } from "@oh-my-pi/pi-tui/theme/theme";
+import { stringifyYamlConfig } from "@oh-my-pi/pi-utils/yaml-config";
 import { JSONC, YAML } from "bun";
 import { invalidate as invalidateCapabilityFsCache } from "../capability/fs";
-import { type Settings as SettingsCapabilityItem, settingsCapability } from "../capability/settings";
+import {
+	type Settings as SettingsCapabilityItem,
+	settingsCapability,
+} from "../capability/settings";
 import type { ModelRole } from "../config/model-roles";
 import { loadCapability } from "../discovery";
-import { AgentStorage } from "../session/agent-storage";
-import { type CompactionMethod, DEFAULT_COMPACTION_METHOD_ORDER } from "../session/compaction-methods";
 import MODEL_PRIO from "../priority.json" with { type: "json" };
-import { applyHyperlinkSetting } from "@oh-my-pi/pi-tui/render/hyperlink";
+import { AgentStorage } from "../session/agent-storage";
 import {
-	setFeedModelBadgeEnabled,
-	setInlineImageMaxColumns,
-	setInlineImageMaxRows,
-} from "@oh-my-pi/pi-tui/render/render-utils";
+	type CompactionMethod,
+	DEFAULT_COMPACTION_METHOD_ORDER,
+} from "../session/compaction-methods";
 import { replaceFileAtomically } from "../utils/atomic-file";
-import { type EditMode } from "@oh-my-pi/pi-tui/tools/edit";
 import { normalizeEditMode } from "../utils/edit-mode";
-import { stringifyYamlConfig } from "@oh-my-pi/pi-utils/yaml-config";
 import { validateAgentServiceTierOverrides } from "./service-tier";
-import { STATUS_LINE_SEGMENT_IDS } from "@oh-my-pi/pi-tui/status-line/schema";
 import {
 	type BashInterceptorRule,
 	type GroupPrefix,
@@ -71,22 +82,31 @@ import {
 export type * from "./settings-schema";
 export * from "./settings-schema";
 
-const STATUS_LINE_SEGMENT_PATHS = ["statusLine.leftSegments", "statusLine.rightSegments"] as const;
+const STATUS_LINE_SEGMENT_PATHS = [
+	"statusLine.leftSegments",
+	"statusLine.rightSegments",
+] as const;
 const warnedUnknownStatusLineSegments = new Set<string>();
 
 function getUnknownStatusLineSegments(value: unknown): string[] {
 	if (!Array.isArray(value)) return [];
 	const unknown = new Set<string>();
 	for (const segment of value) {
-		if (!STATUS_LINE_SEGMENT_IDS.some(id => id === segment)) {
-			unknown.add(typeof segment === "string" ? JSON.stringify(segment) : String(segment));
+		if (!STATUS_LINE_SEGMENT_IDS.some((id) => id === segment)) {
+			unknown.add(
+				typeof segment === "string" ? JSON.stringify(segment) : String(segment),
+			);
 		}
 	}
 	return [...unknown];
 }
 
-function assertKnownStatusLineSegments(path: SettingPath, value: unknown): void {
-	if (path !== "statusLine.leftSegments" && path !== "statusLine.rightSegments") return;
+function assertKnownStatusLineSegments(
+	path: SettingPath,
+	value: unknown,
+): void {
+	if (path !== "statusLine.leftSegments" && path !== "statusLine.rightSegments")
+		return;
 	const unknown = getUnknownStatusLineSegments(value);
 	if (unknown.length === 0) return;
 	const noun = unknown.length === 1 ? "segment" : "segments";
@@ -113,7 +133,10 @@ type YamlContentGeneration = {
 	size: bigint;
 };
 
-type YamlGeneration = { kind: "missing" } | YamlContentGeneration | { kind: "unreadable" };
+type YamlGeneration =
+	| { kind: "missing" }
+	| YamlContentGeneration
+	| { kind: "unreadable" };
 
 type PendingYamlMutation = {
 	generation: YamlGeneration;
@@ -123,7 +146,12 @@ type PendingYamlMutation = {
 type YamlLoadResult =
 	| { kind: "missing" }
 	| { kind: "loaded"; settings: RawSettings; generation: YamlContentGeneration }
-	| { kind: "invalid"; error: unknown; generation: YamlContentGeneration; backupPath?: string }
+	| {
+			kind: "invalid";
+			error: unknown;
+			generation: YamlContentGeneration;
+			backupPath?: string;
+	  }
 	| { kind: "unreadable"; error: unknown };
 
 type LockedYamlLoadResult = {
@@ -143,7 +171,10 @@ function yamlGenerationFromLoadResult(result: YamlLoadResult): YamlGeneration {
 	}
 }
 
-function yamlGenerationsMatch(left: YamlGeneration, right: YamlGeneration): boolean {
+function yamlGenerationsMatch(
+	left: YamlGeneration,
+	right: YamlGeneration,
+): boolean {
 	switch (left.kind) {
 		case "missing":
 			return right.kind === "missing";
@@ -202,7 +233,11 @@ export interface SettingsOptions {
 function getByPath(obj: RawSettings, segments: readonly string[]): unknown {
 	let current: unknown = obj;
 	for (const segment of segments) {
-		if (current === null || current === undefined || typeof current !== "object") {
+		if (
+			current === null ||
+			current === undefined ||
+			typeof current !== "object"
+		) {
 			return undefined;
 		}
 		current = (current as Record<string, unknown>)[segment];
@@ -210,17 +245,26 @@ function getByPath(obj: RawSettings, segments: readonly string[]): unknown {
 	return current;
 }
 
-const SETTING_PATH_SEGMENTS: Record<SettingPath, readonly string[]> = Object.fromEntries(
-	(Object.keys(SETTINGS_SCHEMA) as SettingPath[]).map(settingPath => [settingPath, settingPath.split(".")]),
-) as unknown as Record<SettingPath, readonly string[]>;
+const SETTING_PATH_SEGMENTS: Record<SettingPath, readonly string[]> =
+	Object.fromEntries(
+		(Object.keys(SETTINGS_SCHEMA) as SettingPath[]).map((settingPath) => [
+			settingPath,
+			settingPath.split("."),
+		]),
+	) as unknown as Record<SettingPath, readonly string[]>;
 
 /**
  * Schema members for each typed group, computed once. `getGroup` is hot during
  * startup and status rendering; it must not walk the full schema on every
  * settings instance or effective-layer revision.
  */
-const SETTING_GROUP_MEMBERS: Record<GroupPrefix, readonly [suffix: string, path: SettingPath][]> = (() => {
-	const members: Partial<Record<GroupPrefix, [suffix: string, path: SettingPath][]>> = {};
+const SETTING_GROUP_MEMBERS: Record<
+	GroupPrefix,
+	readonly [suffix: string, path: SettingPath][]
+> = (() => {
+	const members: Partial<
+		Record<GroupPrefix, [suffix: string, path: SettingPath][]>
+	> = {};
 	for (const rawPath in SETTINGS_SCHEMA) {
 		const path = rawPath as SettingPath;
 		const dot = path.indexOf(".");
@@ -229,7 +273,10 @@ const SETTING_GROUP_MEMBERS: Record<GroupPrefix, readonly [suffix: string, path:
 		const group = members[prefix] ?? (members[prefix] = []);
 		group.push([path.slice(dot + 1), path]);
 	}
-	return members as Record<GroupPrefix, readonly [suffix: string, path: SettingPath][]>;
+	return members as Record<
+		GroupPrefix,
+		readonly [suffix: string, path: SettingPath][]
+	>;
 })();
 
 /**
@@ -240,7 +287,11 @@ function setByPath(obj: RawSettings, segments: string[], value: unknown): void {
 	let current = obj;
 	for (let i = 0; i < segments.length - 1; i++) {
 		const segment = segments[i];
-		if (!(segment in current) || typeof current[segment] !== "object" || current[segment] === null) {
+		if (
+			!(segment in current) ||
+			typeof current[segment] !== "object" ||
+			current[segment] === null
+		) {
 			current[segment] = {};
 		}
 		current = current[segment] as RawSettings;
@@ -256,7 +307,11 @@ function setByPath(obj: RawSettings, segments: string[], value: unknown): void {
 const SETTINGS_GROUP_ONLY_PREFIXES: Readonly<Record<string, true>> = (() => {
 	const prefixes: Record<string, true> = {};
 	for (const key of Object.keys(SETTINGS_SCHEMA)) {
-		for (let dot = key.indexOf("."); dot !== -1; dot = key.indexOf(".", dot + 1)) {
+		for (
+			let dot = key.indexOf(".");
+			dot !== -1;
+			dot = key.indexOf(".", dot + 1)
+		) {
 			prefixes[key.slice(0, dot)] = true;
 		}
 	}
@@ -272,7 +327,11 @@ const SETTINGS_GROUP_ONLY_PREFIXES: Readonly<Record<string, true>> = (() => {
  * setting for sessions rooted in that project. Values at schema leaves,
  * unknown keys, and well-formed nested objects pass through unchanged.
  */
-export function dropSettingsGroupShadows(data: RawSettings, sourcePath: string, basePrefix = ""): RawSettings {
+export function dropSettingsGroupShadows(
+	data: RawSettings,
+	sourcePath: string,
+	basePrefix = "",
+): RawSettings {
 	const result: RawSettings = {};
 	for (const key of Object.keys(data)) {
 		const value = data[key];
@@ -282,45 +341,71 @@ export function dropSettingsGroupShadows(data: RawSettings, sourcePath: string, 
 			continue;
 		}
 		if (typeof value !== "object" || value === null || Array.isArray(value)) {
-			logger.warn("Settings: ignoring project setting that would shadow a settings group", {
-				setting: path,
-				source: sourcePath,
-			});
+			logger.warn(
+				"Settings: ignoring project setting that would shadow a settings group",
+				{
+					setting: path,
+					source: sourcePath,
+				},
+			);
 			continue;
 		}
-		result[key] = dropSettingsGroupShadows(value as RawSettings, sourcePath, path);
+		result[key] = dropSettingsGroupShadows(
+			value as RawSettings,
+			sourcePath,
+			path,
+		);
 	}
 	return result;
 }
 
-export function normalizeProviderMaxInFlightRequests(value: unknown): Record<string, number> {
+export function normalizeProviderMaxInFlightRequests(
+	value: unknown,
+): Record<string, number> {
 	if (!value || typeof value !== "object" || Array.isArray(value)) return {};
 	const normalized: Record<string, number> = {};
 	for (const [provider, rawLimit] of Object.entries(value)) {
-		if (typeof rawLimit !== "number" || !Number.isFinite(rawLimit) || rawLimit <= 0) continue;
+		if (
+			typeof rawLimit !== "number" ||
+			!Number.isFinite(rawLimit) ||
+			rawLimit <= 0
+		)
+			continue;
 		normalized[provider] = Math.max(1, Math.floor(rawLimit));
 	}
 	return normalized;
 }
 
-export function validateProviderMaxInFlightRequests(value: unknown): Record<string, number> {
+export function validateProviderMaxInFlightRequests(
+	value: unknown,
+): Record<string, number> {
 	if (!value || typeof value !== "object" || Array.isArray(value)) return {};
 	const invalidProviders: string[] = [];
 	const normalized: Record<string, number> = {};
 	for (const [provider, rawLimit] of Object.entries(value)) {
-		if (typeof rawLimit !== "number" || !Number.isFinite(rawLimit) || rawLimit <= 0) {
+		if (
+			typeof rawLimit !== "number" ||
+			!Number.isFinite(rawLimit) ||
+			rawLimit <= 0
+		) {
 			invalidProviders.push(provider);
 			continue;
 		}
 		normalized[provider] = Math.max(1, Math.floor(rawLimit));
 	}
 	if (invalidProviders.length > 0) {
-		throw new Error(`Provider request limits must be positive numbers: ${invalidProviders.join(", ")}`);
+		throw new Error(
+			`Provider request limits must be positive numbers: ${invalidProviders.join(", ")}`,
+		);
 	}
 	return normalized;
 }
 
-const PATH_SCOPED_ARRAY_SETTINGS = new Set<SettingPath>(["enabledModels", "disabledProviders", "enabledProviders"]);
+const PATH_SCOPED_ARRAY_SETTINGS = new Set<SettingPath>([
+	"enabledModels",
+	"disabledProviders",
+	"enabledProviders",
+]);
 type PathScopedStringArrayEntry = {
 	path?: unknown;
 	paths?: unknown;
@@ -333,7 +418,11 @@ type PathScopedStringArrayEntry = {
 };
 
 function expandTilde(p: string): string {
-	return p === "~" ? os.homedir() : p.startsWith("~/") ? path.join(os.homedir(), p.slice(2)) : p;
+	return p === "~"
+		? os.homedir()
+		: p.startsWith("~/")
+			? path.join(os.homedir(), p.slice(2))
+			: p;
 }
 
 function normalizePathPrefix(prefix: string): string {
@@ -341,13 +430,20 @@ function normalizePathPrefix(prefix: string): string {
 }
 
 function pathMatchesPrefix(cwd: string, prefix: string): boolean {
-	const relative = path.relative(normalizePathPrefix(prefix), path.resolve(cwd));
-	return relative === "" || (!!relative && !relative.startsWith("..") && !path.isAbsolute(relative));
+	const relative = path.relative(
+		normalizePathPrefix(prefix),
+		path.resolve(cwd),
+	);
+	return (
+		relative === "" ||
+		(!!relative && !relative.startsWith("..") && !path.isAbsolute(relative))
+	);
 }
 
 function stringArrayFromUnknown(value: unknown): string[] {
 	if (typeof value === "string") return [value];
-	if (Array.isArray(value)) return value.filter((item): item is string => typeof item === "string");
+	if (Array.isArray(value))
+		return value.filter((item): item is string => typeof item === "string");
 	return [];
 }
 
@@ -375,7 +471,9 @@ function migrateNestedLeafRename(
 	newLeaf: string,
 	isLeafValue: (value: unknown) => boolean,
 ): void {
-	const rootObj = isRecord(raw[root]) ? (raw[root] as Record<string, unknown>) : undefined;
+	const rootObj = isRecord(raw[root])
+		? (raw[root] as Record<string, unknown>)
+		: undefined;
 	const nestedParent = rootObj?.[parent];
 	const flatParent = raw[`${root}.${parent}`];
 	const oldParentPath = `${root}.${parent}`;
@@ -389,7 +487,11 @@ function migrateNestedLeafRename(
 	const resolvedLeaf = candidates.find(isLeafValue);
 
 	const recoveredParent =
-		typeof nestedParent === "boolean" ? nestedParent : typeof flatParent === "boolean" ? flatParent : undefined;
+		typeof nestedParent === "boolean"
+			? nestedParent
+			: typeof flatParent === "boolean"
+				? flatParent
+				: undefined;
 
 	const ensureRoot = (): Record<string, unknown> => {
 		const current = raw[root];
@@ -409,8 +511,14 @@ function migrateNestedLeafRename(
 	// Strip legacy leaf sources (nested + flat dotted).
 	delete raw[`${oldParentPath}.${oldLeaf}`];
 	delete raw[`${root}.${newLeaf}`];
-	if (isRecord(raw[root]) && isRecord((raw[root] as Record<string, unknown>)[parent])) {
-		const parentObj = (raw[root] as Record<string, unknown>)[parent] as Record<string, unknown>;
+	if (
+		isRecord(raw[root]) &&
+		isRecord((raw[root] as Record<string, unknown>)[parent])
+	) {
+		const parentObj = (raw[root] as Record<string, unknown>)[parent] as Record<
+			string,
+			unknown
+		>;
 		delete parentObj[oldLeaf];
 		if (Object.keys(parentObj).length === 0) {
 			delete (raw[root] as Record<string, unknown>)[parent];
@@ -423,11 +531,17 @@ function migrateNestedLeafRename(
 		if (typeof target[parent] !== "boolean") {
 			target[parent] = recoveredParent;
 		}
-	} else if (isRecord(raw[root]) && isRecord((raw[root] as Record<string, unknown>)[parent])) {
+	} else if (
+		isRecord(raw[root]) &&
+		isRecord((raw[root] as Record<string, unknown>)[parent])
+	) {
 		delete (raw[root] as Record<string, unknown>)[parent];
 	}
 	delete raw[oldParentPath];
-	if (isRecord(raw[root]) && Object.keys(raw[root] as Record<string, unknown>).length === 0) {
+	if (
+		isRecord(raw[root]) &&
+		Object.keys(raw[root] as Record<string, unknown>).length === 0
+	) {
 		delete raw[root];
 	}
 }
@@ -445,8 +559,13 @@ type EditVariantEntry = {
 	mode: EditMode;
 };
 
-function resolvePathScopedStringArray(settingPath: SettingPath, value: unknown, cwd: string): string[] | undefined {
-	if (!PATH_SCOPED_ARRAY_SETTINGS.has(settingPath) || !Array.isArray(value)) return undefined;
+function resolvePathScopedStringArray(
+	settingPath: SettingPath,
+	value: unknown,
+	cwd: string,
+): string[] | undefined {
+	if (!PATH_SCOPED_ARRAY_SETTINGS.has(settingPath) || !Array.isArray(value))
+		return undefined;
 
 	const resolved: string[] = [];
 	for (const entry of value) {
@@ -463,7 +582,11 @@ function resolvePathScopedStringArray(settingPath: SettingPath, value: unknown, 
 			...stringArrayFromUnknown(scoped.pathPrefix),
 			...stringArrayFromUnknown(scoped.pathPrefixes),
 		];
-		if (prefixes.length === 0 || !prefixes.some(prefix => pathMatchesPrefix(cwd, prefix))) continue;
+		if (
+			prefixes.length === 0 ||
+			!prefixes.some((prefix) => pathMatchesPrefix(cwd, prefix))
+		)
+			continue;
 
 		const values =
 			settingPath === "enabledModels"
@@ -515,9 +638,14 @@ const MAX_SYMLINK_HOPS = 40;
  * `pathApi` is injectable so the platform-specific behavior is testable off the
  * host OS (drive with `path.win32` / `path.posix`); it defaults to the host.
  */
-function physicalTargetSegments(target: string, pathApi: typeof path = path): string[] {
+function physicalTargetSegments(
+	target: string,
+	pathApi: typeof path = path,
+): string[] {
 	const separator = pathApi.sep === "\\" ? /[\\/]+/ : /\/+/;
-	const body = pathApi.isAbsolute(target) ? target.slice(pathApi.parse(target).root.length) : target;
+	const body = pathApi.isAbsolute(target)
+		? target.slice(pathApi.parse(target).root.length)
+		: target;
 	return body.split(separator);
 }
 
@@ -558,7 +686,9 @@ export class Settings {
 	#resolvedCache = new Map<SettingPath, unknown>();
 	/** Typed group snapshots for the current merged layers and cwd scope. */
 	#groupCache = new Map<GroupPrefix, unknown>();
-	#effectiveChangeListeners = new Set<(path: SettingPath, value: unknown, previous: unknown) => void>();
+	#effectiveChangeListeners = new Set<
+		(path: SettingPath, value: unknown, previous: unknown) => void
+	>();
 	#editVariantCache: readonly EditVariantEntry[] | undefined;
 
 	/** Paths modified during this session (for partial save) */
@@ -598,10 +728,15 @@ export class Settings {
 	private constructor(options: SettingsOptions = {}) {
 		this.#cwd = path.normalize(options.cwd ?? getProjectDir());
 		this.#agentDir = path.normalize(options.agentDir ?? getAgentDir());
-		this.#configPath = options.inMemory ? null : path.join(this.#agentDir, MAIN_CONFIG_FILENAMES[0]);
-		const configFiles = process.env.PI_CONFIG_FILES?.split(path.delimiter).filter(Boolean) ?? [];
+		this.#configPath = options.inMemory
+			? null
+			: path.join(this.#agentDir, MAIN_CONFIG_FILENAMES[0]);
+		const configFiles =
+			process.env.PI_CONFIG_FILES?.split(path.delimiter).filter(Boolean) ?? [];
 		if (options.configFiles) configFiles.push(...options.configFiles);
-		this.#configFiles = configFiles.map(file => path.resolve(this.#cwd, expandTilde(file)));
+		this.#configFiles = configFiles.map((file) =>
+			path.resolve(this.#cwd, expandTilde(file)),
+		);
 		this.#persist = !options.inMemory && options.readOnly !== true;
 		liveSettingsInstances.add(new WeakRef(this));
 
@@ -630,13 +765,13 @@ export class Settings {
 		globalInstancePromise = promise;
 
 		return promise.then(
-			instance => {
+			(instance) => {
 				globalInstance = instance;
 				clearBoundSettingsMethods();
 				globalInstancePromise = Promise.resolve(instance);
 				return instance;
 			},
-			error => {
+			(error) => {
 				globalInstance = null;
 				globalInstancePromise = null;
 				clearBoundSettingsMethods();
@@ -707,7 +842,9 @@ export class Settings {
 
 		const value = getByPath(this.#merged, SETTING_PATH_SEGMENTS[path]);
 		const resolved =
-			value !== undefined ? (resolvePathScopedStringArray(path, value, this.#cwd) ?? value) : getDefault(path);
+			value !== undefined
+				? (resolvePathScopedStringArray(path, value, this.#cwd) ?? value)
+				: getDefault(path);
 		this.#resolvedCache.set(path, resolved);
 		return resolved as SettingValue<P>;
 	}
@@ -729,7 +866,11 @@ export class Settings {
 		assertKnownStatusLineSegments(path, value);
 		const prev = this.get(path);
 		const segments = path.split(".");
-		this.#captureGlobalMutation(path, this.#modifiedPathMutations, getByPath(this.#global, segments));
+		this.#captureGlobalMutation(
+			path,
+			this.#modifiedPathMutations,
+			getByPath(this.#global, segments),
+		);
 		setByPath(this.#global, segments, value);
 		this.#persistedMutationGeneration++;
 		this.#modified.add(path);
@@ -785,7 +926,7 @@ export class Settings {
 
 	/** Effective values of every setting that repartitions the Code Mode surface. */
 	#codeModeSignalSnapshot(): unknown[] {
-		return CODE_MODE_SIGNAL_PATHS.map(path => this.get(path));
+		return CODE_MODE_SIGNAL_PATHS.map((path) => this.get(path));
 	}
 
 	/** Fires the Code Mode signal when a persisted-layer refresh changed the partition inputs. */
@@ -794,13 +935,20 @@ export class Settings {
 		codeModeSignal.fire();
 	}
 
-	#fireEffectiveSettingChanged(path: SettingPath, value: unknown, prev: unknown): void {
+	#fireEffectiveSettingChanged(
+		path: SettingPath,
+		value: unknown,
+		prev: unknown,
+	): void {
 		if (Object.is(value, prev)) return;
 		for (const listener of Array.from(this.#effectiveChangeListeners)) {
 			try {
 				listener(path, value, prev);
 			} catch (error) {
-				logger.warn("Settings: effective-change listener failed", { path, error: String(error) });
+				logger.warn("Settings: effective-change listener failed", {
+					path,
+					error: String(error),
+				});
 			}
 		}
 		if (path === "statusLine.sessionAccent") {
@@ -815,7 +963,9 @@ export class Settings {
 	}
 
 	/** Observe effective changes on this settings instance. */
-	onEffectiveChange(listener: (path: SettingPath, value: unknown, previous: unknown) => void): () => void {
+	onEffectiveChange(
+		listener: (path: SettingPath, value: unknown, previous: unknown) => void,
+	): () => void {
 		this.#effectiveChangeListeners.add(listener);
 		return () => {
 			this.#effectiveChangeListeners.delete(listener);
@@ -875,8 +1025,11 @@ export class Settings {
 		cloned.#storage = this.#storage;
 		cloned.#configPath = this.#configPath;
 		cloned.#global = structuredClone(this.#global);
-		cloned.#project = this.#persist ? await cloned.#loadProjectSettings() : structuredClone(this.#project);
-		if (!this.#persist) cloned.#projectShellPathSource = this.#projectShellPathSource;
+		cloned.#project = this.#persist
+			? await cloned.#loadProjectSettings()
+			: structuredClone(this.#project);
+		if (!this.#persist)
+			cloned.#projectShellPathSource = this.#projectShellPathSource;
 		cloned.#configFiles = [...this.#configFiles];
 		cloned.#configOverlay = structuredClone(this.#configOverlay);
 		cloned.#overlayShellPathSource = this.#overlayShellPathSource;
@@ -923,11 +1076,12 @@ export class Settings {
 				previousHookValues.set(key, this.get(key));
 			}
 
-			const [globalResult, projectResult, overlayResult] = await Promise.allSettled([
-				this.#readExistingMainYaml(false),
-				this.#readProjectSettings(false),
-				this.#readConfigOverlays(false),
-			]);
+			const [globalResult, projectResult, overlayResult] =
+				await Promise.allSettled([
+					this.#readExistingMainYaml(false),
+					this.#readProjectSettings(false),
+					this.#readConfigOverlays(false),
+				]);
 			if (mutationGeneration !== this.#persistedMutationGeneration) continue;
 			if (globalResult.status === "rejected") throw globalResult.reason;
 			if (projectResult.status === "rejected") throw projectResult.reason;
@@ -944,10 +1098,16 @@ export class Settings {
 
 			const nextModelRoles = this.get("modelRoles");
 			if (!Bun.deepEquals(nextModelRoles, previousSignaledValues.modelRoles)) {
-				this.#fireEffectiveSettingChanged("modelRoles", nextModelRoles, previousSignaledValues.modelRoles);
+				this.#fireEffectiveSettingChanged(
+					"modelRoles",
+					nextModelRoles,
+					previousSignaledValues.modelRoles,
+				);
 			}
 			const nextSessionAccent = this.get("statusLine.sessionAccent");
-			if (!Bun.deepEquals(nextSessionAccent, previousSignaledValues.sessionAccent)) {
+			if (
+				!Bun.deepEquals(nextSessionAccent, previousSignaledValues.sessionAccent)
+			) {
 				this.#fireEffectiveSettingChanged(
 					"statusLine.sessionAccent",
 					nextSessionAccent,
@@ -989,7 +1149,11 @@ export class Settings {
 			this.#project = await this.#loadProjectSettings();
 		}
 		this.#rebuildMerged();
-		this.#fireEffectiveSettingChanged("modelRoles", this.get("modelRoles"), prevModelRoles);
+		this.#fireEffectiveSettingChanged(
+			"modelRoles",
+			this.get("modelRoles"),
+			prevModelRoles,
+		);
 		this.#fireCodeModeChangeIfNeeded(prevCodeModeValues);
 		this.#fireAllHooks();
 	}
@@ -1049,12 +1213,15 @@ export class Settings {
 	 */
 	getShellConfig() {
 		const shell = this.get("shellPath");
-		let configSource = this.#configPath ?? path.join(this.#agentDir, MAIN_CONFIG_FILENAMES[0]);
+		let configSource =
+			this.#configPath ?? path.join(this.#agentDir, MAIN_CONFIG_FILENAMES[0]);
 		if (Object.hasOwn(this.#project, "shellPath")) {
-			configSource = this.#projectShellPathSource ?? "the active project configuration";
+			configSource =
+				this.#projectShellPathSource ?? "the active project configuration";
 		}
 		if (Object.hasOwn(this.#configOverlay, "shellPath")) {
-			configSource = this.#overlayShellPathSource ?? "the active config overlay";
+			configSource =
+				this.#overlayShellPathSource ?? "the active config overlay";
 		}
 		if (Object.hasOwn(this.#overrides, "shellPath")) {
 			configSource = "the runtime settings override";
@@ -1181,12 +1348,20 @@ export class Settings {
 		const prev = this.get("modelRoles");
 		setByPath(this.#overrides, ["modelRoles"], next);
 		this.#rebuildMerged();
-		this.#fireEffectiveSettingChanged("modelRoles", this.get("modelRoles"), prev);
+		this.#fireEffectiveSettingChanged(
+			"modelRoles",
+			this.get("modelRoles"),
+			prev,
+		);
 	}
 
-	#updateRuntimeModelRoleOverride(role: ModelRole | string, modelId: string | undefined): void {
+	#updateRuntimeModelRoleOverride(
+		role: ModelRole | string,
+		modelId: string | undefined,
+	): void {
 		const runtimeOverrides = getByPath(this.#overrides, ["modelRoles"]);
-		if (!isRecord(runtimeOverrides) || !Object.hasOwn(runtimeOverrides, role)) return;
+		if (!isRecord(runtimeOverrides) || !Object.hasOwn(runtimeOverrides, role))
+			return;
 
 		const nextRuntimeOverride = this.#modelRolesFromLayer(this.#overrides);
 		if (modelId === undefined) {
@@ -1206,8 +1381,12 @@ export class Settings {
 	#captureRuntimeModelRoleOverride(role: ModelRole | string): void {
 		if (this.#savedRuntimeModelRoleOverrides.has(role)) return;
 		const runtimeOverrides = getByPath(this.#overrides, ["modelRoles"]);
-		if (!isRecord(runtimeOverrides) || !Object.hasOwn(runtimeOverrides, role)) return;
-		this.#savedRuntimeModelRoleOverrides.set(role, this.#modelRolesFromLayer(this.#overrides)[role]);
+		if (!isRecord(runtimeOverrides) || !Object.hasOwn(runtimeOverrides, role))
+			return;
+		this.#savedRuntimeModelRoleOverrides.set(
+			role,
+			this.#modelRolesFromLayer(this.#overrides)[role],
+		);
 	}
 
 	/**
@@ -1258,16 +1437,25 @@ export class Settings {
 		return overrides;
 	}
 
-	#setProjectModelRoleValue(role: ModelRole | string, modelId: string | null): void {
+	#setProjectModelRoleValue(
+		role: ModelRole | string,
+		modelId: string | null,
+	): void {
 		const prev = this.get("modelRoles");
 		const projectRoles = getByPath(this.#project, ["modelRoles"]);
-		const current: Record<string, unknown> = isRecord(projectRoles) ? { ...projectRoles } : {};
+		const current: Record<string, unknown> = isRecord(projectRoles)
+			? { ...projectRoles }
+			: {};
 		current[role] = modelId;
 		setByPath(this.#project, ["modelRoles"], current);
 		this.#modifiedProjectModelRoles.add(role);
 		this.#persistedMutationGeneration++;
 		this.#rebuildMerged();
-		this.#fireEffectiveSettingChanged("modelRoles", this.get("modelRoles"), prev);
+		this.#fireEffectiveSettingChanged(
+			"modelRoles",
+			this.get("modelRoles"),
+			prev,
+		);
 		this.#queueProjectSave();
 	}
 
@@ -1288,7 +1476,11 @@ export class Settings {
 	setModelRole(role: ModelRole | string, modelId: string | undefined): void {
 		const prev = this.get("modelRoles");
 		const current = this.#modelRolesFromLayer(this.#global);
-		this.#captureGlobalMutation(role, this.#modifiedGlobalModelRoleMutations, current[role]);
+		this.#captureGlobalMutation(
+			role,
+			this.#modifiedGlobalModelRoleMutations,
+			current[role],
+		);
 		if (modelId === undefined) {
 			delete current[role];
 		} else {
@@ -1303,7 +1495,11 @@ export class Settings {
 		this.#persistedMutationGeneration++;
 		this.#rebuildMerged();
 		this.#queueSave();
-		this.#fireEffectiveSettingChanged("modelRoles", this.get("modelRoles"), prev);
+		this.#fireEffectiveSettingChanged(
+			"modelRoles",
+			this.get("modelRoles"),
+			prev,
+		);
 		if (this.isProjectModelRoleRuntimeOverrideActive(role)) {
 			return;
 		}
@@ -1375,10 +1571,13 @@ export class Settings {
 	 * project null is a cleared value (falls back to global), not a
 	 * tombstone.
 	 */
-	getModelRoleProvenance(role: ModelRole | string): "runtime" | "overlay" | "project" | "global" | "default" {
+	getModelRoleProvenance(
+		role: ModelRole | string,
+	): "runtime" | "overlay" | "project" | "global" | "default" {
 		if (this.#modelRoleLayerOwns(this.#overrides, role)) return "runtime";
 		if (this.#modelRoleLayerOwns(this.#configOverlay, role)) return "overlay";
-		if (this.#modelRoleLayerOwns(this.#projectSettingsForMerge(), role)) return "project";
+		if (this.#modelRoleLayerOwns(this.#projectSettingsForMerge(), role))
+			return "project";
 		if (this.#modelRoleLayerOwns(this.#global, role)) return "global";
 		return "default";
 	}
@@ -1386,7 +1585,9 @@ export class Settings {
 	/**
 	 * Get the persisted layer supplying a model role (project/global/default only).
 	 */
-	getModelRoleSource(role: ModelRole | string): "project" | "global" | "default" {
+	getModelRoleSource(
+		role: ModelRole | string,
+	): "project" | "global" | "default" {
 		if (this.getProjectModelRole(role)) return "project";
 		if (this.getGlobalModelRole(role)) return "global";
 		return "default";
@@ -1515,7 +1716,11 @@ export class Settings {
 		}
 	}
 
-	#captureGlobalMutation(key: string, mutations: Map<string, PendingYamlMutation>, baseValue: unknown): void {
+	#captureGlobalMutation(
+		key: string,
+		mutations: Map<string, PendingYamlMutation>,
+		baseValue: unknown,
+	): void {
 		if (!this.#persist || !this.#configPath) return;
 		mutations.set(key, {
 			generation: this.#readYamlGeneration(this.#configPath),
@@ -1528,7 +1733,10 @@ export class Settings {
 		return loaded ?? {};
 	}
 
-	async #loadYamlIfPresent(filePath: string, captureLegacyChangelogVersion = true): Promise<YamlLoadResult> {
+	async #loadYamlIfPresent(
+		filePath: string,
+		captureLegacyChangelogVersion = true,
+	): Promise<YamlLoadResult> {
 		let content: string;
 		let generation: YamlContentGeneration;
 		try {
@@ -1559,13 +1767,18 @@ export class Settings {
 		if (typeof parsed !== "object" || Array.isArray(parsed)) {
 			return {
 				kind: "invalid",
-				error: new Error("Settings YAML must contain a mapping at the document root"),
+				error: new Error(
+					"Settings YAML must contain a mapping at the document root",
+				),
 				generation,
 			};
 		}
 		return {
 			kind: "loaded",
-			settings: this.#migrateRawSettings(parsed as RawSettings, captureLegacyChangelogVersion),
+			settings: this.#migrateRawSettings(
+				parsed as RawSettings,
+				captureLegacyChangelogVersion,
+			),
 			generation,
 		};
 	}
@@ -1781,7 +1994,9 @@ export class Settings {
 					const resolved = acc;
 					let nextIsSymlink = false;
 					try {
-						nextIsSymlink = (await fs.promises.lstat(resolved)).isSymbolicLink();
+						nextIsSymlink = (
+							await fs.promises.lstat(resolved)
+						).isSymbolicLink();
 					} catch (error) {
 						if (!isEnoent(error)) throw error;
 					}
@@ -1795,18 +2010,27 @@ export class Settings {
 		return path.resolve(filePath);
 	}
 
-	async #withYamlWriteLock<T>(filePath: string, fn: (writePath: string) => Promise<T>): Promise<T> {
+	async #withYamlWriteLock<T>(
+		filePath: string,
+		fn: (writePath: string) => Promise<T>,
+	): Promise<T> {
 		const writePath = await this.#resolveYamlWritePath(filePath);
 		return await withFileLock(writePath, async () => fn(writePath));
 	}
 
-	async #loadYamlIfPresentForStartup(filePath: string): Promise<RawSettings | null> {
+	async #loadYamlIfPresentForStartup(
+		filePath: string,
+	): Promise<RawSettings | null> {
 		const result = await this.#loadYamlIfPresent(filePath);
 		if (result.kind !== "invalid" || !this.#persist) {
 			return this.#unwrapYamlLoadResult(filePath, result);
 		}
-		return await this.#withYamlWriteLock(filePath, async writePath => {
-			const loaded = await this.#loadYamlIfPresentForWriteLocked(filePath, writePath, true);
+		return await this.#withYamlWriteLock(filePath, async (writePath) => {
+			const loaded = await this.#loadYamlIfPresentForWriteLocked(
+				filePath,
+				writePath,
+				true,
+			);
 			return loaded.settings;
 		});
 	}
@@ -1858,7 +2082,10 @@ export class Settings {
 		return { ...result, backupPath };
 	}
 
-	#unwrapYamlLoadResult(filePath: string, result: YamlLoadResult): RawSettings | null {
+	#unwrapYamlLoadResult(
+		filePath: string,
+		result: YamlLoadResult,
+	): RawSettings | null {
 		switch (result.kind) {
 			case "missing":
 				return null;
@@ -1869,17 +2096,24 @@ export class Settings {
 					`Settings config is invalid: ${filePath}${result.backupPath ? ` (moved to ${result.backupPath})` : ""}: ${String(result.error)}`,
 				);
 			case "unreadable":
-				throw new Error(`Failed to read settings config ${filePath}: ${String(result.error)}`);
+				throw new Error(
+					`Failed to read settings config ${filePath}: ${String(result.error)}`,
+				);
 		}
 	}
 
-	async #readExistingMainYaml(quarantineInvalid: boolean): Promise<MainYamlReadResult> {
+	async #readExistingMainYaml(
+		quarantineInvalid: boolean,
+	): Promise<MainYamlReadResult> {
 		if (!this.#configPath) return { settings: null, configPath: null };
 		for (const filename of MAIN_CONFIG_FILENAMES) {
 			const configPath = path.join(this.#agentDir, filename);
 			const loaded = quarantineInvalid
 				? await this.#loadYamlIfPresentForStartup(configPath)
-				: this.#unwrapYamlLoadResult(configPath, await this.#loadYamlIfPresent(configPath, false));
+				: this.#unwrapYamlLoadResult(
+						configPath,
+						await this.#loadYamlIfPresent(configPath, false),
+					);
 			if (loaded) return { settings: loaded, configPath };
 		}
 		return {
@@ -1894,7 +2128,9 @@ export class Settings {
 		return result.settings;
 	}
 
-	async #readProjectSettings(quarantineInvalid: boolean): Promise<ProjectSettingsReadResult> {
+	async #readProjectSettings(
+		quarantineInvalid: boolean,
+	): Promise<ProjectSettingsReadResult> {
 		// Resolve once: capability discovery, fs-cache invalidation, and the
 		// warning prefix below must all derive from the same absolute scope so
 		// relative cwds (e.g. ".") produce absolute provider paths that match.
@@ -1903,11 +2139,15 @@ export class Settings {
 		const projectConfigPath = path.join(projectConfigDir, "config.yml");
 		invalidateCapabilityFsCache(projectConfigPath);
 		invalidateCapabilityFsCache(path.join(projectConfigDir, "settings.json"));
-		invalidateCapabilityFsCache(path.join(discoveryCwd, ".claude", "settings.json"));
+		invalidateCapabilityFsCache(
+			path.join(discoveryCwd, ".claude", "settings.json"),
+		);
 		let shellPathSource: string | undefined;
 		let merged: RawSettings = {};
 		try {
-			const result = await loadCapability(settingsCapability.id, { cwd: discoveryCwd });
+			const result = await loadCapability(settingsCapability.id, {
+				cwd: discoveryCwd,
+			});
 			// `loadCapability` aggregates warnings across every level, but this
 			// method only merges project items — user-level parse failures belong
 			// to the global layer and would misattribute here. Warnings embed
@@ -1918,8 +2158,12 @@ export class Settings {
 			// Level attribution below the path layer (e.g. a user-scoped dir
 			// mounted inside the project) needs warning metadata from the
 			// providers, which `LoadResult.warnings` does not carry.
-			const cwdRoot = discoveryCwd.endsWith(path.sep) ? discoveryCwd : discoveryCwd + path.sep;
-			const projectWarnings = (result.warnings ?? []).filter(warning => warning.includes(cwdRoot));
+			const cwdRoot = discoveryCwd.endsWith(path.sep)
+				? discoveryCwd
+				: discoveryCwd + path.sep;
+			const projectWarnings = (result.warnings ?? []).filter((warning) =>
+				warning.includes(cwdRoot),
+			);
 			for (const warning of projectWarnings) {
 				if (this.#projectSettingsWarningsSeen.has(warning)) continue;
 				logger.warn(`Settings: ${warning}`);
@@ -1927,8 +2171,12 @@ export class Settings {
 			this.#projectSettingsWarningsSeen = new Set(projectWarnings);
 			for (const item of result.items as SettingsCapabilityItem[]) {
 				if (item.level === "project") {
-					merged = this.#deepMerge(merged, dropSettingsGroupShadows(item.data as RawSettings, item.path));
-					if (Object.hasOwn(item.data, "shellPath")) shellPathSource = item.path;
+					merged = this.#deepMerge(
+						merged,
+						dropSettingsGroupShadows(item.data as RawSettings, item.path),
+					);
+					if (Object.hasOwn(item.data, "shellPath"))
+						shellPathSource = item.path;
 				}
 			}
 		} catch {
@@ -1938,8 +2186,10 @@ export class Settings {
 		}
 		const nativeProject = quarantineInvalid
 			? await this.#loadYaml(projectConfigPath)
-			: (this.#unwrapYamlLoadResult(projectConfigPath, await this.#loadYamlIfPresent(projectConfigPath, false)) ??
-				{});
+			: (this.#unwrapYamlLoadResult(
+					projectConfigPath,
+					await this.#loadYamlIfPresent(projectConfigPath, false),
+				) ?? {});
 		const nativeModelRoles = getByPath(nativeProject, ["modelRoles"]);
 		if (nativeModelRoles !== undefined) {
 			merged = this.#deepMerge(merged, { modelRoles: nativeModelRoles });
@@ -1958,11 +2208,16 @@ export class Settings {
 		return result.settings;
 	}
 
-	async #readConfigOverlays(captureLegacyChangelogVersion = true): Promise<ConfigOverlayReadResult> {
+	async #readConfigOverlays(
+		captureLegacyChangelogVersion = true,
+	): Promise<ConfigOverlayReadResult> {
 		let shellPathSource: string | undefined;
 		let settings: RawSettings = {};
 		for (const filePath of this.#configFiles) {
-			const overlay = await this.#loadOverlayYaml(filePath, captureLegacyChangelogVersion);
+			const overlay = await this.#loadOverlayYaml(
+				filePath,
+				captureLegacyChangelogVersion,
+			);
 			settings = this.#deepMerge(settings, overlay);
 			if (Object.hasOwn(overlay, "shellPath")) shellPathSource = filePath;
 		}
@@ -1980,7 +2235,10 @@ export class Settings {
 	 * missing or malformed files are hard errors so a typo'd path cannot
 	 * silently fall back to the persistent settings.
 	 */
-	async #loadOverlayYaml(filePath: string, captureLegacyChangelogVersion = true): Promise<RawSettings> {
+	async #loadOverlayYaml(
+		filePath: string,
+		captureLegacyChangelogVersion = true,
+	): Promise<RawSettings> {
 		let content: string;
 		try {
 			content = await Bun.file(filePath).text();
@@ -1995,13 +2253,18 @@ export class Settings {
 		try {
 			parsed = YAML.parse(content);
 		} catch (error) {
-			throw new Error(`Failed to parse config overlay ${filePath}: ${String(error)}`);
+			throw new Error(
+				`Failed to parse config overlay ${filePath}: ${String(error)}`,
+			);
 		}
 		if (parsed === null || parsed === undefined) return {};
 		if (typeof parsed !== "object" || Array.isArray(parsed)) {
 			throw new Error(`Config overlay must be a YAML mapping: ${filePath}`);
 		}
-		return this.#migrateRawSettings(parsed as RawSettings, captureLegacyChangelogVersion);
+		return this.#migrateRawSettings(
+			parsed as RawSettings,
+			captureLegacyChangelogVersion,
+		);
 	}
 
 	async #migrateFromLegacy(): Promise<void> {
@@ -2013,13 +2276,20 @@ export class Settings {
 
 		const settingsJsonPath = path.join(this.#agentDir, "settings.json");
 		try {
-			const parsed: unknown = JSONC.parse(await Bun.file(settingsJsonPath).text());
+			const parsed: unknown = JSONC.parse(
+				await Bun.file(settingsJsonPath).text(),
+			);
 			if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
-				settings = this.#deepMerge(settings, this.#migrateRawSettings(parsed as RawSettings));
+				settings = this.#deepMerge(
+					settings,
+					this.#migrateRawSettings(parsed as RawSettings),
+				);
 				migrated = true;
 				migratedSettingsJson = true;
 			} else {
-				logger.warn("Settings: ignoring non-object legacy settings.json", { path: settingsJsonPath });
+				logger.warn("Settings: ignoring non-object legacy settings.json", {
+					path: settingsJsonPath,
+				});
 			}
 		} catch (error) {
 			if (!isEnoent(error)) {
@@ -2033,17 +2303,24 @@ export class Settings {
 		try {
 			const dbSettings = this.#storage?.getSettings();
 			if (dbSettings) {
-				settings = this.#deepMerge(settings, this.#migrateRawSettings(dbSettings as RawSettings));
+				settings = this.#deepMerge(
+					settings,
+					this.#migrateRawSettings(dbSettings as RawSettings),
+				);
 				migrated = true;
 			}
 		} catch (error) {
-			logger.warn("Settings: failed to read legacy agent.db settings", { error: String(error) });
+			logger.warn("Settings: failed to read legacy agent.db settings", {
+				error: String(error),
+			});
 		}
 
 		if (migrated && Object.keys(settings).length > 0) {
 			try {
 				await this.#writeYamlAtomically(this.#configPath, settings);
-				logger.debug("Settings: migrated to config.yml", { path: this.#configPath });
+				logger.debug("Settings: migrated to config.yml", {
+					path: this.#configPath,
+				});
 			} catch (error) {
 				logger.warn("Settings: failed to write migrated config.yml", {
 					path: this.#configPath,
@@ -2056,23 +2333,31 @@ export class Settings {
 				try {
 					await fs.promises.rename(settingsJsonPath, `${settingsJsonPath}.bak`);
 				} catch (error) {
-					logger.warn("Settings: failed to archive settings.json after migration", {
-						path: settingsJsonPath,
-						error: String(error),
-					});
+					logger.warn(
+						"Settings: failed to archive settings.json after migration",
+						{
+							path: settingsJsonPath,
+							error: String(error),
+						},
+					);
 				}
 			}
 
 			try {
 				this.#storage?.clearMigratedSettings();
 			} catch (error) {
-				logger.warn("Settings: failed to clear migrated agent.db settings", { error: String(error) });
+				logger.warn("Settings: failed to clear migrated agent.db settings", {
+					error: String(error),
+				});
 			}
 		}
 	}
 
 	/** Apply schema migrations to raw settings */
-	#migrateRawSettings(raw: RawSettings, captureLegacyChangelogVersion = true): RawSettings {
+	#migrateRawSettings(
+		raw: RawSettings,
+		captureLegacyChangelogVersion = true,
+	): RawSettings {
 		// queueMode -> steeringMode
 		if ("queueMode" in raw && !("steeringMode" in raw)) {
 			raw.steeringMode = raw.queueMode;
@@ -2090,7 +2375,10 @@ export class Settings {
 		// longer dirty user-tracked configs. Capture for marker seeding (see
 		// #seedLastChangelogVersionMarker), then strip the key — the next
 		// config save drops it from disk.
-		if (captureLegacyChangelogVersion && typeof raw.lastChangelogVersion === "string") {
+		if (
+			captureLegacyChangelogVersion &&
+			typeof raw.lastChangelogVersion === "string"
+		) {
 			this.#legacyLastChangelogVersion ??= raw.lastChangelogVersion;
 		}
 		delete raw.lastChangelogVersion;
@@ -2099,14 +2387,24 @@ export class Settings {
 		// every explicit legacy choice while giving new installs the schema's
 		// "summary" default: true -> summary, false -> expanded. A separately
 		// configured new mode always wins.
-		const startupObj = isRecord(raw.startup) ? (raw.startup as Record<string, unknown>) : undefined;
-		const legacyCollapseChangelog = typeof raw.collapseChangelog === "boolean" ? raw.collapseChangelog : undefined;
+		const startupObj = isRecord(raw.startup)
+			? (raw.startup as Record<string, unknown>)
+			: undefined;
+		const legacyCollapseChangelog =
+			typeof raw.collapseChangelog === "boolean"
+				? raw.collapseChangelog
+				: undefined;
 		const flatChangelogMode = raw["startup.changelogMode"];
 		const normalizedFlatChangelogMode =
-			flatChangelogMode === "summary" || flatChangelogMode === "expanded" || flatChangelogMode === "hidden"
+			flatChangelogMode === "summary" ||
+			flatChangelogMode === "expanded" ||
+			flatChangelogMode === "hidden"
 				? flatChangelogMode
 				: undefined;
-		if (legacyCollapseChangelog !== undefined || normalizedFlatChangelogMode !== undefined) {
+		if (
+			legacyCollapseChangelog !== undefined ||
+			normalizedFlatChangelogMode !== undefined
+		) {
 			if (!startupObj) {
 				raw.startup = {};
 			}
@@ -2114,7 +2412,11 @@ export class Settings {
 			if (target.changelogMode === undefined) {
 				target.changelogMode =
 					normalizedFlatChangelogMode ??
-					(legacyCollapseChangelog !== undefined ? (legacyCollapseChangelog ? "summary" : "expanded") : undefined);
+					(legacyCollapseChangelog !== undefined
+						? legacyCollapseChangelog
+							? "summary"
+							: "expanded"
+						: undefined);
 			}
 		}
 		delete raw.collapseChangelog;
@@ -2136,15 +2438,22 @@ export class Settings {
 		// Remove the retired image-tool mode settings and preserve its request
 		// timeout under the read image-question setting. Nested values win over
 		// quoted-dotted legacy values; an existing new setting wins over both.
-		const inspectImageObj = isRecord(raw.inspect_image) ? (raw.inspect_image as Record<string, unknown>) : undefined;
+		const inspectImageObj = isRecord(raw.inspect_image)
+			? (raw.inspect_image as Record<string, unknown>)
+			: undefined;
 		const legacyQuestionTimeoutMs =
 			typeof inspectImageObj?.timeoutMs === "number"
 				? inspectImageObj.timeoutMs
 				: typeof raw["inspect_image.timeoutMs"] === "number"
 					? (raw["inspect_image.timeoutMs"] as number)
 					: undefined;
-		const imagesObj = isRecord(raw.images) ? (raw.images as Record<string, unknown>) : undefined;
-		if (legacyQuestionTimeoutMs !== undefined && imagesObj?.questionTimeoutMs === undefined) {
+		const imagesObj = isRecord(raw.images)
+			? (raw.images as Record<string, unknown>)
+			: undefined;
+		if (
+			legacyQuestionTimeoutMs !== undefined &&
+			imagesObj?.questionTimeoutMs === undefined
+		) {
 			raw.images = { ...imagesObj, questionTimeoutMs: legacyQuestionTimeoutMs };
 		}
 		delete raw.inspect_image;
@@ -2153,7 +2462,9 @@ export class Settings {
 		delete raw["inspect_image.timeoutMs"];
 
 		const taskObj = raw.task as Record<string, unknown> | undefined;
-		const isolationObj = taskObj?.isolation as Record<string, unknown> | undefined;
+		const isolationObj = taskObj?.isolation as
+			| Record<string, unknown>
+			| undefined;
 
 		// task.simple: removed — the task tool no longer accepts a per-call
 		// schema (workflows drive structured output via eval agent()) and the
@@ -2177,7 +2488,9 @@ export class Settings {
 		// now "smart"; `false` maps to "none" so explicitly disabled configs remain
 		// off rather than inheriting the new "mechanical" default.
 		// Handles nested and quoted-dotted sources, like the legacy image settings above.
-		const featuresObj = isRecord(raw.features) ? (raw.features as Record<string, unknown>) : undefined;
+		const featuresObj = isRecord(raw.features)
+			? (raw.features as Record<string, unknown>)
+			: undefined;
 		const legacyUnexpectedStop =
 			typeof featuresObj?.unexpectedStopDetection === "boolean"
 				? featuresObj.unexpectedStopDetection
@@ -2190,9 +2503,13 @@ export class Settings {
 			}
 			const target = raw.features as Record<string, unknown>;
 			const current = target.unexpectedStopDetection;
-			const currentIsMode = typeof current === "string" && ["none", "mechanical", "smart"].includes(current);
+			const currentIsMode =
+				typeof current === "string" &&
+				["none", "mechanical", "smart"].includes(current);
 			if (!currentIsMode) {
-				target.unexpectedStopDetection = legacyUnexpectedStop ? "smart" : "none";
+				target.unexpectedStopDetection = legacyUnexpectedStop
+					? "smart"
+					: "none";
 			}
 			delete raw["features.unexpectedStopDetection"];
 		}
@@ -2218,18 +2535,24 @@ export class Settings {
 				: typeof flatIsolationEnabled === "boolean"
 					? flatIsolationEnabled
 					: undefined;
-		if (legacyIsolationMode !== undefined || explicitIsolationEnabled !== undefined) {
+		if (
+			legacyIsolationMode !== undefined ||
+			explicitIsolationEnabled !== undefined
+		) {
 			if (!isRecord(raw.task)) raw.task = {};
 			const targetTask = raw.task as Record<string, unknown>;
 			if (!isRecord(targetTask.isolation)) targetTask.isolation = {};
 			const targetIsolation = targetTask.isolation as Record<string, unknown>;
-			targetIsolation.enabled = explicitIsolationEnabled ?? legacyIsolationMode !== "none";
+			targetIsolation.enabled =
+				explicitIsolationEnabled ?? legacyIsolationMode !== "none";
 			delete targetIsolation.mode;
 		}
 		delete raw[legacyIsolationModePath];
 		delete raw["task.isolation.enabled"];
 
-		const rootIsolation = isRecord(raw.isolation) ? (raw.isolation as Record<string, unknown>) : undefined;
+		const rootIsolation = isRecord(raw.isolation)
+			? (raw.isolation as Record<string, unknown>)
+			: undefined;
 		const configuredBackend =
 			typeof rootIsolation?.backend === "string"
 				? rootIsolation.backend
@@ -2243,7 +2566,8 @@ export class Settings {
 		const backend = configuredBackend ?? derivedBackend;
 		if (backend !== undefined) {
 			if (!rootIsolation) raw.isolation = {};
-			(raw.isolation as Record<string, unknown>).backend = legacyIsolationBackends[backend] ?? backend;
+			(raw.isolation as Record<string, unknown>).backend =
+				legacyIsolationBackends[backend] ?? backend;
 		}
 		delete raw["isolation.backend"];
 
@@ -2253,8 +2577,14 @@ export class Settings {
 			if (editObj.mode === "atom" || editObj.mode === "vim") {
 				editObj.mode = "hashline";
 			}
-			const modelVariants = editObj.modelVariants as Record<string, unknown> | undefined;
-			if (modelVariants && typeof modelVariants === "object" && !Array.isArray(modelVariants)) {
+			const modelVariants = editObj.modelVariants as
+				| Record<string, unknown>
+				| undefined;
+			if (
+				modelVariants &&
+				typeof modelVariants === "object" &&
+				!Array.isArray(modelVariants)
+			) {
 				for (const [pattern, variant] of Object.entries(modelVariants)) {
 					if (variant === "atom" || variant === "vim") {
 						modelVariants[pattern] = "hashline";
@@ -2271,32 +2601,44 @@ export class Settings {
 		// chain. Preserve explicit legacy intent while new installs use the
 		// server → snapcompact → handoff → shake → soft default.
 		const compactionObj = isRecord(raw.compaction) ? raw.compaction : undefined;
-		const configuredMethodOrder = compactionObj?.methodOrder ?? raw["compaction.methodOrder"];
-		const legacyStrategy = compactionObj?.strategy ?? raw["compaction.strategy"];
-		const legacyRemoteEnabled = compactionObj?.remoteEnabled ?? raw["compaction.remoteEnabled"];
+		const configuredMethodOrder =
+			compactionObj?.methodOrder ?? raw["compaction.methodOrder"];
+		const legacyStrategy =
+			compactionObj?.strategy ?? raw["compaction.strategy"];
+		const legacyRemoteEnabled =
+			compactionObj?.remoteEnabled ?? raw["compaction.remoteEnabled"];
 		if (!Array.isArray(configuredMethodOrder)) {
 			const remoteEnabled = legacyRemoteEnabled !== false;
-			const strategy = legacyStrategy === "shake-summary" ? "shake" : legacyStrategy;
+			const strategy =
+				legacyStrategy === "shake-summary" ? "shake" : legacyStrategy;
 			let methodOrder: CompactionMethod[] | undefined;
 			switch (strategy) {
 				case "context-full":
 					methodOrder = remoteEnabled ? ["remote", "soft"] : ["soft"];
 					break;
 				case "handoff":
-					methodOrder = remoteEnabled ? ["handoff", "remote", "soft"] : ["handoff", "soft"];
+					methodOrder = remoteEnabled
+						? ["handoff", "remote", "soft"]
+						: ["handoff", "soft"];
 					break;
 				case "shake":
-					methodOrder = remoteEnabled ? ["shake", "remote", "soft"] : ["shake", "soft"];
+					methodOrder = remoteEnabled
+						? ["shake", "remote", "soft"]
+						: ["shake", "soft"];
 					break;
 				case "snapcompact":
-					methodOrder = remoteEnabled ? ["snapcompact", "remote", "soft"] : ["snapcompact", "soft"];
+					methodOrder = remoteEnabled
+						? ["snapcompact", "remote", "soft"]
+						: ["snapcompact", "soft"];
 					break;
 				case "off":
 					methodOrder = [];
 					break;
 				default:
 					if (legacyRemoteEnabled === false) {
-						methodOrder = DEFAULT_COMPACTION_METHOD_ORDER.filter(method => method !== "remote");
+						methodOrder = DEFAULT_COMPACTION_METHOD_ORDER.filter(
+							(method) => method !== "remote",
+						);
 					}
 			}
 			if (methodOrder) {
@@ -2318,12 +2660,18 @@ export class Settings {
 		delete raw["compaction.methodOrder"];
 
 		// snapcompact.systemPrompt: boolean -> scoped enum.
-		const snapcompactObj = raw.snapcompact as Record<string, unknown> | undefined;
+		const snapcompactObj = raw.snapcompact as
+			| Record<string, unknown>
+			| undefined;
 		if (snapcompactObj && typeof snapcompactObj.systemPrompt === "boolean") {
-			snapcompactObj.systemPrompt = snapcompactObj.systemPrompt ? "all" : "none";
+			snapcompactObj.systemPrompt = snapcompactObj.systemPrompt
+				? "all"
+				: "none";
 		}
 		if (typeof raw["snapcompact.systemPrompt"] === "boolean") {
-			raw["snapcompact.systemPrompt"] = raw["snapcompact.systemPrompt"] ? "all" : "none";
+			raw["snapcompact.systemPrompt"] = raw["snapcompact.systemPrompt"]
+				? "all"
+				: "none";
 		}
 
 		// inlineToolDescriptors: boolean -> enum (auto | on | off). The old
@@ -2351,11 +2699,19 @@ export class Settings {
 			for (const key of ["leftSegments", "rightSegments"] as const) {
 				const segments = statusLineObj[key];
 				if (Array.isArray(segments)) {
-					statusLineObj[key] = segments.map(seg => (seg === "plan_mode" ? "mode" : seg));
+					statusLineObj[key] = segments.map((seg) =>
+						seg === "plan_mode" ? "mode" : seg,
+					);
 				}
 			}
-			const segmentOptions = statusLineObj.segmentOptions as Record<string, unknown> | undefined;
-			if (segmentOptions && "plan_mode" in segmentOptions && !("mode" in segmentOptions)) {
+			const segmentOptions = statusLineObj.segmentOptions as
+				| Record<string, unknown>
+				| undefined;
+			if (
+				segmentOptions &&
+				"plan_mode" in segmentOptions &&
+				!("mode" in segmentOptions)
+			) {
 				segmentOptions.mode = segmentOptions.plan_mode;
 				delete segmentOptions.plan_mode;
 			}
@@ -2390,7 +2746,8 @@ export class Settings {
 		const flatTinyModel = migrateTinyModelValue(raw["providers.tinyModel"]);
 		if (flatTinyModel !== undefined) {
 			const providersRoot = isRecord(raw.providers) ? raw.providers : {};
-			if (typeof providersRoot.tinyModel !== "string") providersRoot.tinyModel = flatTinyModel;
+			if (typeof providersRoot.tinyModel !== "string")
+				providersRoot.tinyModel = flatTinyModel;
 			raw.providers = providersRoot;
 			delete raw["providers.tinyModel"];
 		}
@@ -2402,21 +2759,30 @@ export class Settings {
 		// Saved-reset autoRedeem booleans -> tri-state enums. Existing explicit
 		// false keeps "do not run"; missing config falls through to "unset",
 		// which asks before the first eligible provider-specific spend.
-		const codexResetsObj = raw.codexResets as Record<string, unknown> | undefined;
+		const codexResetsObj = raw.codexResets as
+			| Record<string, unknown>
+			| undefined;
 		if (codexResetsObj && typeof codexResetsObj.autoRedeem === "boolean") {
 			codexResetsObj.autoRedeem = codexResetsObj.autoRedeem ? "yes" : "no";
 		}
 		if (typeof raw["codexResets.autoRedeem"] === "boolean") {
-			raw["codexResets.autoRedeem"] = raw["codexResets.autoRedeem"] ? "yes" : "no";
+			raw["codexResets.autoRedeem"] = raw["codexResets.autoRedeem"]
+				? "yes"
+				: "no";
 		}
 
 		// Map legacy `memories.enabled` boolean to the explicit `memory.backend`
 		// enum if the latter hasn't been set yet. Idempotent: subsequent
 		// migrations are no-ops once memory.backend is materialised.
 		const memoryBackendObj = raw.memory as Record<string, unknown> | undefined;
-		const memoryBackendSet = memoryBackendObj && typeof memoryBackendObj.backend === "string";
+		const memoryBackendSet =
+			memoryBackendObj && typeof memoryBackendObj.backend === "string";
 		const memoriesObj = raw.memories as Record<string, unknown> | undefined;
-		if (!memoryBackendSet && memoriesObj && typeof memoriesObj.enabled === "boolean") {
+		if (
+			!memoryBackendSet &&
+			memoriesObj &&
+			typeof memoriesObj.enabled === "boolean"
+		) {
 			const next = memoriesObj.enabled ? "local" : "off";
 			const memoryRoot = (memoryBackendObj ?? {}) as Record<string, unknown>;
 			memoryRoot.backend = next;
@@ -2445,7 +2811,10 @@ export class Settings {
 		const hindsightObj = raw.hindsight as Record<string, unknown> | undefined;
 		if (hindsightObj) {
 			if ("dynamicBankId" in hindsightObj) {
-				if (!("scoping" in hindsightObj) && hindsightObj.dynamicBankId === true) {
+				if (
+					!("scoping" in hindsightObj) &&
+					hindsightObj.dynamicBankId === true
+				) {
 					hindsightObj.scoping = "per-project";
 				}
 				delete hindsightObj.dynamicBankId;
@@ -2488,9 +2857,20 @@ export class Settings {
 			const system = getFlag("preventSystemSleep");
 			const user = getFlag("declareUserActive");
 			const display = getFlag("preventDisplaySleep");
-			const anySet = idle !== undefined || system !== undefined || user !== undefined || display !== undefined;
+			const anySet =
+				idle !== undefined ||
+				system !== undefined ||
+				user !== undefined ||
+				display !== undefined;
 			if (anySet) {
-				const mode = system || user ? "system" : display ? "display" : idle !== false ? "idle" : "off";
+				const mode =
+					system || user
+						? "system"
+						: display
+							? "display"
+							: idle !== false
+								? "idle"
+								: "off";
 				const powerRoot = (powerObj ?? {}) as Record<string, unknown>;
 				powerRoot.sleepPrevention = mode;
 				raw.power = powerRoot;
@@ -2525,11 +2905,8 @@ export class Settings {
 			const searchObj = raw.search;
 			if (isRecord(searchObj)) {
 				const grepObj = ensureRawObject("grep");
-				const searchKeys: Array<"enabled" | "contextBefore" | "contextAfter"> = [
-					"enabled",
-					"contextBefore",
-					"contextAfter",
-				];
+				const searchKeys: Array<"enabled" | "contextBefore" | "contextAfter"> =
+					["enabled", "contextBefore", "contextAfter"];
 				for (const key of searchKeys) {
 					if (key in searchObj && !(key in grepObj)) {
 						grepObj[key] = searchObj[key];
@@ -2563,10 +2940,18 @@ export class Settings {
 		}
 
 		// Also clean up any empty nested objects we might have created or left behind
-		if (raw.glob && typeof raw.glob === "object" && Object.keys(raw.glob).length === 0) {
+		if (
+			raw.glob &&
+			typeof raw.glob === "object" &&
+			Object.keys(raw.glob).length === 0
+		) {
 			delete raw.glob;
 		}
-		if (raw.grep && typeof raw.grep === "object" && Object.keys(raw.grep).length === 0) {
+		if (
+			raw.grep &&
+			typeof raw.grep === "object" &&
+			Object.keys(raw.grep).length === 0
+		) {
 			delete raw.grep;
 		}
 		// readHashLines: removed. Hashline anchors are now driven solely by
@@ -2629,11 +3014,16 @@ export class Settings {
 		{
 			const advisorObj = isRecord(raw.advisor) ? raw.advisor : undefined;
 			const legacySubagents =
-				advisorObj && "subagents" in advisorObj ? advisorObj.subagents : raw["advisor.subagents"];
+				advisorObj && "subagents" in advisorObj
+					? advisorObj.subagents
+					: raw["advisor.subagents"];
 			if (typeof legacySubagents === "boolean") {
 				const taskObj = isRecord(raw.task) ? raw.task : {};
-				const agentAdvisor = isRecord(taskObj.agentAdvisor) ? taskObj.agentAdvisor : {};
-				if (!("task" in agentAdvisor)) agentAdvisor.task = legacySubagents ? "on" : "off";
+				const agentAdvisor = isRecord(taskObj.agentAdvisor)
+					? taskObj.agentAdvisor
+					: {};
+				if (!("task" in agentAdvisor))
+					agentAdvisor.task = legacySubagents ? "on" : "off";
 				taskObj.agentAdvisor = agentAdvisor;
 				raw.task = taskObj;
 			}
@@ -2652,7 +3042,8 @@ export class Settings {
 					if (!overrides) continue;
 					for (const agentName in overrides) {
 						const value = overrides[agentName];
-						if (typeof value === "boolean") overrides[agentName] = value ? "on" : "off";
+						if (typeof value === "boolean")
+							overrides[agentName] = value ? "on" : "off";
 					}
 				}
 			}
@@ -2667,7 +3058,7 @@ export class Settings {
 			"autoqa",
 			"consent",
 			"autoqaConsent",
-			value => value === "unset" || value === "granted" || value === "denied",
+			(value) => value === "unset" || value === "granted" || value === "denied",
 		);
 		migrateNestedLeafRename(
 			raw,
@@ -2675,7 +3066,7 @@ export class Settings {
 			"reminders",
 			"max",
 			"remindersMax",
-			value => typeof value === "number" && Number.isFinite(value),
+			(value) => typeof value === "number" && Number.isFinite(value),
 		);
 
 		// BM25 tool discovery removal: tools.discoveryMode / tools.essentialOverride /
@@ -2702,23 +3093,40 @@ export class Settings {
 		// an owned nested key wins even when its value is undefined. Every legacy
 		// key is removed after inspection so it cannot leak back into config.yml.
 		function migrateKindRoleSettings(): void {
-			const providerSettings = isRecord(raw.providers) ? raw.providers : undefined;
+			const providerSettings = isRecord(raw.providers)
+				? raw.providers
+				: undefined;
 			const ttsSettings = isRecord(raw.tts) ? raw.tts : undefined;
 			const sttSettings = isRecord(raw.stt) ? raw.stt : undefined;
-			const legacy = (root: Record<string, unknown> | undefined, key: string, flatKey: string): unknown =>
+			const legacy = (
+				root: Record<string, unknown> | undefined,
+				key: string,
+				flatKey: string,
+			): unknown =>
 				root && Object.hasOwn(root, key) ? root[key] : raw[flatKey];
-			const removeLegacy = (root: Record<string, unknown> | undefined, key: string, flatKey: string): void => {
+			const removeLegacy = (
+				root: Record<string, unknown> | undefined,
+				key: string,
+				flatKey: string,
+			): void => {
 				if (root) delete root[key];
 				delete raw[flatKey];
 			};
-			const dedupe = (values: readonly string[]): string[] => [...new Set(values)];
+			const dedupe = (values: readonly string[]): string[] => [
+				...new Set(values),
+			];
 
 			const roles = isRecord(raw.modelRoles) ? raw.modelRoles : {};
 			const retrySettings = isRecord(raw.retry) ? raw.retry : {};
-			const fallbackChains = isRecord(retrySettings.fallbackChains) ? retrySettings.fallbackChains : {};
+			const fallbackChains = isRecord(retrySettings.fallbackChains)
+				? retrySettings.fallbackChains
+				: {};
 			let rolesChanged = false;
 			let fallbackChainsChanged = false;
-			const setRoleChain = (role: string, candidates: readonly string[]): void => {
+			const setRoleChain = (
+				role: string,
+				candidates: readonly string[],
+			): void => {
 				if (candidates.length === 0) return;
 				if (!Object.hasOwn(roles, role)) {
 					roles[role] = candidates[0];
@@ -2730,11 +3138,30 @@ export class Settings {
 				}
 			};
 
-			const legacyWebSearch = legacy(providerSettings, "webSearch", "providers.webSearch");
-			const legacyWebOrder = legacy(providerSettings, "webSearchOrder", "providers.webSearchOrder");
-			const legacyWebExclude = legacy(providerSettings, "webSearchExclude", "providers.webSearchExclude");
-			const legacyGeminiModel = legacy(providerSettings, "webSearchGeminiModel", "providers.webSearchGeminiModel");
-			const webSelector = (provider: string, geminiModel: string): string | undefined => {
+			const legacyWebSearch = legacy(
+				providerSettings,
+				"webSearch",
+				"providers.webSearch",
+			);
+			const legacyWebOrder = legacy(
+				providerSettings,
+				"webSearchOrder",
+				"providers.webSearchOrder",
+			);
+			const legacyWebExclude = legacy(
+				providerSettings,
+				"webSearchExclude",
+				"providers.webSearchExclude",
+			);
+			const legacyGeminiModel = legacy(
+				providerSettings,
+				"webSearchGeminiModel",
+				"providers.webSearchGeminiModel",
+			);
+			const webSelector = (
+				provider: string,
+				geminiModel: string,
+			): string | undefined => {
 				switch (provider) {
 					case "gemini":
 						return `google/${geminiModel}`;
@@ -2744,18 +3171,23 @@ export class Settings {
 						return "openai-codex/gpt-5.6-luna";
 					case "xai":
 						return "xai/grok-4.5";
+					case "grok":
+						return "web/grok";
 					case "auto":
 						return undefined;
 					default:
-						return MODEL_PRIO.web.includes(`web/${provider}`) ? `web/${provider}` : undefined;
+						return MODEL_PRIO.web.includes(`web/${provider}`)
+							? `web/${provider}`
+							: undefined;
 				}
 			};
 			const geminiModel =
 				typeof legacyGeminiModel === "string" && legacyGeminiModel.trim()
 					? legacyGeminiModel.trim()
 					: "gemini-2.5-flash";
-			const webDefaults = MODEL_PRIO.web.map(selector => {
-				if (selector === "google/gemini-2.5-flash") return `google/${geminiModel}`;
+			const webDefaults = MODEL_PRIO.web.map((selector) => {
+				if (selector === "google/gemini-2.5-flash")
+					return `google/${geminiModel}`;
 				if (selector === "google-antigravity/gemini-2.5-flash") {
 					return `google-antigravity/${geminiModel}`;
 				}
@@ -2765,15 +3197,31 @@ export class Settings {
 				Array.isArray(legacyWebExclude)
 					? legacyWebExclude.filter(
 							(value): value is string =>
-								typeof value === "string" && webSelector(value, geminiModel) !== undefined,
+								typeof value === "string" &&
+								webSelector(value, geminiModel) !== undefined,
 						)
 					: [],
 			);
 			const isWebSelectorExcluded = (selector: string): boolean => {
-				if (excludedWebProviders.has("gemini") && /^(?:google|google-antigravity)\//.test(selector)) return true;
-				if (excludedWebProviders.has("anthropic") && selector.startsWith("anthropic/")) return true;
-				if (excludedWebProviders.has("codex") && selector.startsWith("openai-codex/")) return true;
-				if (excludedWebProviders.has("xai") && (selector.startsWith("xai/") || selector.startsWith("xai-oauth/"))) {
+				if (
+					excludedWebProviders.has("gemini") &&
+					/^(?:google|google-antigravity)\//.test(selector)
+				)
+					return true;
+				if (
+					excludedWebProviders.has("anthropic") &&
+					selector.startsWith("anthropic/")
+				)
+					return true;
+				if (
+					excludedWebProviders.has("codex") &&
+					selector.startsWith("openai-codex/")
+				)
+					return true;
+				if (
+					excludedWebProviders.has("xai") &&
+					(selector.startsWith("xai/") || selector.startsWith("xai-oauth/"))
+				) {
 					return true;
 				}
 				for (const provider of excludedWebProviders) {
@@ -2786,22 +3234,31 @@ export class Settings {
 				: typeof legacyWebSearch === "string" && legacyWebSearch !== "auto"
 					? [legacyWebSearch]
 					: [];
-			const orderedWebSelectors = orderedWebProviders.flatMap(value =>
-				typeof value === "string" ? (webSelector(value, geminiModel) ?? []) : [],
+			const orderedWebSelectors = orderedWebProviders.flatMap((value) =>
+				typeof value === "string"
+					? (webSelector(value, geminiModel) ?? [])
+					: [],
 			);
 			const shouldMigrateWeb =
 				orderedWebSelectors.length > 0 ||
 				excludedWebProviders.size > 0 ||
-				(typeof legacyGeminiModel === "string" && legacyGeminiModel.trim().length > 0);
+				(typeof legacyGeminiModel === "string" &&
+					legacyGeminiModel.trim().length > 0);
 			if (shouldMigrateWeb) {
 				setRoleChain(
 					"web",
-					dedupe([...orderedWebSelectors, ...webDefaults]).filter(selector => !isWebSelectorExcluded(selector)),
+					dedupe([...orderedWebSelectors, ...webDefaults]).filter(
+						(selector) => !isWebSelectorExcluded(selector),
+					),
 				);
 			}
 
 			const legacyImage = legacy(providerSettings, "image", "providers.image");
-			const legacyImageOrder = legacy(providerSettings, "imageOrder", "providers.imageOrder");
+			const legacyImageOrder = legacy(
+				providerSettings,
+				"imageOrder",
+				"providers.imageOrder",
+			);
 			const imageSelector = (provider: string): string | undefined => {
 				switch (provider) {
 					case "openai":
@@ -2827,14 +3284,21 @@ export class Settings {
 				: typeof legacyImage === "string" && legacyImage !== "auto"
 					? [legacyImage]
 					: [];
-			const orderedImageSelectors = orderedImageProviders.flatMap(value =>
+			const orderedImageSelectors = orderedImageProviders.flatMap((value) =>
 				typeof value === "string" ? (imageSelector(value) ?? []) : [],
 			);
 			if (orderedImageSelectors.length > 0) {
-				setRoleChain("image", dedupe([...orderedImageSelectors, ...MODEL_PRIO.image]));
+				setRoleChain(
+					"image",
+					dedupe([...orderedImageSelectors, ...MODEL_PRIO.image]),
+				);
 			}
 
-			const legacyTtsProvider = legacy(providerSettings, "tts", "providers.tts");
+			const legacyTtsProvider = legacy(
+				providerSettings,
+				"tts",
+				"providers.tts",
+			);
 			const speechSelector =
 				legacyTtsProvider === "local"
 					? "local/kokoro"
@@ -2851,7 +3315,8 @@ export class Settings {
 					? "local/whisper-base"
 					: legacySttModel === "balanced" || legacySttModel === "whisper-small"
 						? "local/whisper-small"
-						: legacySttModel === "turbo" || legacySttModel === "whisper-large-v3-turbo"
+						: legacySttModel === "turbo" ||
+								legacySttModel === "whisper-large-v3-turbo"
 							? "local/whisper-large-v3-turbo"
 							: undefined;
 			if (dictationSelector && !Object.hasOwn(roles, "dictation")) {
@@ -2859,45 +3324,78 @@ export class Settings {
 				rolesChanged = true;
 			}
 
-			const legacyJudgmentProvider = legacy(providerSettings, "judgmentProvider", "providers.judgmentProvider");
-			const legacyAutoThinkingModel = legacy(providerSettings, "autoThinkingModel", "providers.autoThinkingModel");
+			const legacyJudgmentProvider = legacy(
+				providerSettings,
+				"judgmentProvider",
+				"providers.judgmentProvider",
+			);
+			const legacyAutoThinkingModel = legacy(
+				providerSettings,
+				"autoThinkingModel",
+				"providers.autoThinkingModel",
+			);
 			const legacyUnexpectedStopModel = legacy(
 				providerSettings,
 				"unexpectedStopModel",
 				"providers.unexpectedStopModel",
 			);
 			const nonDefaultJudge =
-				(typeof legacyJudgmentProvider === "string" && legacyJudgmentProvider !== "auto") ||
-				(typeof legacyAutoThinkingModel === "string" && legacyAutoThinkingModel !== "online") ||
-				(typeof legacyUnexpectedStopModel === "string" && legacyUnexpectedStopModel !== "online");
+				(typeof legacyJudgmentProvider === "string" &&
+					legacyJudgmentProvider !== "auto") ||
+				(typeof legacyAutoThinkingModel === "string" &&
+					legacyAutoThinkingModel !== "online") ||
+				(typeof legacyUnexpectedStopModel === "string" &&
+					legacyUnexpectedStopModel !== "online");
 			if (nonDefaultJudge) {
 				const judgeCandidates: string[] = [];
-				if (legacyJudgmentProvider !== "llm") judgeCandidates.push("typesafe/jev-latest");
-				if (typeof legacyAutoThinkingModel === "string" && legacyAutoThinkingModel !== "online") {
+				if (legacyJudgmentProvider !== "llm")
+					judgeCandidates.push("typesafe/jev-latest");
+				if (
+					typeof legacyAutoThinkingModel === "string" &&
+					legacyAutoThinkingModel !== "online"
+				) {
 					judgeCandidates.push(`local/${legacyAutoThinkingModel}`);
 				}
-				if (typeof legacyUnexpectedStopModel === "string" && legacyUnexpectedStopModel !== "online") {
+				if (
+					typeof legacyUnexpectedStopModel === "string" &&
+					legacyUnexpectedStopModel !== "online"
+				) {
 					judgeCandidates.push(`local/${legacyUnexpectedStopModel}`);
 				}
 				judgeCandidates.push("@tiny", "@smol", "@default");
 				setRoleChain("judge", dedupe(judgeCandidates));
 			}
 
-			const prependLocalRole = (role: "tiny" | "memory", model: unknown): void => {
-				if (typeof model !== "string" || model === "online" || model.length === 0) return;
+			const prependLocalRole = (
+				role: "tiny" | "memory",
+				model: unknown,
+			): void => {
+				if (
+					typeof model !== "string" ||
+					model === "online" ||
+					model.length === 0
+				)
+					return;
 				const selector = `local/${model}`;
-				const configured = typeof roles[role] === "string" ? roles[role] : undefined;
+				const configured =
+					typeof roles[role] === "string" ? roles[role] : undefined;
 				const patterns = configured
 					? configured
 							.split(",")
-							.map(pattern => pattern.trim())
+							.map((pattern) => pattern.trim())
 							.filter(Boolean)
 					: [];
 				roles[role] = dedupe([selector, ...patterns]).join(",");
 				rolesChanged = true;
 			};
-			prependLocalRole("tiny", legacy(providerSettings, "tinyModel", "providers.tinyModel"));
-			prependLocalRole("memory", legacy(providerSettings, "memoryModel", "providers.memoryModel"));
+			prependLocalRole(
+				"tiny",
+				legacy(providerSettings, "tinyModel", "providers.tinyModel"),
+			);
+			prependLocalRole(
+				"memory",
+				legacy(providerSettings, "memoryModel", "providers.memoryModel"),
+			);
 
 			for (const key of [
 				"webSearch",
@@ -2923,7 +3421,8 @@ export class Settings {
 				retrySettings.fallbackChains = fallbackChains;
 				raw.retry = retrySettings;
 			}
-			if (providerSettings && Object.keys(providerSettings).length === 0) delete raw.providers;
+			if (providerSettings && Object.keys(providerSettings).length === 0)
+				delete raw.providers;
 			if (ttsSettings && Object.keys(ttsSettings).length === 0) delete raw.tts;
 			if (sttSettings && Object.keys(sttSettings).length === 0) delete raw.stt;
 		}
@@ -2997,7 +3496,9 @@ export class Settings {
 		try {
 			await Bun.write(markerPath, legacy);
 		} catch (error) {
-			logger.warn("Settings: failed to seed last-changelog-version marker", { error: String(error) });
+			logger.warn("Settings: failed to seed last-changelog-version marker", {
+				error: String(error),
+			});
 		}
 	}
 
@@ -3005,7 +3506,10 @@ export class Settings {
 	// Saving
 	// ─────────────────────────────────────────────────────────────────────────
 
-	async #writeYamlAtomically(filePath: string, settings: RawSettings): Promise<void> {
+	async #writeYamlAtomically(
+		filePath: string,
+		settings: RawSettings,
+	): Promise<void> {
 		const tempPath = `${filePath}.${process.pid}.${randomUUID()}.tmp`;
 		let removeTemp = false;
 		try {
@@ -3034,11 +3538,15 @@ export class Settings {
 		this.#saveTimer = setTimeout(() => {
 			this.#saveTimer = undefined;
 			const previousSave = this.#savePromise;
-			const savePromise = previousSave ? previousSave.then(() => this.#saveNow()) : this.#saveNow();
+			const savePromise = previousSave
+				? previousSave.then(() => this.#saveNow())
+				: this.#saveNow();
 			this.#savePromise = savePromise;
 			savePromise
-				.catch(err => {
-					logger.warn("Settings: background save failed", { error: String(err) });
+				.catch((err) => {
+					logger.warn("Settings: background save failed", {
+						error: String(err),
+					});
 				})
 				.finally(() => {
 					if (this.#savePromise === savePromise) {
@@ -3050,13 +3558,16 @@ export class Settings {
 
 	async #saveNow(): Promise<void> {
 		if (this.#savesCancelled || !this.#persist || !this.#configPath) return;
-		if (this.#modified.size === 0 && this.#modifiedGlobalModelRoles.size === 0) return;
+		if (this.#modified.size === 0 && this.#modifiedGlobalModelRoles.size === 0)
+			return;
 
 		const configPath = this.#configPath;
 		const modifiedPaths = [...this.#modified];
 		const modifiedModelRoles = [...this.#modifiedGlobalModelRoles];
 		const modifiedPathMutations = new Map(this.#modifiedPathMutations);
-		const modifiedModelRoleMutations = new Map(this.#modifiedGlobalModelRoleMutations);
+		const modifiedModelRoleMutations = new Map(
+			this.#modifiedGlobalModelRoleMutations,
+		);
 		const globalRolesAtStart = this.#modelRolesFromLayer(this.#global);
 		const previousSignaledValues = {
 			modelRoles: this.get("modelRoles"),
@@ -3073,13 +3584,19 @@ export class Settings {
 		this.#modifiedGlobalModelRoleMutations.clear();
 
 		try {
-			await this.#withYamlWriteLock(configPath, async writePath => {
+			await this.#withYamlWriteLock(configPath, async (writePath) => {
 				// Re-read to preserve external changes. If this instance moved a
 				// malformed file aside, recover from its last in-memory state
 				// rather than recreating the config from only the pending path.
-				const loaded = await this.#loadYamlIfPresentForWriteLocked(configPath, writePath);
+				const loaded = await this.#loadYamlIfPresentForWriteLocked(
+					configPath,
+					writePath,
+				);
 				const current =
-					loaded.settings ?? (this.#quarantinedYamlTargets.has(configPath) ? structuredClone(this.#global) : {});
+					loaded.settings ??
+					(this.#quarantinedYamlTargets.has(configPath)
+						? structuredClone(this.#global)
+						: {});
 				let shouldWrite = false;
 
 				// Apply pending changes unless a newer file generation also
@@ -3093,10 +3610,13 @@ export class Settings {
 						(yamlGenerationsMatch(mutation.generation, loaded.generation) ||
 							Bun.deepEquals(getByPath(current, segments), mutation.baseValue));
 					if (!canApply) {
-						logger.warn("Settings: skipped stale change after external config edit", {
-							path: configPath,
-							setting: modPath,
-						});
+						logger.warn(
+							"Settings: skipped stale change after external config edit",
+							{
+								path: configPath,
+								setting: modPath,
+							},
+						);
 						continue;
 					}
 					const value = getByPath(this.#global, segments);
@@ -3120,8 +3640,12 @@ export class Settings {
 					}
 				}
 				const currentRoles = getByPath(current, ["modelRoles"]);
-				const currentRoleValues: Record<string, unknown> = isRecord(currentRoles) ? currentRoles : {};
-				const rolesToApply = modifiedModelRoles.filter(role => {
+				const currentRoleValues: Record<string, unknown> = isRecord(
+					currentRoles,
+				)
+					? currentRoles
+					: {};
+				const rolesToApply = modifiedModelRoles.filter((role) => {
 					const mutation = modifiedModelRoleMutations.get(role);
 					const canApply =
 						mutation !== undefined &&
@@ -3129,10 +3653,13 @@ export class Settings {
 						(yamlGenerationsMatch(mutation.generation, loaded.generation) ||
 							Bun.deepEquals(currentRoleValues[role], mutation.baseValue));
 					if (canApply) return true;
-					logger.warn("Settings: skipped stale change after external config edit", {
-						path: configPath,
-						setting: `modelRoles.${role}`,
-					});
+					logger.warn(
+						"Settings: skipped stale change after external config edit",
+						{
+							path: configPath,
+							setting: `modelRoles.${role}`,
+						},
+					);
 					return false;
 				});
 				if (rolesToApply.length > 0 || rolesToPreserve.size > 0) {
@@ -3188,7 +3715,9 @@ export class Settings {
 					};
 					this.#modifiedPathMutations.set(
 						p,
-						retryGeneration ? { ...mutation, generation: retryGeneration } : mutation,
+						retryGeneration
+							? { ...mutation, generation: retryGeneration }
+							: mutation,
 					);
 				}
 			}
@@ -3201,7 +3730,9 @@ export class Settings {
 					};
 					this.#modifiedGlobalModelRoleMutations.set(
 						role,
-						retryGeneration ? { ...mutation, generation: retryGeneration } : mutation,
+						retryGeneration
+							? { ...mutation, generation: retryGeneration }
+							: mutation,
 					);
 				}
 			}
@@ -3212,10 +3743,16 @@ export class Settings {
 		this.#rebuildMerged();
 		const nextModelRoles = this.get("modelRoles");
 		if (!Bun.deepEquals(nextModelRoles, previousSignaledValues.modelRoles)) {
-			this.#fireEffectiveSettingChanged("modelRoles", nextModelRoles, previousSignaledValues.modelRoles);
+			this.#fireEffectiveSettingChanged(
+				"modelRoles",
+				nextModelRoles,
+				previousSignaledValues.modelRoles,
+			);
 		}
 		const nextSessionAccent = this.get("statusLine.sessionAccent");
-		if (!Bun.deepEquals(nextSessionAccent, previousSignaledValues.sessionAccent)) {
+		if (
+			!Bun.deepEquals(nextSessionAccent, previousSignaledValues.sessionAccent)
+		) {
 			this.#fireEffectiveSettingChanged(
 				"statusLine.sessionAccent",
 				nextSessionAccent,
@@ -3239,8 +3776,10 @@ export class Settings {
 			const savePromise = this.#saveProjectNow();
 			this.#projectSavePromise = savePromise;
 			savePromise
-				.catch(err => {
-					logger.warn("Settings: background project save failed", { error: String(err) });
+				.catch((err) => {
+					logger.warn("Settings: background project save failed", {
+						error: String(err),
+					});
 				})
 				.finally(() => {
 					if (this.#projectSavePromise === savePromise) {
@@ -3251,19 +3790,34 @@ export class Settings {
 	}
 
 	async #saveProjectNow(): Promise<void> {
-		if (this.#savesCancelled || !this.#persist || this.#modifiedProjectModelRoles.size === 0) return;
+		if (
+			this.#savesCancelled ||
+			!this.#persist ||
+			this.#modifiedProjectModelRoles.size === 0
+		)
+			return;
 
-		const projectConfigPath = path.join(getProjectAgentDir(this.#cwd), "config.yml");
+		const projectConfigPath = path.join(
+			getProjectAgentDir(this.#cwd),
+			"config.yml",
+		);
 		const modifiedModelRoles = [...this.#modifiedProjectModelRoles];
 		this.#modifiedProjectModelRoles.clear();
 
 		try {
-			await fs.promises.mkdir(path.dirname(projectConfigPath), { recursive: true });
-			await this.#withYamlWriteLock(projectConfigPath, async writePath => {
-				const loaded = await this.#loadYamlIfPresentForWriteLocked(projectConfigPath, writePath);
+			await fs.promises.mkdir(path.dirname(projectConfigPath), {
+				recursive: true,
+			});
+			await this.#withYamlWriteLock(projectConfigPath, async (writePath) => {
+				const loaded = await this.#loadYamlIfPresentForWriteLocked(
+					projectConfigPath,
+					writePath,
+				);
 				const projectSettings =
 					loaded.settings ??
-					(this.#quarantinedYamlTargets.has(projectConfigPath) ? structuredClone(this.#projectFileSettings) : {});
+					(this.#quarantinedYamlTargets.has(projectConfigPath)
+						? structuredClone(this.#projectFileSettings)
+						: {});
 
 				const projectRoles = getByPath(this.#project, ["modelRoles"]);
 				for (const role of modifiedModelRoles) {
@@ -3296,12 +3850,17 @@ export class Settings {
 
 		let filteredRoles: Record<string, unknown> | undefined;
 		for (const role in projectRoles) {
-			if (!Object.hasOwn(projectRoles, role) || modelRoleValueFromUnknown(projectRoles[role]) !== undefined)
+			if (
+				!Object.hasOwn(projectRoles, role) ||
+				modelRoleValueFromUnknown(projectRoles[role]) !== undefined
+			)
 				continue;
 			filteredRoles ??= { ...projectRoles };
 			delete filteredRoles[role];
 		}
-		return filteredRoles ? { ...this.#project, modelRoles: filteredRoles } : this.#project;
+		return filteredRoles
+			? { ...this.#project, modelRoles: filteredRoles }
+			: this.#project;
 	}
 
 	#warnUnknownStatusLineSegments(): void {
@@ -3310,14 +3869,19 @@ export class Settings {
 			for (const segment of getUnknownStatusLineSegments(value)) {
 				if (warnedUnknownStatusLineSegments.has(segment)) continue;
 				warnedUnknownStatusLineSegments.add(segment);
-				logger.warn(`Settings: unknown status line segment ${segment}`, { setting: path });
+				logger.warn(`Settings: unknown status line segment ${segment}`, {
+					setting: path,
+				});
 			}
 		}
 	}
 
 	#rebuildMerged(): void {
 		this.#revision++;
-		this.#merged = this.#deepMerge(this.#deepMerge({}, this.#global), this.#projectSettingsForMerge());
+		this.#merged = this.#deepMerge(
+			this.#deepMerge({}, this.#global),
+			this.#projectSettingsForMerge(),
+		);
 		this.#merged = this.#deepMerge(this.#merged, this.#configOverlay);
 		this.#merged = this.#deepMerge(this.#merged, this.#overrides);
 		this.#resolvedCache.clear();
@@ -3352,7 +3916,10 @@ export class Settings {
 				baseVal !== null &&
 				!Array.isArray(baseVal)
 			) {
-				result[key] = this.#deepMerge(baseVal as RawSettings, override as RawSettings);
+				result[key] = this.#deepMerge(
+					baseVal as RawSettings,
+					override as RawSettings,
+				);
 			} else {
 				result[key] = override;
 			}
@@ -3365,7 +3932,10 @@ export class Settings {
 // Setting Hooks
 // ═══════════════════════════════════════════════════════════════════════════
 
-type SettingHook<P extends SettingPath> = (value: SettingValue<P>, prev: SettingValue<P>) => void;
+type SettingHook<P extends SettingPath> = (
+	value: SettingValue<P>,
+	prev: SettingValue<P>,
+) => void;
 
 /**
  * Minimal change-notification primitive backing the exported `on*Changed`
@@ -3400,34 +3970,45 @@ class SettingSignal<A extends unknown[] = []> {
 			try {
 				cb(...args);
 			} catch (err) {
-				logger.warn(`Settings: ${this.label} hook failed`, { error: String(err) });
+				logger.warn(`Settings: ${this.label} hook failed`, {
+					error: String(err),
+				});
 			}
 		}
 	}
 }
 
 const SETTING_HOOKS: Partial<Record<SettingPath, SettingHook<any>>> = {
-	"theme.dark": value => {
+	"theme.dark": (value) => {
 		if (typeof value === "string") {
 			setAutoThemeMapping("dark", value);
 		}
 	},
-	"theme.light": value => {
+	"theme.light": (value) => {
 		if (typeof value === "string") {
 			setAutoThemeMapping("light", value);
 		}
 	},
-	symbolPreset: value => {
-		if (typeof value === "string" && (value === "unicode" || value === "nerd" || value === "ascii")) {
-			setSymbolPreset(value).catch(err => {
-				logger.warn("Settings: symbolPreset hook failed", { preset: value, error: String(err) });
+	symbolPreset: (value) => {
+		if (
+			typeof value === "string" &&
+			(value === "unicode" || value === "nerd" || value === "ascii")
+		) {
+			setSymbolPreset(value).catch((err) => {
+				logger.warn("Settings: symbolPreset hook failed", {
+					preset: value,
+					error: String(err),
+				});
 			});
 		}
 	},
-	colorBlindMode: value => {
+	colorBlindMode: (value) => {
 		if (typeof value === "boolean") {
-			setColorBlindMode(value).catch(err => {
-				logger.warn("Settings: colorBlindMode hook failed", { enabled: value, error: String(err) });
+			setColorBlindMode(value).catch((err) => {
+				logger.warn("Settings: colorBlindMode hook failed", {
+					enabled: value,
+					error: String(err),
+				});
 			});
 		}
 	},
@@ -3435,91 +4016,107 @@ const SETTING_HOOKS: Partial<Record<SettingPath, SettingHook<any>>> = {
 	// the effective value; reapply so pi-tui renderers gating on the shared flag
 	// track it the same instant path/resource links do. Runtime `/settings` edits
 	// also go through the selector controller to invalidate and repaint live views.
-	"tui.hyperlinks": value => applyHyperlinkSetting(value),
-	"display.hideToolActivity": value => {
-		if (typeof value === "boolean") setChatTranscriptDisplayPreferences({ hideToolActivity: value });
+	"tui.hyperlinks": (value) => applyHyperlinkSetting(value),
+	"display.hideToolActivity": (value) => {
+		if (typeof value === "boolean")
+			setChatTranscriptDisplayPreferences({ hideToolActivity: value });
 	},
-	"read.toolResultPreview": value => {
-		if (typeof value === "boolean") setChatTranscriptDisplayPreferences({ readToolResultPreview: value });
+	"read.toolResultPreview": (value) => {
+		if (typeof value === "boolean")
+			setChatTranscriptDisplayPreferences({ readToolResultPreview: value });
 	},
-	"terminal.showImages": value => {
-		if (typeof value === "boolean") setChatTranscriptDisplayPreferences({ showImages: value });
+	"terminal.showImages": (value) => {
+		if (typeof value === "boolean")
+			setChatTranscriptDisplayPreferences({ showImages: value });
 	},
-	"display.cacheMissMarker": value => {
-		if (typeof value === "boolean") setChatTranscriptDisplayPreferences({ cacheMissMarker: value });
+	"display.cacheMissMarker": (value) => {
+		if (typeof value === "boolean")
+			setChatTranscriptDisplayPreferences({ cacheMissMarker: value });
 	},
-	"display.showTokenUsage": value => {
-		if (typeof value === "boolean") setChatTranscriptDisplayPreferences({ showTokenUsage: value });
+	"display.showTokenUsage": (value) => {
+		if (typeof value === "boolean")
+			setChatTranscriptDisplayPreferences({ showTokenUsage: value });
 	},
-	"display.showTurnTime": value => {
-		if (typeof value === "boolean") setChatTranscriptDisplayPreferences({ showTurnTime: value });
+	"display.showTurnTime": (value) => {
+		if (typeof value === "boolean")
+			setChatTranscriptDisplayPreferences({ showTurnTime: value });
 	},
-	"tui.maxInlineImageColumns": value => {
+	"tui.maxInlineImageColumns": (value) => {
 		if (typeof value === "number") setInlineImageMaxColumns(value);
 	},
-	"tui.maxInlineImageRows": value => {
+	"tui.maxInlineImageRows": (value) => {
 		if (typeof value === "number") setInlineImageMaxRows(value);
 	},
-	"task.showResolvedModelBadge": value => {
+	"task.showResolvedModelBadge": (value) => {
 		if (typeof value === "boolean") setFeedModelBadgeEnabled(value);
 	},
-	"mcp.renderMarkdownResults": value => {
+	"mcp.renderMarkdownResults": (value) => {
 		if (typeof value === "boolean") setMcpRenderMarkdownResults(value);
 	},
-	"display.shimmer": value => {
-		if (value === "classic" || value === "kitt" || value === "disabled") setShimmerMode(value);
+	"display.shimmer": (value) => {
+		if (value === "classic" || value === "kitt" || value === "disabled")
+			setShimmerMode(value);
 	},
-	"composer.shape": value => {
+	"composer.shape": (value) => {
 		if (typeof value === "string") setEditorGapComposerShape(value);
 	},
-	emojiAutocomplete: value => {
+	emojiAutocomplete: (value) => {
 		if (typeof value === "boolean") setEmojiAutocompleteEnabled(value);
 	},
-	"provider.appendOnlyContext": value => {
+	"provider.appendOnlyContext": (value) => {
 		if (typeof value === "string") {
 			appendOnlyModeSignal.fire(value);
 		}
 	},
-	"providers.maxInFlightRequests": value => {
-		configureProviderMaxInFlightRequests(validateProviderMaxInFlightRequests(value));
+	"providers.maxInFlightRequests": (value) => {
+		configureProviderMaxInFlightRequests(
+			validateProviderMaxInFlightRequests(value),
+		);
 	},
-	"task.agentServiceTierOverrides": value => {
+	"task.agentServiceTierOverrides": (value) => {
 		validateAgentServiceTierOverrides(value);
 	},
-	"secrets.enabled": value => {
+	"secrets.enabled": (value) => {
 		configureCredentialRedaction(value === true);
 	},
 	"hindsight.bankId": () => hindsightScopeSignal.fire(),
 	"hindsight.bankIdPrefix": () => hindsightScopeSignal.fire(),
 	"hindsight.scoping": () => hindsightScopeSignal.fire(),
 	extendedContext: () => extendedContextSignal.fire(),
-	"worktree.base": value => {
+	"worktree.base": (value) => {
 		const dir = typeof value === "string" && value.trim() ? value : undefined;
 		// Always call so an unset/empty value clears a previously-applied override.
 		// setWorktreesDir expands `~`, rejects relative paths, and returns the
 		// applied absolute path (or undefined when cleared/rejected).
 		if (dir && !setWorktreesDir(dir)) {
-			logger.warn("Settings: worktree.base must be an absolute or ~-relative path; ignoring", { value: dir });
+			logger.warn(
+				"Settings: worktree.base must be an absolute or ~-relative path; ignoring",
+				{ value: dir },
+			);
 		} else if (!dir) {
 			setWorktreesDir(undefined);
 		}
 	},
 };
 /** Fires when `provider.appendOnlyContext` changes at runtime. */
-const appendOnlyModeSignal = new SettingSignal<[value: string]>("provider.appendOnlyContext");
+const appendOnlyModeSignal = new SettingSignal<[value: string]>(
+	"provider.appendOnlyContext",
+);
 
 /**
  * Subscribe to append-only mode setting changes.
  * Returns an unsubscribe function. Multiple sessions (main + subagents)
  * can register independently without overwriting each other.
  */
-export const onAppendOnlyModeChanged = (cb: (value: string) => void) => appendOnlyModeSignal.on(cb);
+export const onAppendOnlyModeChanged = (cb: (value: string) => void) =>
+	appendOnlyModeSignal.on(cb);
 
 /** Fires when any model role changes at runtime. */
 const modelRolesSignal = new SettingSignal("modelRoles");
 
 /** Subscribe to model role changes. Returns an unsubscribe function. */
-export const onModelRolesChanged: (cb: () => void) => () => void = modelRolesSignal.on.bind(modelRolesSignal);
+export const onModelRolesChanged: (cb: () => void) => () => void =
+	modelRolesSignal.on.bind(modelRolesSignal);
 
 /** Fires when Code Mode activation or its direct keep-set changes at runtime. */
 const codeModeSignal = new SettingSignal("providers.openai-codex.codeMode");
@@ -3549,16 +4146,20 @@ const extendedContextSignal = new SettingSignal("extendedContext");
  * while the setting is off).
  * Returns an unsubscribe function.
  */
-export const onExtendedContextChanged = (cb: () => void) => extendedContextSignal.on(cb);
+export const onExtendedContextChanged = (cb: () => void) =>
+	extendedContextSignal.on(cb);
 
 /** Fires when `statusLine.sessionAccent` changes at runtime. */
-const statusLineSessionAccentSignal = new SettingSignal("statusLine.sessionAccent");
+const statusLineSessionAccentSignal = new SettingSignal(
+	"statusLine.sessionAccent",
+);
 
 /**
  * Subscribe to session-accent setting changes.
  * Returns an unsubscribe function. Callers should re-read settings in the callback.
  */
-export const onStatusLineSessionAccentChanged = (cb: () => void) => statusLineSessionAccentSignal.on(cb);
+export const onStatusLineSessionAccentChanged = (cb: () => void) =>
+	statusLineSessionAccentSignal.on(cb);
 
 /** Fires when any `hindsight.bankId` / `bankIdPrefix` / `scoping` value changes. */
 const hindsightScopeSignal = new SettingSignal("hindsight scope");
@@ -3573,7 +4174,8 @@ const hindsightScopeSignal = new SettingSignal("hindsight scope");
  * Returns an unsubscribe function. The callback receives no arguments — the
  * caller is expected to re-read the relevant settings via `Settings.get`.
  */
-export const onHindsightScopeChanged = (cb: () => void) => hindsightScopeSignal.on(cb);
+export const onHindsightScopeChanged = (cb: () => void) =>
+	hindsightScopeSignal.on(cb);
 
 // ═══════════════════════════════════════════════════════════════════════════
 // Global Singleton
@@ -3596,7 +4198,10 @@ const activeSettingsScope = new AsyncLocalStorage<Settings>();
  * settings for the same project. The async scope supplies that missing session
  * identity without process-global mutation.
  */
-export function withActiveSettings<T>(instance: Settings | undefined, fn: () => T): T {
+export function withActiveSettings<T>(
+	instance: Settings | undefined,
+	fn: () => T,
+): T {
 	return instance ? activeSettingsScope.run(instance, fn) : fn();
 }
 
@@ -3622,13 +4227,18 @@ export function isSettingsInitialized(): boolean {
  * extension execution, the most recently constructed matching instance is the
  * best available scope; an unscoped lookup falls back to the global singleton.
  */
-export function findScopedSettings(cwd?: string, agentDir?: string): Settings | undefined {
+export function findScopedSettings(
+	cwd?: string,
+	agentDir?: string,
+): Settings | undefined {
 	const active = activeSettingsScope.getStore();
 	if (active) return active;
 
 	const wantCwd = cwd === undefined ? undefined : path.normalize(cwd);
-	const wantAgentDir = agentDir === undefined ? undefined : path.normalize(agentDir);
-	if (wantCwd === undefined && wantAgentDir === undefined) return globalInstance ?? undefined;
+	const wantAgentDir =
+		agentDir === undefined ? undefined : path.normalize(agentDir);
+	if (wantCwd === undefined && wantAgentDir === undefined)
+		return globalInstance ?? undefined;
 
 	let found: Settings | undefined;
 	for (const ref of liveSettingsInstances) {
@@ -3687,7 +4297,9 @@ export const settings = new Proxy({} as Settings, {
 			clearBoundSettingsMethods();
 			boundSettingsInstance = globalInstance;
 		}
-		const value = (globalInstance as unknown as Record<PropertyKey, unknown>)[prop];
+		const value = (globalInstance as unknown as Record<PropertyKey, unknown>)[
+			prop
+		];
 		if (typeof value === "function") {
 			const cached = boundSettingsMethods.get(prop);
 			if (cached) return cached;

@@ -6,17 +6,33 @@
  */
 
 import { type } from "@oh-my-pi/omptype";
-import type { AgentTool, AgentToolContext, AgentToolResult, AgentToolUpdateCallback } from "@oh-my-pi/pi-agent-core";
-import type { AuthStorage } from "@oh-my-pi/pi-ai";
-import { modelKind } from "@oh-my-pi/pi-catalog/types";
+import type {
+	AgentTool,
+	AgentToolContext,
+	AgentToolResult,
+	AgentToolUpdateCallback,
+} from "@oh-my-pi/pi-agent-core";
+import type { Api, AuthStorage, Model } from "@oh-my-pi/pi-ai";
+import { modelKind, type WebSearchGrounding } from "@oh-my-pi/pi-catalog/types";
 import { formatAge, prompt } from "@oh-my-pi/pi-utils";
 import { ModelRegistry } from "../../config/model-registry";
-import { resolveModelRoleValue, resolveRoleChain } from "../../config/model-resolver";
+import {
+	type RoleChainCandidate,
+	resolveModelRoleValue,
+	resolveRoleChain,
+} from "../../config/model-resolver";
 import { roleCandidatePool } from "../../config/model-roles";
 import { settings } from "../../config/settings";
-import type { CustomTool, CustomToolContext } from "../../extensibility/custom-tools/types";
-import webSearchSystemPrompt from "../../prompts/system/web-search.md" with { type: "text" };
-import webSearchDescription from "../../prompts/tools/web-search.md" with { type: "text" };
+import type {
+	CustomTool,
+	CustomToolContext,
+} from "../../extensibility/custom-tools/types";
+import webSearchSystemPrompt from "../../prompts/system/web-search.md" with {
+	type: "text",
+};
+import webSearchDescription from "../../prompts/tools/web-search.md" with {
+	type: "text",
+};
 import { discoverAuthStorage } from "../../sdk";
 import type { ToolSession } from "../../tools";
 import { throwIfAborted } from "../../tools/tool-errors";
@@ -29,6 +45,8 @@ import {
 	getSearchProvider,
 	type SearchProvider,
 } from "./provider";
+import { isAnthropicSearchAffinityModel } from "./providers/anthropic-affinity";
+import { isCodexSearchAffinityModel } from "./providers/codex-affinity";
 import { applyQueryConstraints, parseSearchQuery } from "./query";
 import {
 	DEFAULT_WEB_SEARCH_TIMEOUT_SECONDS,
@@ -136,14 +154,47 @@ function hasRenderableSearchContent(response: SearchResponse): boolean {
 	if (response.answer?.trim()) return true;
 	if (response.sources.length > 0) return true;
 	if (response.citations?.length) return true;
-	if (response.relatedQuestions?.some(question => question.trim())) return true;
-	if (response.searchQueries?.some(query => query.trim())) return true;
+	if (response.relatedQuestions?.some((question) => question.trim()))
+		return true;
+	if (response.searchQueries?.some((query) => query.trim())) return true;
 	return false;
+}
+
+/** Grounding transport reused when the running model can host the search itself. */
+function searchAffinity(
+	model: Model<Api> | undefined,
+): WebSearchGrounding | undefined {
+	if (isCodexSearchAffinityModel(model)) return "codex";
+	if (isAnthropicSearchAffinityModel(model)) return "anthropic";
+	return undefined;
+}
+
+/**
+ * Put the running Codex or Claude model ahead of the configured web chain.
+ * Its own provider, endpoint, and credential carry the hosted search; failure
+ * falls through to Grok and the remaining configured providers.
+ */
+function prependSearchAffinity(
+	candidates: RoleChainCandidate[],
+	activeModel: Model<Api> | undefined,
+): RoleChainCandidate[] {
+	const affinity = searchAffinity(activeModel);
+	if (!activeModel || !affinity) return candidates;
+	const affinityModel = { ...activeModel, webSearch: affinity };
+	const route = `${affinityModel.provider}/${affinityModel.id}`;
+	return [
+		{ model: affinityModel, explicit: false },
+		...candidates.filter(
+			(candidate) =>
+				`${candidate.model.provider}/${candidate.model.id}` !== route,
+		),
+	];
 }
 
 interface ExecuteSearchOptions {
 	authStorage: AuthStorage;
 	modelRegistry?: ModelRegistry;
+	activeModel?: Model<Api>;
 	sessionId?: string;
 	signal?: AbortSignal;
 }
@@ -153,17 +204,29 @@ async function executeSearch(
 	_toolCallId: string,
 	params: SearchQueryParams,
 	options: ExecuteSearchOptions,
-): Promise<{ content: Array<{ type: "text"; text: string }>; details: SearchResultDetails }> {
+): Promise<{
+	content: Array<{ type: "text"; text: string }>;
+	details: SearchResultDetails;
+}> {
 	const searchStartedAtMs = performance.now();
 	const { authStorage, sessionId, signal } = options;
-	const modelRegistry = options.modelRegistry ?? new ModelRegistry(authStorage, undefined, { settings });
+	const modelRegistry =
+		options.modelRegistry ??
+		new ModelRegistry(authStorage, undefined, { settings });
 	const pool = roleCandidatePool("web", settings, modelRegistry);
-	const candidates = params.model
+	const configuredCandidates = params.model
 		? (() => {
-				const resolved = resolveModelRoleValue(params.model, pool, { settings });
-				return resolved.model ? [{ model: resolved.model, explicit: true }] : [];
+				const resolved = resolveModelRoleValue(params.model, pool, {
+					settings,
+				});
+				return resolved.model
+					? [{ model: resolved.model, explicit: true }]
+					: [];
 			})()
 		: resolveRoleChain("web", settings, pool);
+	const candidates = params.model
+		? configuredCandidates
+		: prependSearchAffinity(configuredCandidates, options.activeModel);
 
 	const parsedQuery = parseSearchQuery(params.query);
 
@@ -179,7 +242,9 @@ async function executeSearch(
 	try {
 		const configuredSeconds = settings.get("providers.webSearchTimeoutSeconds");
 		if (Number.isFinite(configuredSeconds) && configuredSeconds > 0) {
-			timeoutMs = Math.ceil(Math.min(configuredSeconds, MAX_WEB_SEARCH_TIMEOUT_SECONDS) * 1_000);
+			timeoutMs = Math.ceil(
+				Math.min(configuredSeconds, MAX_WEB_SEARCH_TIMEOUT_SECONDS) * 1_000,
+			);
 		}
 	} catch {
 		// Preserve the default for one-shot callers that do not initialize Settings.
@@ -202,7 +267,9 @@ async function executeSearch(
 			} else if (candidate.model.webSearch) {
 				provider = await getGroundedSearchProvider(candidate.model.webSearch);
 			} else {
-				throw new Error(`Model ${candidate.model.provider}/${candidate.model.id} does not support web search`);
+				throw new Error(
+					`Model ${candidate.model.provider}/${candidate.model.id} does not support web search`,
+				);
 			}
 			lastProvider = provider;
 			const available = candidate.explicit
@@ -249,12 +316,18 @@ async function executeSearch(
 					finalResponse = { ...response, sources: filtered.sources };
 				}
 				for (const label of filtered.dropped) {
-					constraintNotes.push(`no results matched \`${label}\`; the constraint was relaxed`);
+					constraintNotes.push(
+						`no results matched \`${label}\`; the constraint was relaxed`,
+					);
 				}
 			}
 
 			if (!hasRenderableSearchContent(finalResponse)) {
-				throw new SearchProviderError(provider.id, `${provider.label} returned no renderable search content.`, 204);
+				throw new SearchProviderError(
+					provider.id,
+					`${provider.label} returned no renderable search content.`,
+					204,
+				);
 			}
 
 			const text = formatForLLM(finalResponse, constraintNotes, failures);
@@ -275,7 +348,9 @@ async function executeSearch(
 			// summary error), masking the cancellation.
 			throwIfAborted(signal);
 			failedResponseProvider = provider?.id ?? "none";
-			failures.push(createSearchProviderFailure(error, provider ?? candidateMeta));
+			failures.push(
+				createSearchProviderFailure(error, provider ?? candidateMeta),
+			);
 		}
 	}
 
@@ -325,12 +400,22 @@ export async function runSearchQuery(
 	options: {
 		authStorage?: AuthStorage;
 		modelRegistry?: ModelRegistry;
+		activeModel?: Model<Api>;
 		sessionId?: string;
 		signal?: AbortSignal;
 	} = {},
-): Promise<{ content: Array<{ type: "text"; text: string }>; details: SearchResultDetails }> {
-	const createdAuthStorage = options.authStorage || options.modelRegistry ? undefined : await discoverAuthStorage();
-	const authStorage = options.authStorage ?? options.modelRegistry?.authStorage ?? createdAuthStorage;
+): Promise<{
+	content: Array<{ type: "text"; text: string }>;
+	details: SearchResultDetails;
+}> {
+	const createdAuthStorage =
+		options.authStorage || options.modelRegistry
+			? undefined
+			: await discoverAuthStorage();
+	const authStorage =
+		options.authStorage ??
+		options.modelRegistry?.authStorage ??
+		createdAuthStorage;
 	if (!authStorage) {
 		throw new Error("Failed to initialize authentication storage");
 	}
@@ -338,6 +423,7 @@ export async function runSearchQuery(
 		return await executeSearch("cli-web-search", params, {
 			authStorage,
 			modelRegistry: options.modelRegistry,
+			activeModel: options.activeModel,
 			sessionId: options.sessionId,
 			signal: options.signal,
 		});
@@ -351,7 +437,9 @@ export async function runSearchQuery(
  *
  * Supports the configured web model role chain with automatic fallback.
  */
-export class WebSearchTool implements AgentTool<typeof webSearchSchema, SearchResultDetails> {
+export class WebSearchTool
+	implements AgentTool<typeof webSearchSchema, SearchResultDetails>
+{
 	readonly name = "web_search";
 	readonly approval = "read" as const;
 	readonly label = "Web Search";
@@ -375,11 +463,13 @@ export class WebSearchTool implements AgentTool<typeof webSearchSchema, SearchRe
 		_onUpdate?: AgentToolUpdateCallback<SearchResultDetails>,
 		_context?: AgentToolContext,
 	): Promise<AgentToolResult<SearchResultDetails>> {
-		const authStorage = this.#session.authStorage ?? (await discoverAuthStorage());
+		const authStorage =
+			this.#session.authStorage ?? (await discoverAuthStorage());
 		const sessionId = this.#session.getSessionId?.() ?? undefined;
 		return executeSearch(_toolCallId, params, {
 			authStorage,
 			modelRegistry: this.#session.modelRegistry,
+			activeModel: this.#session.getActiveModel?.(),
 			sessionId,
 			signal,
 		});
@@ -387,7 +477,10 @@ export class WebSearchTool implements AgentTool<typeof webSearchSchema, SearchRe
 }
 
 /** Web search tool as CustomTool for consumers embedding the custom-tool API. */
-export const webSearchCustomTool: CustomTool<typeof webSearchSchema, SearchResultDetails> = {
+export const webSearchCustomTool: CustomTool<
+	typeof webSearchSchema,
+	SearchResultDetails
+> = {
 	name: "web_search",
 	label: "Web Search",
 	description: prompt.render(webSearchDescription),
@@ -401,20 +494,28 @@ export const webSearchCustomTool: CustomTool<typeof webSearchSchema, SearchResul
 		ctx: CustomToolContext,
 		signal?: AbortSignal,
 	) {
-		const authStorage = ctx.modelRegistry?.authStorage ?? (await discoverAuthStorage());
+		const authStorage =
+			ctx.modelRegistry?.authStorage ?? (await discoverAuthStorage());
 		const sessionId = ctx.sessionManager.getSessionId();
 		return executeSearch(toolCallId, params, {
 			authStorage,
 			modelRegistry: ctx.modelRegistry,
+			activeModel: ctx.model,
 			sessionId,
 			signal,
 		});
 	},
 };
 
-export function getSearchTools(): CustomTool<typeof webSearchSchema, SearchResultDetails>[] {
+export function getSearchTools(): CustomTool<
+	typeof webSearchSchema,
+	SearchResultDetails
+>[] {
 	return [webSearchCustomTool];
 }
 
 export { getSearchProvider } from "./provider";
-export type { SearchProviderId as SearchProvider, SearchResponse } from "./types";
+export type {
+	SearchProviderId as SearchProvider,
+	SearchResponse,
+} from "./types";

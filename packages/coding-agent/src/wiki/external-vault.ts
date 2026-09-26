@@ -29,7 +29,10 @@ function parse(filePath: string, text: string, fallbackScope: string): VaultNote
 	if (!match) return undefined;
 	const frontmatter = match[1] ?? "";
 	const value = (name: string) =>
-		new RegExp(`^${name}:\\s*(.+)$`, "m").exec(frontmatter)?.[1]?.trim().replace(/^["']|["']$/g, "") ?? "";
+		new RegExp(`^${name}:\\s*(.+)$`, "m")
+			.exec(frontmatter)?.[1]
+			?.trim()
+			.replace(/^["']|["']$/g, "") ?? "";
 	const body = text.slice(match[0].length).trim();
 	const id = value("id");
 	if (!id) return undefined;
@@ -67,20 +70,19 @@ async function files(dir: string): Promise<string[]> {
 export class ExternalVault {
 	constructor(readonly root: string) {}
 
-	async append(input: {
-		content: string;
-		context?: string;
-		scope: string;
-		type?: string;
-	}): Promise<VaultWrite> {
+	async append(input: { content: string; context?: string; scope: string; type?: string }): Promise<VaultWrite> {
 		const created = new Date();
-		const stamp = created.toISOString().replace(/[-:]/g, "").replace(/\.\d{3}Z$/, "Z");
+		const stamp = created
+			.toISOString()
+			.replace(/[-:]/g, "")
+			.replace(/\.\d{3}Z$/, "Z");
 		const id = `v-${crypto.randomUUID()}`;
-		const slug = input.content
-			.toLowerCase()
-			.replace(/[^a-z0-9]+/g, "-")
-			.replace(/^-|-$/g, "")
-			.slice(0, 40) || "note";
+		const slug =
+			input.content
+				.toLowerCase()
+				.replace(/[^a-z0-9]+/g, "-")
+				.replace(/^-|-$/g, "")
+				.slice(0, 40) || "note";
 		const scopeDir = path.join(this.root, "raw", "inbox", input.scope);
 		await fs.mkdir(scopeDir, { recursive: true });
 		const filePath = path.join(scopeDir, `${stamp}-${slug}.md`);

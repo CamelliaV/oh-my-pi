@@ -7,6 +7,8 @@ import { memoryBackendCapabilities } from "../memory-backend/types";
 import recallDescription from "../prompts/tools/recall.md" with { type: "text" };
 import type { ToolSession } from ".";
 
+import { cfgMemoryBackend } from "../memory-backend/settings";
+
 const memoryRecallSchema = type({
 	query: type("string").describe("natural language search query"),
 });
@@ -26,7 +28,7 @@ export class MemoryRecallTool implements AgentTool<typeof memoryRecallSchema> {
 	constructor(private readonly session: ToolSession) {}
 
 	static createIf(session: ToolSession): MemoryRecallTool | null {
-		const backend = session.settings.get("memory.backend");
+		const backend = cfgMemoryBackend.get(session.settings);
 		if (!memoryBackendCapabilities[backend].searchable) return null;
 		if (backend === "hindsight" && !isHindsightConfigured(loadHindsightConfig(session.settings))) return null;
 		return new MemoryRecallTool(session);

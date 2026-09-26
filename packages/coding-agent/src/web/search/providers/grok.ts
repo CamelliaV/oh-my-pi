@@ -32,7 +32,12 @@
 import type { AuthStorage, Model } from "@oh-my-pi/pi-ai";
 import { $env } from "@oh-my-pi/pi-utils";
 import type { ModelRegistry } from "../../../config/model-registry";
-import { settings } from "../../../config/settings";
+import { settings, type Settings } from "../../../config/settings";
+import {
+	cfgProvidersWebSearchGrokBaseUrl,
+	cfgProvidersWebSearchGrokModel,
+	cfgProvidersWebSearchGrokProvider,
+} from "../../../session/settings";
 import type { SearchResponse } from "../../../web/search/types";
 import { SearchProviderError } from "../../../web/search/types";
 import type { SearchParams } from "./base";
@@ -51,14 +56,9 @@ const GROK_WEB_SEARCH_REASONING_EFFORT = "low";
 const GROK_SEARCH_MISSING_KEY_HINT =
 	'Grok relay search needs an API key. Set GROK_SEARCH_API_KEY, store one for provider "grok-search", or declare the models.yml provider holding it via providers.webSearchGrokProvider.';
 
-function readSetting(
-	path:
-		| "providers.webSearchGrokBaseUrl"
-		| "providers.webSearchGrokModel"
-		| "providers.webSearchGrokProvider",
-): string | undefined {
+function readSetting(handle: { get: (settings: Settings) => string | undefined }): string | undefined {
 	try {
-		const value = settings.get(path);
+		const value = handle.get(settings);
 		return typeof value === "string" && value.trim() ? value.trim() : undefined;
 	} catch {
 		return undefined;
@@ -67,25 +67,17 @@ function readSetting(
 
 /** Declared models.yml provider name whose apiKey/headers the channel borrows (e.g. `wong`). */
 function resolveGrokProviderName(): string | undefined {
-	return (
-		readSetting("providers.webSearchGrokProvider") ??
-		($env.GROK_SEARCH_PROVIDER?.trim() || undefined)
-	);
+	return readSetting(cfgProvidersWebSearchGrokProvider) ?? ($env.GROK_SEARCH_PROVIDER?.trim() || undefined);
 }
 
 /** Declared relay base URL (OpenAI-Responses-compatible, `/responses` is appended). */
 export function resolveGrokBaseUrl(): string | undefined {
-	return (
-		readSetting("providers.webSearchGrokBaseUrl") ??
-		($env.GROK_SEARCH_BASE_URL?.trim() || undefined)
-	);
+	return readSetting(cfgProvidersWebSearchGrokBaseUrl) ?? ($env.GROK_SEARCH_BASE_URL?.trim() || undefined);
 }
 
 /** Declared wire model id. */
 export function resolveGrokSearchModel(): string {
-	const configured =
-		readSetting("providers.webSearchGrokModel") ??
-		$env.GROK_SEARCH_MODEL?.trim();
+	const configured = readSetting(cfgProvidersWebSearchGrokModel) ?? $env.GROK_SEARCH_MODEL?.trim();
 	return configured || DEFAULT_GROK_SEARCH_MODEL;
 }
 
@@ -115,10 +107,7 @@ function resolveGrokSearchKey(params: GrokSearchCredentialParams) {
 function hasGrokSearchCredential(authStorage: AuthStorage): boolean {
 	if ($env.GROK_SEARCH_API_KEY?.trim()) return true;
 	const declaredProvider = resolveGrokProviderName();
-	return (
-		authStorage.keys.source(declaredProvider ?? GROK_SEARCH_AUTH_PROVIDER) !==
-		undefined
-	);
+	return authStorage.keys.source(declaredProvider ?? GROK_SEARCH_AUTH_PROVIDER) !== undefined;
 }
 
 /** Search provider for Grok hosted search through a declared relay endpoint. */

@@ -35,7 +35,6 @@ export interface SessionUsageSnapshot {
 	requests: number;
 }
 
-
 // the bubble. That clears the input state without reintroducing the grouping
 // problem the marker was originally omitted to avoid: the command zone opens
 // and finishes inside this component, so later assistant/tool output can never
@@ -52,6 +51,8 @@ export interface UserBubbleOptions {
 	imageLinks?: readonly (string | undefined)[];
 	/** Agent-attributed input: dim, flat prose. */
 	synthetic?: boolean;
+	/** Delivered into the response that was streaming; marked `*` at the bubble's top-left. */
+	liveSteered?: boolean;
 	/** SKILL.md path for a skill chip by name; `undefined` leaves the chip unlinked. */
 	skillPath?: (name: string) => string | undefined;
 	/** Cumulative session usage snapshot rendered as a dedicated row in the card. */
@@ -125,7 +126,8 @@ export function userBubbleColor(
 
 /**
  * Component that renders a user message. Accepts an agent reaction badge
- * (see {@link ReactionTarget}) drawn right-aligned in the bubble's top padding row.
+ * (see {@link ReactionTarget}) drawn right-aligned in the bubble's top padding row;
+ * a live-steered message carries a `*` marker left-aligned in the same row.
  */
 export class UserMessageComponent extends Container implements ReactionTarget {
 	// Memoized OSC 133 zone wrapping keyed on the underlying container render
@@ -147,6 +149,7 @@ export class UserMessageComponent extends Container implements ReactionTarget {
 	#blockVersion = 0;
 	#imageStrip: ImageStrip | undefined;
 	readonly #bgColor: (value: string) => string;
+	readonly #liveSteered: boolean;
 	#reaction: string | undefined;
 
 	constructor(text: string, options: UserBubbleOptions = {}) {
@@ -166,6 +169,7 @@ export class UserMessageComponent extends Container implements ReactionTarget {
 		});
 		const bgColor = (value: string) => theme.bg("userMessageBg", value);
 		this.#bgColor = bgColor;
+		this.#liveSteered = options.liveSteered === true;
 		const md = new Markdown(text, 1, 1, getMarkdownTheme(), {
 			bgColor,
 			color: userBubbleColor(options, composerTokenRegex(mentionLabels)),
@@ -254,17 +258,15 @@ export class UserMessageComponent extends Container implements ReactionTarget {
 		this.invalidate();
 	}
 
-	/** Reaction badge row drawn inside the frame, right-aligned in its interior. */
-	#reactionRow(width: number): string {
-		const vertical = theme.boxRound.vertical;
-		const emoji = this.#reaction!;
-		const interior = Math.max(0, width - vertical.length * 2);
-		const pad = Math.max(0, interior - visibleWidth(emoji) - 1);
-		return (
-			theme.fg("borderAccent", vertical) +
-			this.#bgColor(" ".repeat(pad) + emoji) +
-			theme.fg("borderAccent", vertical)
-		);
+	/**
+	 * The top padding row: the live-steering marker left-aligned and the reaction
+	 * badge right-aligned, both inside the horizontal padding.
+	 */
+	#badgeRow(width: number): string {
+		const marker = this.#liveSteered ? theme.fg("accent", "*") : "";
+		const emoji = this.#reaction ?? "";
+		const gap = Math.max(0, width - 2 - visibleWidth(marker) - visibleWidth(emoji));
+		return applyBackgroundToLine(` ${marker}${padding(gap)}${emoji}`, width, this.#bgColor);
 	}
 
 	override render(width: number): readonly string[] {
@@ -276,9 +278,7 @@ export class UserMessageComponent extends Container implements ReactionTarget {
 			return this.#zoneLines;
 		}
 		const wrapped = lines.slice();
-		if (this.#reaction !== undefined && wrapped.length > 1) {
-			wrapped.splice(1, 0, this.#reactionRow(width));
-		}
+		if (this.#reaction !== undefined || this.#liveSteered) wrapped[0] = this.#badgeRow(width);
 		wrapped[0] = OSC133_ZONE_START + wrapped[0];
 		wrapped[wrapped.length - 1] = wrapped[wrapped.length - 1] + OSC133_ZONE_CLOSE;
 		this.#zoneSource = lines;

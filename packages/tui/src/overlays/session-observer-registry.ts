@@ -140,7 +140,6 @@ function executionStatus(execution: SubagentExecutionState): ObservableSession["
 	}
 }
 
-
 function progressStatus(progress: AgentProgress): ObservableSession["status"] {
 	return progress.status === "running" || progress.status === "pending" ? "active" : progress.status;
 }
@@ -289,7 +288,9 @@ export function presentSubagentExecution(
 				: `无新进展 ${duration(snapshotNow - progressAt)}${execution.lastProgress ? ` · 上次：${execution.lastProgress}` : ""}`,
 		);
 		if (expanded || silent)
-			add(`无新活动 ${duration(activityAge)}${silent && activityAge >= STALE_HINT_MS ? " · 疑似停滞，尚未确认" : ""}`);
+			add(
+				`无新活动 ${duration(activityAge)}${silent && activityAge >= STALE_HINT_MS ? " · 疑似停滞，尚未确认" : ""}`,
+			);
 	}
 	if (failed || stoppedHistory) {
 		const stoppedAge = execution?.stoppedAt !== undefined ? duration(now - execution.stoppedAt) : "unknown duration";

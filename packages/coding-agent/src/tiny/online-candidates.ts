@@ -9,6 +9,9 @@ import {
 	resolveRetryFallbackChainKey,
 } from "../session/retry-fallback-chains";
 
+import { cfgRetryFallbackChains, cfgRetryModelFallback } from "../session/settings";
+import { expandDefaultRetryFallbackChains } from "../session/retry-fallback-chains";
+
 /** Role-resolved model used by online tiny tasks (auto-thinking, titles). */
 export interface OnlineTinyCandidate {
 	role: string;
@@ -128,7 +131,7 @@ export function collectOnlineTinyCandidates(
 	};
 
 	// Retain every role even if primaries coincide: their fallback chains can differ.
-	const fallbackEnabled = settings.get("retry.modelFallback") !== false;
+	const fallbackEnabled = cfgRetryModelFallback.get(settings) !== false;
 	const primaries: OnlineTinyCandidate[] = [];
 	for (const role of roles) {
 		const resolved = resolveRoleSelection([role], settings, availableModels);
@@ -139,13 +142,12 @@ export function collectOnlineTinyCandidates(
 	}
 	if (!fallbackEnabled) return out;
 
-	const configuredChains = settings.get("retry.fallbackChains");
-	const chains = expandRetryFallbackChains(
+	const configuredChains = cfgRetryFallbackChains.get(settings);
+	const chains = expandDefaultRetryFallbackChains(
 		configuredChains && typeof configuredChains === "object" && !Array.isArray(configuredChains)
 			? configuredChains
 			: {},
 		roles,
-		role => settings.getModelRole(role),
 	);
 	if (Object.keys(chains).length === 0) return out;
 
@@ -182,9 +184,9 @@ export function expandOnlineTinyModelFallbacks(
 ): Model<Api>[] {
 	const seen = new Set<string>([candidateKey(model)]);
 	const out: OnlineTinyCandidate[] = [{ role: "current", model }];
-	if (settings.get("retry.modelFallback") === false) return [model];
+	if (cfgRetryModelFallback.get(settings) === false) return [model];
 
-	const configuredChains = settings.get("retry.fallbackChains");
+	const configuredChains = cfgRetryFallbackChains.get(settings);
 	if (!configuredChains || typeof configuredChains !== "object") return [model];
 
 	const context = createFallbackContext(configuredChains, settings, availableModels);

@@ -12,6 +12,8 @@ import {
 import { resolveConfiguredModelPatterns, resolveModelRoleValue } from "../config/model-resolver";
 import { getRoleInfo, isKindRole } from "../config/model-roles";
 
+import { cfgRetryFallbackChains, cfgRetryFallbackRevertPolicy } from "./settings";
+
 /** Configured fallback chains keyed by role or model selector. */
 export type RetryFallbackChains = Record<string, string[]>;
 
@@ -183,7 +185,7 @@ export function expandRetryFallbackChains(
 
 /** Resolves configured fallback chains, applying role-list tails and the default chain. */
 export function getRetryFallbackChains(settings: Settings): RetryFallbackChains {
-	const configuredChains = settings.get("retry.fallbackChains");
+	const configuredChains = cfgRetryFallbackChains.get(settings);
 	if (!configuredChains || typeof configuredChains !== "object") return {};
 	return expandRetryFallbackChains(configuredChains, Object.keys(settings.getModelRoles()), role =>
 		settings.getModelRole(role),
@@ -225,7 +227,7 @@ export function validateRetryFallbackChains(
 	warn: (message: string) => void,
 	options: { isDiscoveryPending?: (provider: string) => boolean } = {},
 ): void {
-	const configuredChains = settings.get("retry.fallbackChains");
+	const configuredChains = cfgRetryFallbackChains.get(settings);
 	if (configuredChains === undefined) return;
 	const report = warn;
 	const isDiscoveryPending = options.isDiscoveryPending ?? (() => false);
@@ -316,7 +318,7 @@ export function validateRetryFallbackChains(
 
 /** Returns the configured fallback-primary restoration policy. */
 export function getRetryFallbackRevertPolicy(settings: Settings): RetryFallbackRevertPolicy {
-	return settings.get("retry.fallbackRevertPolicy") === "never" ? "never" : "cooldown-expiry";
+	return cfgRetryFallbackRevertPolicy.get(settings) === "never" ? "never" : "cooldown-expiry";
 }
 
 /** Resolves the primary selector represented by a fallback-chain key. */

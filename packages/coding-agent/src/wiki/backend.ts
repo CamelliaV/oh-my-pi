@@ -12,6 +12,7 @@ import {
 import vaultInstructions from "../prompts/wiki/vault-instructions.md" with { type: "text" };
 import type { AgentSession } from "../session/agent-session";
 import { EXTERNAL_WIKI_VAULT, ExternalVault, type VaultNote } from "./external-vault";
+import { cfgWikiIncludeGlobal } from "./settings";
 
 const vaults = new WeakMap<AgentSession, ExternalVault>();
 
@@ -48,7 +49,7 @@ function requireVault(session: AgentSession | undefined): ExternalVault {
 }
 
 function includeGlobalFor(session: AgentSession | undefined): boolean {
-	return session?.settings.get("wiki.includeGlobal") ?? true;
+	return session ? cfgWikiIncludeGlobal.get(session.settings) : true;
 }
 
 async function readVault(

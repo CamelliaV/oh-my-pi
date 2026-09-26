@@ -62,7 +62,6 @@ function formatFailureRecord(failure: SearchRenderFailure): string {
 	return `${failure.label}: ${failure.message}${status}`;
 }
 
-
 function renderFallbackText(contentText: string, expanded: boolean, theme: Theme): Component {
 	const lines = contentText.split("\n").filter(line => line.trim());
 	const maxLines = expanded ? lines.length : 6;

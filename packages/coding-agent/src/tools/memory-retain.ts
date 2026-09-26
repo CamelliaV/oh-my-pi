@@ -7,6 +7,8 @@ import { memoryBackendCapabilities } from "../memory-backend/types";
 import retainDescription from "../prompts/tools/retain.md" with { type: "text" };
 import type { ToolSession } from ".";
 
+import { cfgMemoryBackend } from "../memory-backend/settings";
+
 const memoryRetainSchema = type({
 	items: type({
 		content: type("string").describe("information to remember"),
@@ -32,7 +34,7 @@ export class MemoryRetainTool implements AgentTool<typeof memoryRetainSchema, Me
 	constructor(private readonly session: ToolSession) {}
 
 	static createIf(session: ToolSession): MemoryRetainTool | null {
-		const backend = session.settings.get("memory.backend");
+		const backend = cfgMemoryBackend.get(session.settings);
 		if (!memoryBackendCapabilities[backend].retainable) return null;
 		if (backend === "hindsight" && !isHindsightConfigured(loadHindsightConfig(session.settings))) return null;
 		return new MemoryRetainTool(session);

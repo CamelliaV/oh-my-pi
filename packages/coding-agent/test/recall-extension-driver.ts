@@ -69,7 +69,9 @@ const ctx = {
 async function run(name: string, params: Record<string, unknown>): Promise<void> {
 	const target = tools.get(name);
 	if (!target) throw new Error(`${name} was not registered`);
-	console.log(`--- ${name} (loadMode=${target.loadMode} approval=${target.approval}) params=${JSON.stringify(params)}`);
+	console.log(
+		`--- ${name} (loadMode=${target.loadMode} approval=${target.approval}) params=${JSON.stringify(params)}`,
+	);
 	const started = performance.now();
 	const result = await target.execute("driver", params, undefined, undefined, ctx);
 	const text = result.content
@@ -163,7 +165,8 @@ async function checkLineage(sampleSize: number): Promise<void> {
 		}
 		const parents = new Map<string, string | null>();
 		for (const entry of truth) {
-			if (typeof entry.id === "string") parents.set(entry.id, typeof entry.parentId === "string" ? entry.parentId : null);
+			if (typeof entry.id === "string")
+				parents.set(entry.id, typeof entry.parentId === "string" ? entry.parentId : null);
 		}
 		let link: string | undefined = typeof leaf === "string" ? leaf : undefined;
 		let depth = 0;
@@ -192,10 +195,13 @@ if (argv[0] === "--lineage") {
 	await run(tool, params);
 	if (tool === "history_search" && params.expand === undefined) {
 		const firstUser = branch.find(entry => (entry.message as { role?: string } | undefined)?.role === "user");
-		if (typeof firstUser?.id === "string") await run("history_search", { expand: [firstUser.id], include_images: true });
+		if (typeof firstUser?.id === "string")
+			await run("history_search", { expand: [firstUser.id], include_images: true });
 	}
 	if (tool === "session_search" && params.expand === undefined) {
-		const hits = await tools.get("session_search")?.execute("driver", { query: String(params.query ?? "") }, undefined, undefined, ctx);
+		const hits = await tools
+			.get("session_search")
+			?.execute("driver", { query: String(params.query ?? "") }, undefined, undefined, ctx);
 		const first = hits?.content
 			.filter(block => block.type === "text")
 			.map(block => block.text ?? "")
@@ -204,4 +210,3 @@ if (argv[0] === "--lineage") {
 		if (first) await run("session_search", { expand: [first] });
 	}
 }
-

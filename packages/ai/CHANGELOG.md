@@ -15,6 +15,26 @@
 - Anthropic user turns always serialize as content blocks, so a message no longer changes wire shape depending on whether it holds the rolling prompt-cache anchor — previously each user turn rewrote a byte inside the cached prefix, truncating the reusable region at that point.
 - Fixed Bun's `unknown certificate verification error` (a transient relay/MITM-proxy TLS handshake blip) being classified as terminal, so provider streams now auto-retry it like `tls: bad record MAC`; the config-level `tls: failed to verify certificate` wording stays non-retryable.
 - Fixed Codex (ChatGPT-subscription) turns dying on `invalid_prompt` moderation false positives — the backend spuriously flags long code-laden prompts, so those failure events now retry instead of aborting the turn.
+## [18.3.2] - 2026-09-25
+
+### Fixed
+
+- Fixed capped Anthropic and Bedrock Claude requests with thinking enabled, including on-demand compaction, ending at `max_tokens` with no answer; every capped request now gets its effort's thinking budget on top of the requested output ([#13300](https://github.com/can1357/oh-my-pi/pull/13300) by [@alphastorm](https://github.com/alphastorm))
+
+## [18.3.1] - 2026-09-25
+
+### Added
+
+- Added live steering support for GPT-6 models, allowing queued user messages to be delivered during an active streaming response.
+- Added the `anthropicSlowMode` stream option for first-party Claude OAuth requests, enabling slow-mode rate-limit handling, per-account rate-limit reporting, and server-paced retries during capacity limits.
+- Added support for capturing and redeeming Anthropic fallback credit tokens, including prompt-cache repricing for classifier refusals.
+- Added Vercel AI Gateway app attribution by sending `http-referer: https://omp.sh/` and `x-title: omp` by default; user-provided header values take precedence.
+
+### Fixed
+
+- Fixed account selection for OpenCode Go and SuperGrok (xai-oauth) so accounts without available funds or included quota are skipped in favor of eligible accounts.
+- Improved visibility into automatically disabled authentication credentials by logging a warning and including the affected account details in credential-disabled events.
+
 ## [18.3.0] - 2026-09-24
 
 ### Added

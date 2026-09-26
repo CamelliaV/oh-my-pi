@@ -26,6 +26,11 @@ import { SearchProviderError } from "@oh-my-pi/pi-coding-agent/web/search/types"
 import { type SearchProviderId, type SearchResponse } from "@oh-my-pi/pi-coding-agent/web/search/types";
 import { createInMemoryAuthStorage } from "../../helpers/agent-session-setup";
 
+import {
+	cfgProvidersWebSearchTimeoutSeconds,
+	cfgRetryFallbackChains,
+} from "@oh-my-pi/pi-coding-agent/session/settings";
+
 const openAuthStorages: AuthStorage[] = [];
 
 function createSearchContext(modelProvider: string, modelId: string) {
@@ -167,7 +172,7 @@ describe("executeSearch abort propagation", () => {
 		if (!primary) throw new Error("Provider chain must contain a primary candidate");
 		const config = await Settings.init({ inMemory: true });
 		config.setModelRole("web", `web/${primary.id}`);
-		config.set("retry.fallbackChains", { web: providers.slice(1).map(candidate => `web/${candidate.id}`) });
+		cfgRetryFallbackChains.set(config, { web: providers.slice(1).map(candidate => `web/${candidate.id}`) });
 		const authStorage = createInMemoryAuthStorage();
 		openAuthStorages.push(authStorage);
 		const modelRegistry = new ModelRegistry(authStorage, undefined, { settings: config });
@@ -192,8 +197,8 @@ describe("executeSearch abort propagation", () => {
 		]);
 		const config = await Settings.init({ inMemory: true });
 		config.setModelRole("web", "web/brave");
-		config.set("retry.fallbackChains", { web: [] });
-		config.set("providers.webSearchTimeoutSeconds", 180);
+		cfgRetryFallbackChains.set(config, { web: [] });
+		cfgProvidersWebSearchTimeoutSeconds.set(config, 180);
 
 		const result = await runSearchQuery({ query: "anything" }, context);
 
@@ -214,8 +219,8 @@ describe("executeSearch abort propagation", () => {
 		]);
 		const config = await Settings.init({ inMemory: true });
 		config.setModelRole("web", "web/brave");
-		config.set("retry.fallbackChains", { web: [] });
-		config.set("providers.webSearchTimeoutSeconds", 600);
+		cfgRetryFallbackChains.set(config, { web: [] });
+		cfgProvidersWebSearchTimeoutSeconds.set(config, 600);
 
 		await runSearchQuery({ query: "anything" }, context);
 
@@ -235,8 +240,8 @@ describe("executeSearch abort propagation", () => {
 		]);
 		const config = await Settings.init({ inMemory: true });
 		config.setModelRole("web", "web/brave");
-		config.set("retry.fallbackChains", { web: [] });
-		config.set("providers.webSearchTimeoutSeconds", 0);
+		cfgRetryFallbackChains.set(config, { web: [] });
+		cfgProvidersWebSearchTimeoutSeconds.set(config, 0);
 
 		await runSearchQuery({ query: "anything" }, context);
 

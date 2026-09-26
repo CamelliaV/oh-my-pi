@@ -54,7 +54,9 @@ describe("applyMcpToggleRuntime", () => {
 			loadConfigs: async () => ({
 				configs: { github: { command: "github-mcp-server" } },
 				sources: {},
-				exaApiKeys: [], lazyConfigs: {}, lazySources: {},
+				exaApiKeys: [],
+				lazyConfigs: {},
+				lazySources: {},
 			}),
 			manager: {
 				getConnectionStatus: () => "disconnected",

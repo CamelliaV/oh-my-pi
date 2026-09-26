@@ -5,6 +5,8 @@ import { memoryBackendCapabilities } from "../memory-backend/types";
 import memoryEditDescription from "../prompts/tools/memory-edit.md" with { type: "text" };
 import type { ToolSession } from ".";
 
+import { cfgMemoryBackend } from "../memory-backend/settings";
+
 const memoryEditSchema = type({
 	op: type("'update' | 'forget' | 'invalidate'").describe("memory edit operation"),
 	id: type("string").describe("memory id from recall output"),
@@ -28,7 +30,7 @@ export class MemoryEditTool implements AgentTool<typeof memoryEditSchema> {
 	constructor(private readonly session: ToolSession) {}
 
 	static createIf(session: ToolSession): MemoryEditTool | null {
-		if (!memoryBackendCapabilities[session.settings.get("memory.backend")].editable) return null;
+		if (!memoryBackendCapabilities[cfgMemoryBackend.get(session.settings)].editable) return null;
 		return new MemoryEditTool(session);
 	}
 

@@ -112,12 +112,7 @@ export class CredentialSelector {
 	 * Without sessionId: starts from round-robin index (load balancing).
 	 * Order wraps around so all credentials are tried if earlier ones are blocked.
 	 */
-	#getCredentialOrder(
-		providerKey: string,
-		sessionId: string | undefined,
-		total: number,
-		startAt?: number,
-	): number[] {
+	#getCredentialOrder(providerKey: string, sessionId: string | undefined, total: number, startAt?: number): number[] {
 		if (total <= 1) return [0];
 		const start =
 			startAt !== undefined

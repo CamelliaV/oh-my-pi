@@ -101,6 +101,8 @@ All outlined chrome — tool-result frames, markdown code blocks, overlays, the 
 
 A fenced code block renders as one of those frames: the language rides the top bar, a line-number gutter runs down the body (continuation rows leave the gutter blank), and `mdCodeBlockBorder` paints every frame cell — the gutter included. A too-narrow content area falls back to bare fence lines.
 
+Headings carry no `#` marker at any depth — `mdHeading` paints every level, and depth reads off weight instead: H1 doubles in size (OSC 66) and is bold+underlined, H2 bold, H3 plain, H4+ italic.
+
 Override behavior follows from that split:
 
 - `boxRound.{topLeft,topRight,bottomLeft,bottomRight,horizontal,vertical}` restyle every border's corners and edges.

@@ -2968,7 +2968,6 @@ export class Markdown implements Component {
 		switch (token.type) {
 			case "heading": {
 				const headingLevel = token.depth;
-				const headingPrefix = `${"#".repeat(headingLevel)} `;
 				const headingText = this.#renderInlineTokens(token.tokens || [], styleContext);
 				const headingPlainText = plainInlineTokens(token.tokens || []);
 				let styledHeading: string;
@@ -2988,8 +2987,13 @@ export class Markdown implements Component {
 					styledHeading = this.#theme.heading(this.#theme.bold(this.#theme.underline(headingText)));
 				} else if (headingLevel === 2) {
 					styledHeading = this.#theme.heading(this.#theme.bold(headingText));
+				} else if (headingLevel === 3) {
+					styledHeading = this.#theme.heading(headingText);
 				} else {
-					styledHeading = this.#theme.heading(this.#theme.bold(headingPrefix + headingText));
+					// No `#` prefix at any depth: the rendered line is a heading, not
+					// its source. Depth reads off weight instead — H1 doubles in size
+					// (OSC 66), H2–H3 are bold and plain, H4+ italic.
+					styledHeading = this.#theme.heading(this.#theme.italic(headingText));
 				}
 				lines.push(renderedLine(styledHeading));
 				if (nextTokenType && nextTokenType !== "space") {

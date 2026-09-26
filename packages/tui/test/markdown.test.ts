@@ -1139,6 +1139,18 @@ This is a paragraph`,
 
 			expect(plainLines.at(-1)).not.toBe("");
 		});
+
+		it("renders every heading depth as a heading, never as its `#` source", () => {
+			const source = ["# One", "## Two", "### Three", "#### Four", "##### Five", "###### Six"].join("\n\n");
+			const plainLines = new Markdown(source, 0, 0, defaultMarkdownTheme)
+				.render(80)
+				.map(line => stripVTControlCharacters(line).trimEnd());
+			const headings = plainLines.filter(line => line !== "");
+
+			// Depth is carried by weight, not by a source marker: the rendered rows
+			// are the heading text alone, so a reader never sees `### ` echoed back.
+			expect(headings).toEqual(["One", "Two", "Three", "Four", "Five", "Six"]);
+		});
 	});
 
 	describe("Spacing after blockquotes", () => {

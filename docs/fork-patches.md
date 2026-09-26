@@ -785,6 +785,28 @@ reasoning matters.
    columns, through streaming `setText` frames, through the `read` tool's
    markdown cell, and at widths 72/30/14/8 — no row exceeds its width.
 
+33. `feat(tui)` headings render without their `#` source markers at any
+   depth — upstream drew H1 as OSC 66 double-size, H2 as bold heading color,
+   and every deeper level as `heading(bold("### text"))`, i.e. it echoed the
+   source marker back at the reader. A rendered line that starts with `### `
+   reads as unparsed Markdown, which is exactly what the transcript looks
+   like when the lexer's depth cue leaks through: the model wrote `### 1.1
+   安装` and the terminal showed `### 1.1 安装` with nothing else done to it.
+   The `headingPrefix` is gone. Depth now reads off weight: H1 keeps the
+   OSC 66 sizing plus bold+underline (and falls back to bold+underline when
+   the doubled width would overflow, or when the terminal has no text
+   sizing), H2 stays bold, H3 is plain `mdHeading`, and H4+ is italic —
+   a monotone ramp with no syntax on screen. Covered by a new test that
+   renders `#` through `######` and asserts the non-blank rows are exactly
+   the six heading texts. The unrelated `"#".repeat(depth + 1)` depth
+   headers in `tools/grouped-file-output.ts` and `jfind/tree.ts` are tree
+   gutters for tool output, not markdown, and stay as they are. Verified:
+   markdown suites 224 pass / 0 fail; full `packages/tui` 2855 pass / 5 fail,
+   the same five pre-existing failures as patch 32. A demo render also
+   asserts the rendered transcript contains none of `# ` ` ``` ` `| ` `> `,
+   `- [`/`[x]`, `**`, `~~`, `](`, `:---` or `---` from the source.
+
+
 
 
 ## Merge adjudications (v18.0.10 → v18.1.6 → v18.1.10, 2026-09-04)

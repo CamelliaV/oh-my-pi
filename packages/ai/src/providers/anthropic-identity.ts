@@ -10,6 +10,13 @@ export function isClaudeCloakingUserId(userId: string): boolean {
 	return CLAUDE_CLOAKING_USER_ID_REGEX.test(userId);
 }
 
+/**
+ * Whether a metadata id is a Claude Code JSON envelope that is already fully
+ * formed. Real Claude Code always pairs `session_id` with a `device_id`;
+ * CC-fingerprinting relays (sub2api `claude_code_only`) reject a
+ * `session_id`-only envelope, so such an id must fall through to regeneration
+ * rather than be forwarded verbatim.
+ */
 function isClaudeJsonUserId(userId: string): boolean {
 	if (userId.length === 0 || userId[0] !== "{") return false;
 	let parsed: unknown;
@@ -18,8 +25,9 @@ function isClaudeJsonUserId(userId: string): boolean {
 	} catch {
 		return false;
 	}
-	if (!parsed || typeof parsed !== "object" || Array.isArray(parsed) || !("session_id" in parsed)) return false;
-	return typeof parsed.session_id === "string" && parsed.session_id.length > 0;
+	if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return false;
+	if (!("session_id" in parsed) || typeof parsed.session_id !== "string") return false;
+	return "device_id" in parsed && typeof parsed.device_id === "string";
 }
 
 /** Extract a stable session id from a supported Anthropic metadata user id. */
@@ -111,7 +119,10 @@ export function resolveAnthropicMetadataUserId(
 	}
 
 	if (!isOAuthToken) return undefined;
-	return generateClaudeJsonUserId(sessionId, accountId);
+	// A partially-formed Claude Code envelope keeps its session id across
+	// regeneration: swapping it would drop the session affinity the caller
+	// asked for, and a relay would see a different session on every retry.
+	return generateClaudeJsonUserId(sessionId ?? extractClaudeMetadataSessionId(userId), accountId);
 }
 
 const ANTHROPIC_BUILTIN_TOOL_NAMES: Record<string, true> = {

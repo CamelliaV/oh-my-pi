@@ -14,6 +14,8 @@ import { collectOnlineTinyCandidates } from "../tiny/online-candidates";
 import { appendSharpshooterDelta } from "./queue";
 import type { SharpshooterDelta, SharpshooterDeltaKind, SharpshooterDeltaSource, SharpshooterFriction } from "./types";
 
+import { cfgSharpshooterModel } from "./settings";
+
 const SHARPSHOOTER_DELTA_KINDS = {
 	architecture_decision: true,
 	product_decision: true,
@@ -159,7 +161,7 @@ export async function resolveSharpshooterModel(
 
 /** Ordered sharpshooter models: explicit selector first, then the smol fallback chain. */
 export async function resolveSharpshooterModels(settings: Settings, modelRegistry: ModelRegistry): Promise<Model[]> {
-	const selector = settings.get("sharpshooter.model");
+	const selector = cfgSharpshooterModel.get(settings);
 	if (selector) {
 		const resolved = resolveModelRoleValue(selector, modelRegistry.getAll(), {
 			settings,

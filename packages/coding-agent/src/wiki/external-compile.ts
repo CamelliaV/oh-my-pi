@@ -1,8 +1,6 @@
 import * as path from "node:path";
 import { prompt } from "@oh-my-pi/pi-utils";
-import compilePrompt from "../prompts/wiki/external-compile.md" with {
-	type: "text",
-};
+import compilePrompt from "../prompts/wiki/external-compile.md" with { type: "text" };
 import type { AgentSession } from "../session/agent-session";
 import { runSubprocess } from "../task/executor";
 import type { AgentDefinition } from "../task/types";
@@ -13,20 +11,16 @@ export { EXTERNAL_WIKI_VAULT };
 const compiler: AgentDefinition = {
 	name: "wiki-compiler",
 	description: "Compile the external omp wiki vault",
-	systemPrompt:
-		"Compile only the external wiki vault. Read AGENTS.md there and follow it exactly.",
+	systemPrompt: "Compile only the external wiki vault. Read AGENTS.md there and follow it exactly.",
 	tools: ["read", "grep", "find", "edit", "write", "bash"],
 	model: ["@wiki"],
 	source: "bundled",
 };
 
-export async function runExternalWikiCompile(
-	session: AgentSession,
-): Promise<string> {
+export async function runExternalWikiCompile(session: AgentSession): Promise<string> {
 	const agentId = `wiki-compile-${Date.now().toString(36)}`;
 	const artifactsDir = session.sessionManager.getArtifactsDir();
-	if (!artifactsDir)
-		throw new Error("The current session has no artifact directory.");
+	if (!artifactsDir) throw new Error("The current session has no artifact directory.");
 	const result = await runSubprocess({
 		cwd: EXTERNAL_WIKI_VAULT,
 		agent: compiler,

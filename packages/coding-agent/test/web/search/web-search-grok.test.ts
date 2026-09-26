@@ -4,10 +4,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 import type { AuthStorage, FetchImpl } from "@oh-my-pi/pi-ai";
 import { rolePriorityDefaults } from "@oh-my-pi/pi-coding-agent/config/model-resolver";
-import {
-	resetSettingsForTest,
-	Settings,
-} from "@oh-my-pi/pi-coding-agent/config/settings";
+import { resetSettingsForTest, Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import { getSearchProvider } from "@oh-my-pi/pi-coding-agent/web/search/provider";
 import { GrokProvider } from "@oh-my-pi/pi-coding-agent/web/search/providers/grok";
 import {
@@ -33,9 +30,7 @@ const GROK_ENV_KEYS = [
 	"GROK_SEARCH_API_KEY",
 ] as const;
 
-function makeAuthStorage(
-	credentials: Record<string, string> = {},
-): AuthStorage {
+function makeAuthStorage(credentials: Record<string, string> = {}): AuthStorage {
 	return {
 		credentials: {
 			has(provider: string) {
@@ -47,38 +42,26 @@ function makeAuthStorage(
 				return async () => credentials[provider];
 			},
 			source(provider: string) {
-				return provider in credentials
-					? { kind: "api_key", concrete: true }
-					: undefined;
+				return provider in credentials ? { kind: "api_key", concrete: true } : undefined;
 			},
 		},
 	} as unknown as AuthStorage;
 }
 
-function captureFetch(
-	responseBody: Record<string, unknown> | string,
-	status = 200,
-) {
+function captureFetch(responseBody: Record<string, unknown> | string, status = 200) {
 	const capturedRequests: CapturedRequest[] = [];
 	const fetchMock: FetchImpl = (input, init) => {
 		capturedRequests.push({
 			url: typeof input === "string" ? input : input.toString(),
 			method: init?.method,
 			headers: init?.headers,
-			body: init?.body
-				? (JSON.parse(String(init.body)) as Record<string, unknown>)
-				: null,
+			body: init?.body ? (JSON.parse(String(init.body)) as Record<string, unknown>) : null,
 		});
 		return Promise.resolve(
-			new Response(
-				typeof responseBody === "string"
-					? responseBody
-					: JSON.stringify(responseBody),
-				{
-					status,
-					headers: { "Content-Type": "application/json" },
-				},
-			),
+			new Response(typeof responseBody === "string" ? responseBody : JSON.stringify(responseBody), {
+				status,
+				headers: { "Content-Type": "application/json" },
+			}),
 		);
 	};
 	return {
@@ -124,9 +107,7 @@ function realSearchResponse(): Record<string, unknown> {
 
 type GrokSearchParams = Parameters<GrokProvider["search"]>[0];
 
-function baseParams(
-	overrides: Partial<GrokSearchParams> = {},
-): GrokSearchParams {
+function baseParams(overrides: Partial<GrokSearchParams> = {}): GrokSearchParams {
 	return {
 		query: "q",
 		systemPrompt: "s",
@@ -137,9 +118,7 @@ function baseParams(
 
 describe("Grok relay search provider", () => {
 	let agentDir: string | undefined;
-	const originalEnv: Partial<
-		Record<(typeof GROK_ENV_KEYS)[number], string | undefined>
-	> = {};
+	const originalEnv: Partial<Record<(typeof GROK_ENV_KEYS)[number], string | undefined>> = {};
 
 	beforeEach(() => {
 		for (const key of GROK_ENV_KEYS) {
@@ -170,29 +149,18 @@ describe("Grok relay search provider", () => {
 	it("is unavailable without a declared endpoint", () => {
 		const provider = new GrokProvider();
 
-		expect(provider.isAvailable(makeAuthStorage({ wong: "sk-wong" }))).toBe(
-			false,
-		);
+		expect(provider.isAvailable(makeAuthStorage({ wong: "sk-wong" }))).toBe(false);
 	});
 
 	it("is available with an endpoint and a credential for the declared provider", async () => {
-		await withConfigYaml([
-			"providers:",
-			`  webSearchGrokBaseUrl: ${wongBaseUrl}`,
-			"  webSearchGrokProvider: wong",
-		]);
+		await withConfigYaml(["providers:", `  webSearchGrokBaseUrl: ${wongBaseUrl}`, "  webSearchGrokProvider: wong"]);
 		const provider = new GrokProvider();
 
-		expect(provider.isAvailable(makeAuthStorage({ wong: "sk-wong" }))).toBe(
-			true,
-		);
+		expect(provider.isAvailable(makeAuthStorage({ wong: "sk-wong" }))).toBe(true);
 	});
 
 	it("is available with an endpoint and a GROK_SEARCH_API_KEY env credential", async () => {
-		await withConfigYaml([
-			"providers:",
-			`  webSearchGrokBaseUrl: ${wongBaseUrl}`,
-		]);
+		await withConfigYaml(["providers:", `  webSearchGrokBaseUrl: ${wongBaseUrl}`]);
 		process.env.GROK_SEARCH_API_KEY = "sk-grok-search";
 		const provider = new GrokProvider();
 
@@ -243,11 +211,7 @@ describe("Grok relay search provider", () => {
 	});
 
 	it("sends the declared provider's transport headers (relay UA gates) and resolves its key", async () => {
-		await withConfigYaml([
-			"providers:",
-			`  webSearchGrokBaseUrl: ${wongBaseUrl}`,
-			"  webSearchGrokProvider: wong",
-		]);
+		await withConfigYaml(["providers:", `  webSearchGrokBaseUrl: ${wongBaseUrl}`, "  webSearchGrokProvider: wong"]);
 		const capture = captureFetch(realSearchResponse());
 		const provider = new GrokProvider();
 
@@ -256,9 +220,7 @@ describe("Grok relay search provider", () => {
 				authStorage: makeAuthStorage({ wong: "sk-headered" }),
 				modelRegistry: {
 					getProviderHeaders: (provider: string) =>
-						provider === "wong"
-							? { "User-Agent": "claude-cli/2.1.217" }
-							: undefined,
+						provider === "wong" ? { "User-Agent": "claude-cli/2.1.217" } : undefined,
 				} as never,
 				fetch: capture.fetchMock,
 			}),
@@ -284,9 +246,7 @@ describe("Grok relay search provider", () => {
 				{ type: "reasoning" },
 				{
 					type: "message",
-					content: [
-						{ type: "output_text", text: "I searched the web and found X." },
-					],
+					content: [{ type: "output_text", text: "I searched the web and found X." }],
 				},
 			],
 			usage: { num_server_side_tools_used: 0, total_tokens: 50 },
@@ -314,11 +274,7 @@ describe("Grok relay search provider", () => {
 	});
 
 	it("rejects when no credential resolves for the declared provider", async () => {
-		await withConfigYaml([
-			"providers:",
-			`  webSearchGrokBaseUrl: ${wongBaseUrl}`,
-			"  webSearchGrokProvider: wong",
-		]);
+		await withConfigYaml(["providers:", `  webSearchGrokBaseUrl: ${wongBaseUrl}`, "  webSearchGrokProvider: wong"]);
 		const capture = captureFetch(realSearchResponse());
 		const provider = new GrokProvider();
 
@@ -338,9 +294,7 @@ describe("Grok relay search provider", () => {
 
 		await provider.search(baseParams({ fetch: capture.fetchMock }));
 
-		expect(capture.capturedRequest?.url).toBe(
-			"https://relay.example/v1/responses",
-		);
+		expect(capture.capturedRequest?.url).toBe("https://relay.example/v1/responses");
 		expect(capture.capturedRequest?.body).toMatchObject({
 			model: "grok-4.20-0309-reasoning",
 		});
@@ -363,19 +317,14 @@ describe("Grok relay search provider", () => {
 
 		await provider.search(baseParams({ fetch: capture.fetchMock }));
 
-		expect(capture.capturedRequest?.url).toBe(
-			"https://settings-win.example/v1/responses",
-		);
+		expect(capture.capturedRequest?.url).toBe("https://settings-win.example/v1/responses");
 		expect(capture.capturedRequest?.body).toMatchObject({
 			model: "settings-model",
 		});
 	});
 
 	it("maps site: onto web_search allowed_domains through the relay", async () => {
-		await withConfigYaml([
-			"providers:",
-			`  webSearchGrokBaseUrl: ${wongBaseUrl}`,
-		]);
+		await withConfigYaml(["providers:", `  webSearchGrokBaseUrl: ${wongBaseUrl}`]);
 		process.env.GROK_SEARCH_API_KEY = "sk-grok-search";
 		const capture = captureFetch(realSearchResponse());
 		const provider = new GrokProvider();
@@ -418,16 +367,10 @@ describe("Grok relay search provider", () => {
 	});
 
 	it("caps results locally to the requested numSearchResults", async () => {
-		await withConfigYaml([
-			"providers:",
-			`  webSearchGrokBaseUrl: ${wongBaseUrl}`,
-		]);
+		await withConfigYaml(["providers:", `  webSearchGrokBaseUrl: ${wongBaseUrl}`]);
 		process.env.GROK_SEARCH_API_KEY = "sk-grok-search";
 		const response = realSearchResponse();
-		const manyUrls = Array.from(
-			{ length: 15 },
-			(_, i) => `https://example.com/r-${i + 1}`,
-		);
+		const manyUrls = Array.from({ length: 15 }, (_, i) => `https://example.com/r-${i + 1}`);
 		(response.output as unknown[]).push({
 			type: "web_search_call",
 			action: {
@@ -437,9 +380,7 @@ describe("Grok relay search provider", () => {
 		const capture = captureFetch(response);
 		const provider = new GrokProvider();
 
-		const result = await provider.search(
-			baseParams({ numSearchResults: 5, fetch: capture.fetchMock }),
-		);
+		const result = await provider.search(baseParams({ numSearchResults: 5, fetch: capture.fetchMock }));
 
 		expect(result.sources).toHaveLength(5);
 	});
@@ -447,9 +388,7 @@ describe("Grok relay search provider", () => {
 
 describe("Grok channel in the web role chain", () => {
 	it("lists grok among the built-in provider ids with its label", () => {
-		expect(
-			SEARCH_PROVIDER_OPTIONS.some((option) => option.value === "grok"),
-		).toBe(true);
+		expect(SEARCH_PROVIDER_OPTIONS.some(option => option.value === "grok")).toBe(true);
 		expect(SEARCH_PROVIDER_LABELS.grok).toBe("Grok");
 	});
 

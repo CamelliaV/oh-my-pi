@@ -1,3 +1,4 @@
+import { cfgMemoryBackend } from "../memory-backend/settings";
 import type { AgentSession } from "../session/agent-session";
 import { getWikiState } from "./state";
 import type { WikiHistoryEntry, WikiSkillCandidate } from "./types";
@@ -10,7 +11,7 @@ function describeCandidate(candidate: WikiSkillCandidate): string {
 /** Shared TUI/ACP operation; evaluator commands only come from explicit user settings. */
 export async function runWikiSkillCommand(session: AgentSession, args: string): Promise<string> {
 	const state = getWikiState(session);
-	if (!state || session.settings.get("memory.backend") !== "wiki")
+	if (!state || cfgMemoryBackend.get(session.settings) !== "wiki")
 		throw new Error("Wiki memory is not active for this session.");
 	const [verb = "list", id, ...reason] = args.trim().split(/\s+/).filter(Boolean);
 	await state.skills.reconcile((await state.snapshot()).pages);
@@ -69,7 +70,7 @@ export async function runWikiHistoryCommand(
 	args: string,
 ): Promise<string> {
 	const state = getWikiState(session);
-	if (!state || session.settings.get("memory.backend") !== "wiki")
+	if (!state || cfgMemoryBackend.get(session.settings) !== "wiki")
 		throw new Error("Wiki memory is not active for this session.");
 	const [id, first, second, ...extra] = args.trim().split(/\s+/).filter(Boolean);
 	if (!id || extra.length)

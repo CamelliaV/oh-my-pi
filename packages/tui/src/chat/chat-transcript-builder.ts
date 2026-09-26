@@ -347,6 +347,7 @@ export class ChatTranscriptBuilder {
 							: undefined;
 						this.container.addChild(
 							new UserMessageComponent(userText, {
+								liveSteered: message.role === "user" && message.liveSteered === true,
 								sessionUsageText: (() => {
 									const sessionUsage = this.#sessionUsage.current();
 									return sessionUsage ? formatSessionUsageRow(sessionUsage) : undefined;

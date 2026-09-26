@@ -18,6 +18,7 @@ import { loadWikiConfig } from "./config";
 import { EXTERNAL_WIKI_VAULT, ExternalVault, type VaultNote } from "./external-vault";
 import { runExternalWikiCompile } from "./external-compile";
 import { createWikiComplete, type WikiUsage } from "./model";
+import { cfgWikiIncludeGlobal, cfgWikiRoot } from "./settings";
 import { formatWikiRecall, getWikiState, setWikiState, WikiState } from "./state";
 import type { WikiMaintenanceStatus, WikiRecallResult } from "./types";
 
@@ -112,13 +113,12 @@ async function searchVault(
 	return { backend: "wiki", query, count: items.length, items, text };
 }
 
-
 export const wikiBackend: MemoryBackend = {
 	id: "wiki",
 	capabilities: memoryBackendCapabilities.wiki,
 	async start({ session, settings, modelRegistry, agentDir, taskDepth }) {
 		await setWikiState(session, undefined)?.dispose();
-		const configured = settings.get("wiki.root")?.trim();
+		const configured = cfgWikiRoot.get(settings)?.trim();
 		if (!configured) {
 			vaults.set(session, new ExternalVault(EXTERNAL_WIKI_VAULT));
 			startupErrors.delete(session);
@@ -152,7 +152,7 @@ export const wikiBackend: MemoryBackend = {
 	async buildDeveloperInstructions(_agentDir, settings, session) {
 		const vault = vaultFor(session);
 		if (!vault || !session || !settings) return getWikiState(session)?.instructions();
-		const notes = (await vault.notes(scopesFor(session.sessionManager.getCwd(), settings.get("wiki.includeGlobal"))))
+		const notes = (await vault.notes(scopesFor(session.sessionManager.getCwd(), cfgWikiIncludeGlobal.get(settings))))
 			.filter(note => note.kind === "page")
 			.slice(0, 12);
 		return prompt.render(vaultInstructions, {
@@ -209,7 +209,7 @@ export const wikiBackend: MemoryBackend = {
 	async search(context, query, options) {
 		const vault = vaultFor(context.session);
 		if (vault) {
-			const includeGlobal = context.session?.settings.get("wiki.includeGlobal") ?? true;
+			const includeGlobal = context.session ? cfgWikiIncludeGlobal.get(context.session.settings) : true;
 			return searchVault(vault, context.cwd, includeGlobal, query, options?.limit);
 		}
 		const state = requireState(context);
@@ -227,7 +227,7 @@ export const wikiBackend: MemoryBackend = {
 	async read(context, id, options) {
 		const vault = vaultFor(context.session);
 		if (vault && options?.revision === undefined) {
-			const includeGlobal = context.session?.settings.get("wiki.includeGlobal") ?? true;
+			const includeGlobal = context.session ? cfgWikiIncludeGlobal.get(context.session.settings) : true;
 			return readVault(vault, context.cwd, includeGlobal, id);
 		}
 		const state = requireState(context);
@@ -324,7 +324,7 @@ export const wikiBackend: MemoryBackend = {
 	async reflect(context, query, options) {
 		const vault = vaultFor(context.session);
 		if (vault) {
-			const includeGlobal = context.session?.settings.get("wiki.includeGlobal") ?? true;
+			const includeGlobal = context.session ? cfgWikiIncludeGlobal.get(context.session.settings) : true;
 			const found = await searchVault(
 				vault,
 				context.cwd,
@@ -351,7 +351,7 @@ export const wikiBackend: MemoryBackend = {
 	async status(context) {
 		const vault = vaultFor(context.session);
 		if (vault) {
-			const includeGlobal = context.session?.settings.get("wiki.includeGlobal") ?? true;
+			const includeGlobal = context.session ? cfgWikiIncludeGlobal.get(context.session.settings) : true;
 			const notes = await vault.notes(scopesFor(context.cwd, includeGlobal));
 			const pending = notes.filter(note => note.kind === "source").length;
 			const pages = notes.filter(note => note.kind === "page").length;
@@ -394,7 +394,7 @@ export const wikiBackend: MemoryBackend = {
 	async stats(agentDir, cwd, session) {
 		const vault = vaultFor(session);
 		if (vault) {
-			const notes = await vault.notes(scopesFor(cwd, session?.settings.get("wiki.includeGlobal") ?? true));
+			const notes = await vault.notes(scopesFor(cwd, session ? cfgWikiIncludeGlobal.get(session.settings) : true));
 			return `## External Wiki\n\n- Vault: ${vault.root}\n- Compiled notes: ${notes.filter(note => note.kind === "page").length}\n- Uncompiled inbox: ${notes.filter(note => note.kind === "source").length}`;
 		}
 		const state = requireState({ agentDir, cwd, session });
@@ -406,7 +406,7 @@ export const wikiBackend: MemoryBackend = {
 	async diagnose(agentDir, cwd, session) {
 		const vault = vaultFor(session);
 		if (vault)
-			return `## External Wiki Diagnostics\n\n- Vault: ${vault.root}\n- Readable scopes: ${scopesFor(cwd, session?.settings.get("wiki.includeGlobal") ?? true).join(", ")}\n- Internal sqlite wiki: not used for reads or writes`;
+			return `## External Wiki Diagnostics\n\n- Vault: ${vault.root}\n- Readable scopes: ${scopesFor(cwd, session ? cfgWikiIncludeGlobal.get(session.settings) : true).join(", ")}\n- Internal sqlite wiki: not used for reads or writes`;
 		const state = requireState({ agentDir, cwd, session });
 		const snapshot = await state.snapshot();
 		const maintenance = await state.maintenanceStatus();
@@ -415,7 +415,11 @@ export const wikiBackend: MemoryBackend = {
 	async queuePreview(context) {
 		const vault = vaultFor(context.session);
 		if (vault) {
-			const pending = (await vault.notes(scopesFor(context.cwd, context.session?.settings.get("wiki.includeGlobal") ?? true)))
+			const pending = (
+				await vault.notes(
+					scopesFor(context.cwd, context.session ? cfgWikiIncludeGlobal.get(context.session.settings) : true),
+				)
+			)
 				.filter(note => note.kind === "source")
 				.map(note => `### ${note.id}\n${truncate(note.body, 500)}`)
 				.join("\n\n");

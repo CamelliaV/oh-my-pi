@@ -7,6 +7,8 @@ import { memoryBackendCapabilities } from "../memory-backend/types";
 import reflectDescription from "../prompts/tools/reflect.md" with { type: "text" };
 import type { ToolSession } from ".";
 
+import { cfgMemoryBackend } from "../memory-backend/settings";
+
 const memoryReflectSchema = type({
 	query: type("string").describe("question to answer"),
 	"context?": type("string").describe("optional context"),
@@ -27,7 +29,7 @@ export class MemoryReflectTool implements AgentTool<typeof memoryReflectSchema> 
 	constructor(private readonly session: ToolSession) {}
 
 	static createIf(session: ToolSession): MemoryReflectTool | null {
-		const backend = session.settings.get("memory.backend");
+		const backend = cfgMemoryBackend.get(session.settings);
 		if (!memoryBackendCapabilities[backend].reflective) return null;
 		if (backend === "hindsight" && !isHindsightConfigured(loadHindsightConfig(session.settings))) return null;
 		return new MemoryReflectTool(session);

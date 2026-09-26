@@ -28,6 +28,8 @@ import {
 	WorkUsageAccumulator,
 } from "@oh-my-pi/pi-tui/chat/work-usage";
 
+import { cfgDisplayShowTokenUsage } from "@oh-my-pi/pi-coding-agent/modes/settings";
+
 // 4242 → "4.2K": distinctive enough not to collide with a read group's render.
 const USAGE_INPUT = 4242;
 const USAGE_LABEL = formatNumber(USAGE_INPUT);
@@ -83,7 +85,7 @@ function makeHarness(
 		ui: { requestRender: vi.fn() },
 		statusLine: { invalidate: vi.fn() },
 		updateEditorBorderColor: vi.fn(),
-		settings: { get: (key: string) => (key === "display.showTokenUsage" ? showTokenUsage : false) },
+		settings: Settings.isolated({ "display.showTokenUsage": showTokenUsage }),
 		addMessageToChat: (message: AgentMessage, options?: Parameters<UiHelpers["addMessageToChat"]>[1]) =>
 			helpers.addMessageToChat(message, options),
 		getUserMessageText: (message: AgentMessage) =>
@@ -238,7 +240,7 @@ describe("UiHelpers.renderSessionContext token-usage row placement", () => {
 describe("ChatTranscriptBuilder token-usage row timestamp", () => {
 	beforeEach(async () => {
 		await Settings.init({ inMemory: true, cwd: process.cwd() });
-		settings.set("display.showTokenUsage", true);
+		cfgDisplayShowTokenUsage.set(settings, true);
 	});
 	afterEach(() => {
 		resetSettingsForTest();
@@ -660,7 +662,9 @@ describe("work usage accounting", () => {
 		expect(timeline[1]!.session.wallMs).toBe(1_000);
 		expect(formatSessionUsageRow(timeline[1]!.session)).toContain("SESSION");
 		expect(formatSessionUsageRow(timeline[1]!.session)).toContain("3 req");
-		const rendered = new UserMessageComponent("next request", { sessionUsageText: formatSessionUsageRow(timeline[1]!.session) })
+		const rendered = new UserMessageComponent("next request", {
+			sessionUsageText: formatSessionUsageRow(timeline[1]!.session),
+		})
 			.render(160)
 			.join("\n");
 		const lines = Bun.stripANSI(rendered).split("\n");

@@ -8,11 +8,7 @@ import {
 	publishSubagentProgress,
 	recordSubagentExecution,
 } from "../task/execution-progress";
-import {
-	createSubagentExecution,
-	requestSubagentRecovery,
-	transitionSubagentExecution,
-} from "../task/execution-state";
+import { createSubagentExecution, requestSubagentRecovery, transitionSubagentExecution } from "../task/execution-state";
 import { executeSend } from "../irc/messaging";
 import type { ToolSession } from "../tools";
 
@@ -53,11 +49,14 @@ export async function executeResume(
 	if (signal?.aborted) throw signal.reason ?? new Error("Continuation cancelled before delivery");
 	const ref = registry.get(to);
 	if (!ref || ref.kind !== "sub" || !isCurrentSessionRosterRef(ref, root)) {
-		return resumeError(`No resumable subagent "${to}" belongs to this session. Identify it from the roster or history://.`, {
-			op: "resume",
-			from: senderId,
-			to,
-		});
+		return resumeError(
+			`No resumable subagent "${to}" belongs to this session. Identify it from the roster or history://.`,
+			{
+				op: "resume",
+				from: senderId,
+				to,
+			},
+		);
 	}
 	if (ref.status === "aborted") {
 		return resumeError(
@@ -78,7 +77,9 @@ export async function executeResume(
 	}
 	if (ref.status === "running" || ref.session?.isStreaming) {
 		return {
-			content: [{ type: "text", text: `${to} 已在运行，未创建第二次运行。如需补充指令，请使用 write agent://${to}。` }],
+			content: [
+				{ type: "text", text: `${to} 已在运行，未创建第二次运行。如需补充指令，请使用 write agent://${to}。` },
+			],
 			details: { op: "resume", from: senderId, to, execution: ref.history?.execution },
 		};
 	}

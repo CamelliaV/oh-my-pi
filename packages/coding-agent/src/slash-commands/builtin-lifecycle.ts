@@ -36,7 +36,6 @@ import {
 } from "../system-prompt";
 import { isLowSignalTitleInput } from "../tiny/text";
 import { resolveToCwd } from "../tools/path-utils";
-import { runWikiHistoryCommand, runWikiSkillCommand } from "../wiki/commands";
 import { runExternalWikiCompile } from "../wiki/external-compile";
 import { commandConsumed, errorMessage, usage } from "./helpers/parse";
 import { handleSshAcp } from "./helpers/ssh";
@@ -662,41 +661,9 @@ export const BUILTIN_LIFECYCLE_SLASH_COMMANDS: ReadonlyArray<SlashCommandSpec> =
 				{ name: "reset", description: "Alias for clear" },
 				{
 					name: "enqueue",
-					description: "Enqueue memory consolidation maintenance",
+					description: "Force memory consolidation now (`/wiki compile` in the external vault)",
 				},
 				{ name: "rebuild", description: "Alias for enqueue" },
-				{
-					name: "skill list",
-					description: "List Wiki skill candidates and their validation state",
-				},
-				{
-					name: "skill propose",
-					description: "Propose skills from supported Wiki patterns",
-				},
-				{ name: "skill show", description: "Inspect one Wiki skill candidate" },
-				{
-					name: "skill validate",
-					description:
-						"Run the configured trusted skill evaluator and gate publication",
-				},
-				{
-					name: "skill approve",
-					description:
-						"Explicitly publish a candidate without claiming behavioral validation",
-				},
-				{
-					name: "skill reject",
-					description: "Reject a candidate with a recorded reason",
-				},
-				{
-					name: "history",
-					description: "List immutable Wiki revisions for a record",
-				},
-				{ name: "diff", description: "Compare two immutable Wiki revisions" },
-				{
-					name: "restore",
-					description: "Restore a Wiki revision as a new current revision",
-				},
 				{
 					name: "mm list",
 					description: "List mental models on the active bank",
@@ -730,25 +697,6 @@ export const BUILTIN_LIFECYCLE_SLASH_COMMANDS: ReadonlyArray<SlashCommandSpec> =
 					(command.args.trim().split(/\s+/)[0] ?? "").toLowerCase() || "view";
 				const backend = await resolveMemoryBackend(runtime.settings);
 				switch (verb) {
-					case "skill":
-						await runtime.output(
-							await runWikiSkillCommand(
-								runtime.session,
-								command.args.trim().slice(verb.length).trim(),
-							),
-						);
-						return commandConsumed();
-					case "history":
-					case "diff":
-					case "restore":
-						await runtime.output(
-							await runWikiHistoryCommand(
-								runtime.session,
-								verb,
-								command.args.trim().slice(verb.length).trim(),
-							),
-						);
-						return commandConsumed();
 					case "view": {
 						const payload = await backend.buildDeveloperInstructions(
 							runtime.settings.getAgentDir(),
@@ -771,12 +719,12 @@ export const BUILTIN_LIFECYCLE_SLASH_COMMANDS: ReadonlyArray<SlashCommandSpec> =
 					}
 					case "enqueue":
 					case "rebuild": {
-						await backend.enqueue(
+						const message = await backend.enqueue(
 							runtime.settings.getAgentDir(),
 							runtime.cwd,
 							runtime.session,
 						);
-						await runtime.output("Memory consolidation enqueued.");
+						await runtime.output(message ?? "Memory consolidation enqueued.");
 						return commandConsumed();
 					}
 					case "queue": {

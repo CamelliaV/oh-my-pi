@@ -51,7 +51,9 @@ export class MemoryEditTool implements AgentTool<typeof memoryEditSchema> {
 				? `Memory ${params.id} was not found.`
 				: result.status === "not_editable"
 					? `Memory ${params.id} cannot be edited. Read it with memory://${params.id}.`
-					: `Memory ${params.id} ${result.status}.`);
+					: result.status === "queued"
+						? `Memory ${params.id} ${result.message ?? "queued for the next compile."}`
+						: `Memory ${params.id} ${result.status}.`);
 		return { content: [{ type: "text", text }], details: result };
 	}
 }

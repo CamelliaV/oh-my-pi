@@ -191,7 +191,7 @@ export interface MemoryBackendEditInput {
 export interface MemoryBackendEditResult {
 	backend: MemoryBackendId;
 	id: string;
-	status: "updated" | "deleted" | "invalidated" | "not_found" | "not_editable" | "unavailable";
+	status: "updated" | "deleted" | "invalidated" | "queued" | "not_found" | "not_editable" | "unavailable";
 	bank?: string;
 	store?: string;
 	affectedPages?: string[];
@@ -276,7 +276,7 @@ export interface MemoryBackend {
 	clear(agentDir: string, cwd: string, session?: AgentSession): Promise<void>;
 
 	/** Force consolidation/retain to happen now (slash `/memory enqueue`). */
-	enqueue(agentDir: string, cwd: string, session?: AgentSession): Promise<void>;
+	enqueue(agentDir: string, cwd: string, session?: AgentSession): Promise<string | void>;
 
 	/** Structured state for UI, slash commands, and extensions. */
 	status?(context: MemoryBackendOperationContext): Promise<MemoryBackendStatus>;

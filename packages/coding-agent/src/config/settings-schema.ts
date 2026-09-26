@@ -3014,57 +3014,16 @@ export const SETTINGS_SCHEMA = {
 			],
 		},
 	},
-	"wiki.root": { type: "string", default: undefined },
-	"wiki.scope": {
-		type: "enum",
-		values: ["project", "global"] as const,
-		default: "project",
+	"wiki.includeGlobal": {
+		type: "boolean",
+		default: true,
 		ui: {
 			tab: "memory",
 			group: "Wiki",
-			label: "Write Scope",
-			description: "Project-local knowledge or explicitly shared user knowledge",
+			label: "Include Global Scope",
+			description: "Read global notes alongside this project's scope",
 		},
 	},
-	"wiki.includeGlobal": { type: "boolean", default: true },
-	"wiki.model": {
-		type: "string",
-		default: "@smol",
-		ui: {
-			tab: "memory",
-			group: "Wiki",
-			label: "Knowledge Model",
-			description: "Model for incremental maintenance and skill proposals",
-		},
-	},
-	"wiki.recallModel": {
-		type: "string",
-		default: undefined,
-		ui: {
-			tab: "memory",
-			group: "Wiki",
-			label: "Recall Model",
-			description: "Optional faster model for read-only evidence selection; empty uses Knowledge Model",
-		},
-	},
-	"wiki.autoRetain": { type: "boolean", default: true },
-	"wiki.autoMaintain": { type: "boolean", default: true },
-	"wiki.autoRecall": { type: "boolean", default: false },
-	"wiki.timeoutSeconds": {
-		type: "number",
-		default: 30,
-		ui: {
-			tab: "memory",
-			group: "Wiki",
-			label: "Wiki Timeout",
-			description:
-				"Seconds for each Wiki model request and the whole recall. Timed-out or failed recall retries on the session model, then falls back to FTS keyword search instead of hanging.",
-		},
-	},
-	"wiki.maintenanceBatchSize": { type: "number", default: 8 },
-	"wiki.recallLimit": { type: "number", default: 4 },
-	"wiki.contextTokenLimit": { type: "number", default: 1500 },
-	"wiki.skillValidationCommand": { type: "array", default: EMPTY_STRING_ARRAY },
 	"sharpshooter.model": {
 		type: "string",
 		default: undefined,

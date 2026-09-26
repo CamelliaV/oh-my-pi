@@ -745,6 +745,47 @@ reasoning matters.
    `agent-session-thinking-loop-retry`, `turn-recovery-replay-unsafe`) — 73
    pass, 0 fail.
 
+32. `feat(tui)` markdown code blocks render as rounded boxes with a
+   line-number gutter — upstream painted a bare ```` ```lang ```` header and
+   a bare ```` ``` ```` footer, so a fenced block in assistant prose had no
+   visual edge: the only chrome was two dim lines, and the body was
+   indistinguishable from a wrapped paragraph. Worse, `codeBlockIndent` is
+   `0` on the assistant-message path, which tags body rows `literalCode` and
+   makes them skip the `paddingX` margin the fence lines get — the header sat
+   one column right of its own body.
+   `#renderCodeBlockBox` (`packages/tui/src/components/markdown.ts`) draws a
+   `theme.symbols.boxRound` frame instead: `╭─── lang ───╮` carries the
+   language where the fence header used to, the body gets a right-aligned
+   gutter (`max(2, digits)`) plus one separating space, and the closing
+   `╰───╯` replaces the fence footer. Wrapped continuation rows blank the
+   gutter so the code column keeps a stable offset. Every frame cell —
+   corners, rules, verticals, gutter — paints through
+   `MarkdownTheme.codeBlockBorder` (`mdCodeBlockBorder`), which is the token
+   #6334 already floors at 2.4:1 against the page background for five dark
+   themes, so the contrast regression test keeps guarding the new geometry.
+   The language label uses `mdCode`. Highlighting is untouched: a finalized
+   fence still goes through `theme.highlightCode` (native tree-sitter), an
+   open streaming fence through `theme.createHighlightStream`, and mermaid
+   through `resolveMermaidAscii` before the box is considered. Two alignment
+   bugs went with it — the narrow fallback re-tags body rows as non-literal
+   so they keep the fence's margin, and code inside a blockquote now keeps
+   the quote's `│` rail on every row instead of punching through to column
+   zero. Boxes need ~15 columns; below that the bare fence lines return.
+   `codeBlockIndent` stays live for list-item code, which keeps bare fences
+   (a full-width frame would overflow the list's own indent). Verified: the
+   nine markdown-adjacent tui test files pass (303 tests, 0 fail) after
+   rewriting the six fence-matching assertions to the frame geometry
+   and dropping `keeps coding-agent's padded fenced code body at column
+   zero`, which pinned the removed quirk; full `packages/tui` is 2854 pass /
+   5 fail, and all five (editor text assist ×3, task progress, web search)
+   reproduce on a stashed clean tree. The three `lsp-render` failures in
+   `packages/coding-agent` and the #6334 contrast test (5 themes) are
+   unchanged. `check:types` clean for `packages/tui`; oxlint + oxfmt clean on
+   every touched file. Rendered through `AssistantMessageComponent` at 72
+   columns, through streaming `setText` frames, through the `read` tool's
+   markdown cell, and at widths 72/30/14/8 — no row exceeds its width.
+
+
 
 ## Merge adjudications (v18.0.10 → v18.1.6 → v18.1.10, 2026-09-04)
 

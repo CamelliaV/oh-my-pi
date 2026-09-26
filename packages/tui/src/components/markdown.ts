@@ -2676,6 +2676,73 @@ export class Markdown implements Component {
 		return bodyLines;
 	}
 
+	/**
+	 * Render a fenced code block as a rounded box with a line-number gutter.
+	 *
+	 * Reuses the theme's `boxRound` glyph set so markdown code reads like tool
+	 * output blocks: the language rides the top bar (where the bare fence line
+	 * used to carry it) and `codeBlockBorder` paints every frame cell, keeping
+	 * the #6334 contrast floor meaningful. Falls back to bare fence lines when
+	 * the content area cannot hold a gutter plus a usable code column.
+	 */
+	#renderCodeBlockBox(token: Token, width: number): RenderedLine[] {
+		const box = this.#theme.symbols.boxRound;
+		const border = (text: string): string => this.#theme.codeBlockBorder(text);
+		const lang = "lang" in token && typeof token.lang === "string" ? token.lang : "";
+		const bodyLines = this.#renderCodeBodyLines(token, "");
+		// Two border cells plus one space of padding on each side = 4 chrome
+		// columns; the gutter is a right-aligned number and one separating space.
+		const gutterWidth = Math.max(2, String(Math.max(1, bodyLines.length)).length);
+		const codeWidth = width - 4 - gutterWidth - 1;
+		if (codeWidth < 8) {
+			// Too narrow for a gutter: keep bare fence lines, but re-tag the body
+			// rows as non-literal so they still pick up the paddingX margin the
+			// fence lines get and stay aligned with them.
+			return [
+				renderedLine(border(`\`\`\`${lang}`)),
+				...bodyLines.map(row => renderedLine(row.text)),
+				renderedLine(border("```")),
+			];
+		}
+
+		const cap = box.horizontal.repeat(3);
+		const label = lang ? ` ${lang} ` : "";
+		const headFill = Math.max(
+			0,
+			width - visibleWidth(box.topLeft + cap) - visibleWidth(label) - visibleWidth(box.topRight),
+		);
+		const lines: RenderedLine[] = [
+			renderedLine(
+				`${border(box.topLeft + cap)}${this.#theme.code(label)}${border(
+					box.horizontal.repeat(headFill),
+				)}${border(box.topRight)}`,
+			),
+		];
+
+		for (let i = 0; i < bodyLines.length; i++) {
+			const number = String(i + 1).padStart(gutterWidth);
+			for (const [row, segment] of wrapTextWithAnsi(bodyLines[i]!.text, codeWidth).entries()) {
+				// A wrapped continuation carries no number: blank the gutter so the
+				// code column keeps a stable offset.
+				const gutter = row === 0 ? border(number) : padding(gutterWidth);
+				lines.push(
+					renderedLine(
+						`${border(box.vertical)} ${gutter} ${segment}${padding(
+							Math.max(0, codeWidth - visibleWidth(segment)),
+						)} ${border(box.vertical)}`,
+					),
+				);
+			}
+		}
+
+		const footLeft = box.bottomLeft + cap;
+		const footFill = Math.max(0, width - visibleWidth(footLeft) - visibleWidth(box.bottomRight));
+		lines.push(
+			renderedLine(`${border(footLeft)}${border(box.horizontal.repeat(footFill))}${border(box.bottomRight)}`),
+		);
+		return lines;
+	}
+
 	#codeTokenHasClosingFence(token: Token): boolean {
 		const raw = "raw" in token && typeof token.raw === "string" ? token.raw : "";
 		const firstLineEnd = raw.indexOf("\n");
@@ -2975,12 +3042,7 @@ export class Markdown implements Component {
 					}
 				}
 
-				const codeIndent = padding(this.#codeBlockIndent);
-				lines.push(renderedLine(this.#theme.codeBlockBorder(`\`\`\`${token.lang || ""}`)));
-				for (const bodyLine of this.#renderCodeBodyLines(token, codeIndent)) {
-					lines.push(bodyLine);
-				}
-				lines.push(renderedLine(this.#theme.codeBlockBorder("```")));
+				lines.push(...this.#renderCodeBlockBox(token, width));
 				if (nextTokenType && nextTokenType !== "space") {
 					lines.push(renderedLine("")); // Add spacing after code blocks (unless space token follows)
 				}

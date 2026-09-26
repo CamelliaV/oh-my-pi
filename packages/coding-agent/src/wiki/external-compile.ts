@@ -1,4 +1,3 @@
-import * as os from "node:os";
 import * as path from "node:path";
 import { prompt } from "@oh-my-pi/pi-utils";
 import compilePrompt from "../prompts/wiki/external-compile.md" with {
@@ -7,8 +6,9 @@ import compilePrompt from "../prompts/wiki/external-compile.md" with {
 import type { AgentSession } from "../session/agent-session";
 import { runSubprocess } from "../task/executor";
 import type { AgentDefinition } from "../task/types";
+import { EXTERNAL_WIKI_VAULT } from "./external-vault";
 
-export const EXTERNAL_WIKI_VAULT = path.join(os.homedir(), "文档", "omp-wiki");
+export { EXTERNAL_WIKI_VAULT };
 
 const compiler: AgentDefinition = {
 	name: "wiki-compiler",
@@ -16,7 +16,7 @@ const compiler: AgentDefinition = {
 	systemPrompt:
 		"Compile only the external wiki vault. Read AGENTS.md there and follow it exactly.",
 	tools: ["read", "grep", "find", "edit", "write", "bash"],
-	model: ["@smol"],
+	model: ["@wiki"],
 	source: "bundled",
 };
 
@@ -34,8 +34,8 @@ export async function runExternalWikiCompile(
 		description: "Compile external wiki",
 		index: 0,
 		id: agentId,
-		modelOverride: "@smol",
-		modelRole: "smol",
+		modelOverride: "@wiki",
+		modelRole: "wiki",
 		settings: session.settings,
 		modelRegistry: session.modelRegistry,
 		taskDepth: 0,

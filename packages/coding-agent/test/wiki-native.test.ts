@@ -17,6 +17,7 @@ import { loadWikiConfig } from "@oh-my-pi/pi-coding-agent/wiki/config";
 import { createWikiComplete } from "@oh-my-pi/pi-coding-agent/wiki/model";
 import { formatWikiRecall, setWikiState, WikiState, wikiTurnEvidence } from "@oh-my-pi/pi-coding-agent/wiki/state";
 import { WikiStore } from "@oh-my-pi/pi-coding-agent/wiki/store";
+import { ExternalVault } from "@oh-my-pi/pi-coding-agent/wiki/external-vault";
 import type { WikiComplete, WikiEvidenceRole, WikiPage } from "@oh-my-pi/pi-coding-agent/wiki/types";
 import { TempDir } from "@oh-my-pi/pi-utils";
 
@@ -387,5 +388,27 @@ describe("native Wiki memory", () => {
 		expect(evidence).toContain("deployment passed");
 		expect(evidence).not.toContain("private reasoning canary");
 		expect(evidence).not.toContain("old memory feedback");
+	});
+
+	it("appends external vault evidence and recalls it without crossing project scopes", async () => {
+		await using temp = TempDir.createSync("external-vault-");
+		const vault = new ExternalVault(temp.join("."));
+		const written = await vault.append({
+			content: "Marker VAULTSCOPE says the external vault is the memory store.",
+			scope: "project-a",
+		});
+		await Bun.write(
+			temp.join("wiki/memory/cutover.md"),
+			"---\nid: w-cutover\nscope: project-a\nstatus: active\n---\n# Vault cutover\n\nCompiled notes are read from wiki.\n",
+		);
+		await Bun.write(
+			temp.join("wiki/other/secret.md"),
+			"---\nid: w-secret\nscope: project-b\nstatus: active\n---\n# Secret\n\nVAULTSCOPE belongs to another project.\n",
+		);
+		const notes = await vault.notes(["project-a"]);
+		expect(vault.search("VAULTSCOPE", notes, 5).map(note => note.id)).toEqual([written.id]);
+		expect((await vault.find("w-cutover", ["project-a"]))?.kind).toBe("page");
+		expect(await vault.find(written.id, ["project-b"])).toBeUndefined();
+		expect(await vault.find("w-secret", ["project-a"])).toBeUndefined();
 	});
 });

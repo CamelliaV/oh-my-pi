@@ -449,7 +449,7 @@ editing a patched region, or when a patch's reasoning matters.
 8. `feat(web)` codex-affinity search chain gating — `codex-affinity.ts, web-search-affinity-driver.ts, anthropic-affinity.ts, provider-chain.test.ts`
 9. `feat(tui)` tool intent as highlighted card annotation — `tool-execution.ts, read-tool-group.ts`
 10. `feat(extensions)` session-nav user-turn viewport jump — `session-nav.ts`
-11. `feat(extensions)` history_search recall over full session history — `recall.ts`
+11. `feat(extensions)` history_search recall over full session history + session_search cross-session recall — `recall.ts`
 12. `feat(extensions)` desktop-pet companion (bypasses disabled KDE notifications) — `pet-bridge.ts, omp_pet.py, skins.py, motions.json`
 13. `fix(tui)` kitty per-screen graphics store retransmit — `image.ts, tui.ts`
 14. `feat(tui)` read-only Workspace Inspector — `workspace-inspector/, git-snapshot.ts`

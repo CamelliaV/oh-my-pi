@@ -131,6 +131,32 @@ reasoning matters.
    re-attaches persisted image blobs (screenshots) the model lost to
    compaction. `loadMode: "essential"`, `approval: "read"`. Driver-tested on
    synthetic + real session JSONL; PTY-registered via live `/tools`.
+   The same file also registers `session_search`, which covers what the branch
+   cannot: `history_search` sees ONE branch, so a question whose answer lives in
+   an earlier, already-ended session is unreachable by it. Design constraints
+   found while building it:
+   - corpus is small — 899 transcripts / 765 MB of JSONL. `du` on the sessions
+     root reports 16 GB, but that is bash log sidecars (`*.bash.log`, one is
+     14.4 GB), NOT transcripts. Do not size a design off `du`.
+   - byte prefilter first: `Buffer#indexOf` over the raw file for multi-char
+     query tokens + contiguous CJK runs; only lines that hit get decoded and
+     `JSON.parse`d. Measured 220 MB / 173 transcripts in ~1.1 s; a common term
+     ("session", 19.7k matched lines) ~2.7 s; `scope:"all"` over all 78 projects
+     trips the 5 s scan budget and says so.
+   - a transcript file also holds rewound and branched-away turns, so a raw
+     search reports things that never happened on the live branch. The active
+     chain is rebuilt by walking `parentId` from the last appended entry — and
+     `id`/`parentId` are NOT the first keys of every line (`custom` entries put
+     a nested `data` object first), so a prefix regex silently misses 35% of
+     lines. `entryLineIds` walks top-level key/value pairs instead and is
+     differential-checked against `JSON.parse` (`--lineage` driver leg).
+   - budgets and honest reporting: 5 s scan, 6000 matched lines, 64 MB per
+     file, and the footer states files scanned vs candidates, entries dropped as
+     rewound/branched, files whose branch was unreadable, and what was skipped.
+   - `rankBm25` was allocation-bound (a `Map` plus a counter object per doc);
+     term slots + reusable `Int32Array`s cut a 27k-doc rank from 2.7 s to ~0.1 s
+     with identical output. It is generic over the doc type now, so
+     `session_search` hits keep their `session` field without a cast.
 12. `feat(extensions)` desktop-pet companion (bypasses disabled KDE notifications) —
    runtime extension `extensions/pet-bridge.ts` (deployed by symlink to
    `~/.omp/agent/extensions/`) + independent GTK4 layer-shell daemon

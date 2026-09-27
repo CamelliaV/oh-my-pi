@@ -64,6 +64,11 @@ function loadProvider(id: string, loader: ProviderLoader): Promise<SearchProvide
 	return instance;
 }
 
+/** Drop cached provider instances so a test can replace one before the next search. */
+export function resetSearchProvidersForTest(): void {
+	providerInstances.clear();
+}
+
 /** Format one provider failure for the user-facing fallback summary. */
 export function formatSearchProviderFailure(error: unknown, provider: { id: string; label: string }): string {
 	if (error instanceof SearchProviderError) {

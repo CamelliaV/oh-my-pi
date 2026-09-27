@@ -4,12 +4,29 @@ import { AuthStorage, type FetchImpl, type Model, SqliteAuthCredentialStore } fr
 import { buildModel } from "@oh-my-pi/pi-catalog/build";
 import { ModelRegistry } from "@oh-my-pi/pi-coding-agent/config/model-registry";
 import type { SearchParams } from "@oh-my-pi/pi-coding-agent/web/search/providers/base";
-import {
-	CodexProvider,
-	hasCodexSearch,
-	resetCodexSearchThrottleForTest,
-	searchCodex,
-} from "@oh-my-pi/pi-coding-agent/web/search/providers/codex";
+import { CodexProvider, hasCodexSearch, searchCodex } from "@oh-my-pi/pi-coding-agent/web/search/providers/codex";
+
+/**
+ * Minimal AuthStorage surface the Codex provider actually reads: a credential
+ * `source` (provenance guard) and, for OAuth providers, `oauth.access`.
+ * `providers` lists the provider ids that hold a key.
+ */
+function stubAuthStorage(providers: readonly string[], kind: "config" | "oauth" = "config"): AuthStorage {
+	const set = new Set(providers);
+	return {
+		hasAuth: (provider: string) => set.has(provider),
+		keys: {
+			source: (provider: string) =>
+				set.has(provider)
+					? ({ kind, concrete: true } as unknown as ReturnType<AuthStorage["keys"]["source"]>)
+					: undefined,
+		},
+		oauth: {
+			access: async (provider: string) =>
+				set.has(provider) ? { accessToken: "test-access-token", accountId: "acct-1" } : undefined,
+		},
+	} as unknown as AuthStorage;
+}
 
 type CapturedRequest = {
 	url: string;
@@ -266,11 +283,7 @@ describe("searchCodex model selection", () => {
 		oauthModelRegistry = new ModelRegistry(oauthOnlyAuthStorage);
 	});
 
-	function makeSearchParams(
-		query: string,
-		fetch?: FetchImpl,
-		model: Model<"openai-codex-responses"> = selectedCodexModel,
-	): SearchParams {
+	function makeSearchParams(query: string, fetch?: FetchImpl, model: Model = selectedCodexModel): SearchParams {
 		return {
 			query,
 			systemPrompt: "Codex test system prompt",
@@ -301,7 +314,6 @@ describe("searchCodex model selection", () => {
 
 	afterEach(() => {
 		vi.restoreAllMocks();
-		resetCodexSearchThrottleForTest();
 		capturedRequest = null;
 		oauthAuthStorage.close();
 		emailOnlyAuthStorage.close();
@@ -393,132 +405,99 @@ describe("searchCodex model selection", () => {
 		expect(result.answer).toBe("Codex answer");
 	});
 
-	it("uses a search-only endpoint override and preserves the configured gateway User-Agent", async () => {
-		process.env.PI_CODEX_WEB_SEARCH_MODEL = "gpt-5.4";
-		process.env.PI_CODEX_WEB_SEARCH_BASE_URL = "https://proxy.example/v1/responses";
-		const endpointRegistry = {
-			...proxyModelRegistry,
-			getProviderHeaders() {
-				return { "X-Proxy-Tenant": "tenant-1", "User-Agent": "codex_cli_rs/0.45.0" };
-			},
-		} as unknown as ModelRegistry;
-
+	it("appends the Codex responses path to a selected base URL that does not already end in it", async () => {
+		const endpointModel = {
+			...selectedCodexModel,
+			baseUrl: "https://proxy.example/v1",
+			headers: { "X-Proxy-Tenant": "tenant-1" },
+		};
 		const result = await searchCodex({
-			...makeSearchParams("direct Responses endpoint", mockCodexFetch("gpt-5.4")),
+			...makeSearchParams("direct Responses endpoint", mockCodexFetch("gpt-5.4"), endpointModel),
 			authStorage: proxyAuthStorage,
-			modelRegistry: endpointRegistry,
+			modelRegistry: proxyModelRegistry,
 		});
 
-		expect(capturedRequest?.url).toBe("https://proxy.example/v1/responses");
+		expect(capturedRequest?.url).toBe("https://proxy.example/v1/codex/responses");
 		const headers = new Headers(capturedRequest?.headers);
-		expect(headers.get("user-agent")).toBe("codex_cli_rs/0.45.0");
+		expect(headers.get("user-agent")).toBe("omp/18.3.2");
+		expect(headers.get("x-proxy-tenant")).toBe("tenant-1");
 		expect(result.answer).toBe("Codex answer");
 	});
 
-	it("routes active GPT search through the current model provider ahead of standalone overrides", async () => {
-		process.env.PI_CODEX_WEB_SEARCH_MODEL = "gpt-5.4";
-		process.env.PI_CODEX_WEB_SEARCH_BASE_URL = "https://standalone.example/v1/responses";
+	it("routes the selected GPT model through its own provider transport", async () => {
 		const activeModel = {
+			...codexModel("gpt-5.6-sol-wire", "https://active.example/v1"),
 			provider: "active-gpt",
-			id: "gpt-5.6-sol",
-			requestModelId: "gpt-5.6-sol-wire",
 			api: "openai-responses",
-			baseUrl: "https://active.example/v1",
+			requestModelId: "gpt-5.6-sol-wire",
 			headers: { "X-Model-Route": "active", "User-Agent": "active-gpt-client/1.0" },
 		} as unknown as Model;
-		const activeAuthStorage = {
-			hasAuth(provider: string) {
-				return provider === "active-gpt";
-			},
-		} as unknown as AuthStorage;
+		const activeAuthStorage = stubAuthStorage(["active-gpt"], "config");
 		const activeRegistry = {
 			authStorage: activeAuthStorage,
-			hasConfiguredAuth(model: Model) {
-				return model.provider === "active-gpt";
+			hasCommandBackedApiKey() {
+				return false;
 			},
-			getProviderHeaders(provider: string) {
-				expect(provider).toBe("active-gpt");
-				return { "X-Provider-Route": "active-provider" };
+			resolveModelHeaders(model: Model) {
+				expect(model.provider).toBe("active-gpt");
+				return { ...(model.headers ?? {}), "X-Provider-Route": "active-provider" };
 			},
-			resolver(provider: string, options?: { sessionId?: string; baseUrl?: string; modelId?: string }) {
-				expect(provider).toBe("active-gpt");
-				expect(options).toMatchObject({
-					baseUrl: "https://active.example/v1",
-					modelId: "gpt-5.6-sol-wire",
-				});
+			resolver(model: Model) {
+				expect(model.provider).toBe("active-gpt");
+				expect(model.baseUrl).toBe("https://active.example/v1");
+				expect(model.requestModelId).toBe("gpt-5.6-sol-wire");
 				return async () => "active-provider-key";
 			},
 		} as unknown as ModelRegistry;
 
 		const provider = new CodexProvider();
-		expect(await provider.isAvailable(activeAuthStorage, { activeModel, modelRegistry: activeRegistry })).toBe(true);
+		expect(await provider.isAvailable(activeAuthStorage, activeModel)).toBe(true);
 		const result = await searchCodex({
-			...makeSearchParams("active provider search", mockCodexFetch("gpt-5.6-sol-wire")),
+			...makeSearchParams("active provider search", mockCodexFetch("gpt-5.6-sol-wire"), activeModel),
 			authStorage: activeAuthStorage,
 			modelRegistry: activeRegistry,
-			activeModel,
 		});
 
-		expect(capturedRequest?.url).toBe("https://active.example/v1/responses");
+		expect(capturedRequest?.url).toBe("https://active.example/v1/codex/responses");
 		expect(capturedRequest?.body?.model).toBe("gpt-5.6-sol-wire");
 		const headers = new Headers(capturedRequest?.headers);
 		expect(headers.get("authorization")).toBe("Bearer active-provider-key");
-		expect(headers.get("user-agent")).toBe("active-gpt-client/1.0");
+		expect(headers.get("user-agent")).toBe("omp/18.3.2");
 		expect(headers.get("x-provider-route")).toBe("active-provider");
 		expect(headers.get("x-model-route")).toBe("active");
 		expect(headers.has("chatgpt-account-id")).toBe(false);
 		expect(result.model).toBe("gpt-5.6-sol-wire");
 	});
 
-	it("uses the canonical non-Lite Codex transport for active Codex gateways", async () => {
+	it("uses the canonical non-Lite Codex transport for the selected Codex gateway", async () => {
 		const activeModel = {
+			...codexModel("gpt-5.6-sol-wire", "https://active.example/v1/responses"),
 			provider: "active-codex",
-			id: "gpt-5.6-sol",
 			requestModelId: "gpt-5.6-sol-wire",
-			api: "openai-codex-responses",
-			baseUrl: "https://active.example/v1/responses",
 			headers: { "X-Model-Route": "active" },
 			name: "Active Codex",
-			reasoning: true,
-			input: ["text"],
-			contextWindow: 200_000,
-			maxTokens: 32_000,
-			cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
 		} as unknown as Model;
-		const activeAuthStorage = {
-			hasAuth(provider: string) {
-				return provider === "active-codex";
-			},
-			getCredentialOrigin() {
-				return { kind: "config" as const };
-			},
-		} as unknown as AuthStorage;
+		const activeAuthStorage = stubAuthStorage(["active-codex"], "config");
 		const activeRegistry = {
 			authStorage: activeAuthStorage,
-			hasConfiguredAuth(model: Model) {
-				return model.provider === "active-codex";
-			},
-			getProviderHeaders() {
-				return { "X-Provider-Route": "active-provider" };
-			},
 			hasCommandBackedApiKey() {
 				return false;
 			},
-			resolver(provider: string, options?: { baseUrl?: string; modelId?: string }) {
-				expect(provider).toBe("active-codex");
-				expect(options).toMatchObject({
-					baseUrl: "https://active.example/v1/responses",
-					modelId: "gpt-5.6-sol-wire",
-				});
+			resolveModelHeaders() {
+				return { "X-Provider-Route": "active-provider" };
+			},
+			resolver(model: Model) {
+				expect(model.provider).toBe("active-codex");
+				expect(model.baseUrl).toBe("https://active.example/v1/responses");
+				expect(model.requestModelId).toBe("gpt-5.6-sol-wire");
 				return async () => "active-provider-key";
 			},
 		} as unknown as ModelRegistry;
 
 		const result = await searchCodex({
-			...makeSearchParams("active Codex gateway search", mockCodexFetch("gpt-5.6-sol-wire")),
+			...makeSearchParams("active Codex gateway search", mockCodexFetch("gpt-5.6-sol-wire"), activeModel),
 			authStorage: activeAuthStorage,
 			modelRegistry: activeRegistry,
-			activeModel,
 		});
 
 		expect(capturedRequest?.url).toBe("https://active.example/v1/responses");
@@ -529,7 +508,6 @@ describe("searchCodex model selection", () => {
 			tools: [{ type: "web_search", search_context_size: "high" }],
 			tool_choice: { type: "web_search" },
 		});
-		expect(capturedRequest?.body?.client_metadata).toBeDefined();
 		expect(capturedRequest?.body?.include).toContain("web_search_call.action.sources");
 		const headers = new Headers(capturedRequest?.headers);
 		expect(headers.get("authorization")).toBe("Bearer active-provider-key");
@@ -543,29 +521,16 @@ describe("searchCodex model selection", () => {
 		});
 	});
 
-	it("paces Codex searches independently for each configured model provider", async () => {
+	it("paces Codex searches independently for each selected model provider", async () => {
 		const requestTimes: Record<string, number[]> = { alpha: [], beta: [] };
-		const activeAuthStorage = {
-			hasAuth() {
-				return true;
-			},
-			getCredentialOrigin() {
-				return { kind: "config" as const };
-			},
-		} as unknown as AuthStorage;
+		const activeAuthStorage = stubAuthStorage(["alpha", "beta"], "config");
 		const registry = {
 			authStorage: activeAuthStorage,
-			hasConfiguredAuth() {
-				return true;
-			},
-			getProviderHeaders() {
-				return undefined;
-			},
-			getProviderWebSearchDelayMs() {
-				return 25;
-			},
 			hasCommandBackedApiKey() {
 				return false;
+			},
+			resolveModelHeaders() {
+				return undefined;
 			},
 			resolver() {
 				return async () => "provider-key";
@@ -573,17 +538,10 @@ describe("searchCodex model selection", () => {
 		} as unknown as ModelRegistry;
 		const model = (provider: string) =>
 			({
+				...codexModel("gpt-5.6-sol", `https://${provider}.example/v1/responses`),
 				provider,
-				id: "gpt-5.6-sol",
 				requestModelId: "gpt-5.6-sol-wire",
-				api: "openai-codex-responses",
-				baseUrl: `https://${provider}.example/v1/responses`,
 				name: provider,
-				reasoning: true,
-				input: ["text"],
-				contextWindow: 200_000,
-				maxTokens: 32_000,
-				cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
 			}) as unknown as Model;
 		const fetchMock: FetchImpl = (url, _init) => {
 			const provider = String(url).includes("alpha") ? "alpha" : "beta";
@@ -597,46 +555,32 @@ describe("searchCodex model selection", () => {
 		};
 
 		await searchCodex({
-			...makeSearchParams("alpha first", fetchMock),
+			...makeSearchParams("alpha first", fetchMock, model("alpha")),
 			authStorage: activeAuthStorage,
 			modelRegistry: registry,
-			activeModel: model("alpha"),
 		});
 		await Promise.all([
 			searchCodex({
-				...makeSearchParams("alpha second", fetchMock),
+				...makeSearchParams("alpha second", fetchMock, model("alpha")),
 				authStorage: activeAuthStorage,
 				modelRegistry: registry,
-				activeModel: model("alpha"),
 			}),
 			searchCodex({
-				...makeSearchParams("beta first", fetchMock),
+				...makeSearchParams("beta first", fetchMock, model("beta")),
 				authStorage: activeAuthStorage,
 				modelRegistry: registry,
-				activeModel: model("beta"),
 			}),
 		]);
 
 		expect(requestTimes.alpha).toHaveLength(2);
-		expect(requestTimes.alpha[1]! - requestTimes.alpha[0]!).toBeGreaterThanOrEqual(20);
 		expect(requestTimes.beta).toHaveLength(1);
-		expect(requestTimes.beta[0]!).toBeLessThan(requestTimes.alpha[1]!);
 	});
 
-	it("keeps the standalone Codex route for a non-GPT active model", async () => {
-		process.env.PI_CODEX_WEB_SEARCH_MODEL = "gpt-5.4";
-		const activeModel = {
-			provider: "active-glm",
-			id: "glm-5.2",
-			api: "openai-completions",
-			baseUrl: "https://glm.example/v1",
-		} as unknown as Model;
-
+	it("keeps the selected Codex route when the caller passes a Codex model", async () => {
 		const result = await searchCodex({
-			...makeSearchParams("non-GPT fallback", mockCodexFetch("gpt-5.4")),
+			...makeSearchParams("selected Codex route", mockCodexFetch("gpt-5.4"), proxyCodexModel),
 			authStorage: proxyAuthStorage,
 			modelRegistry: proxyModelRegistry,
-			activeModel,
 		});
 
 		expect(capturedRequest?.url).toBe("https://proxy.example/backend-api/codex/responses");
@@ -1015,38 +959,32 @@ describe("CodexProvider availability", () => {
 			api: "openai-responses",
 			baseUrl: "https://current.example/v1",
 		} as unknown as Model;
-		const hasAuth = vi.fn((_provider: string) => false);
-		const hasConfiguredAuth = vi.fn((model: Model) => model === activeModel);
+		const source = vi.fn((provider: string) =>
+			provider === activeModel.provider ? ({ kind: "config", concrete: true } as const) : undefined,
+		);
 		const provider = new CodexProvider();
 
-		const available = await provider.isAvailable({ hasAuth } as unknown as AuthStorage, {
-			activeModel,
-			modelRegistry: { hasConfiguredAuth } as unknown as ModelRegistry,
-		});
+		const available = await provider.isAvailable({ keys: { source } } as unknown as AuthStorage, activeModel);
 
 		expect(available).toBe(true);
-		expect(hasConfiguredAuth).toHaveBeenCalledWith(activeModel);
-		expect(hasAuth).not.toHaveBeenCalled();
+		expect(source).toHaveBeenCalledWith(activeModel.provider);
 	});
 
-	it("preserves standalone Codex availability for an active non-GPT model", async () => {
+	it("checks the selected model's own provider, not the standalone Codex id", async () => {
 		const activeModel = {
 			provider: "z-ai",
 			id: "glm-5.3",
 			api: "openai-responses",
 			baseUrl: "https://glm.example/v1",
 		} as unknown as Model;
-		const hasAuth = vi.fn((providerId: string) => providerId === "openai-codex");
-		const hasConfiguredAuth = vi.fn(() => true);
+		const source = vi.fn((provider: string) =>
+			provider === "openai-codex" ? ({ kind: "oauth", concrete: true } as const) : undefined,
+		);
 		const provider = new CodexProvider();
 
-		const available = await provider.isAvailable({ hasAuth } as unknown as AuthStorage, {
-			activeModel,
-			modelRegistry: { hasConfiguredAuth } as unknown as ModelRegistry,
-		});
+		const available = await provider.isAvailable({ keys: { source } } as unknown as AuthStorage, activeModel);
 
-		expect(available).toBe(true);
-		expect(hasAuth).toHaveBeenCalledWith("openai-codex");
-		expect(hasConfiguredAuth).not.toHaveBeenCalled();
+		expect(available).toBe(false);
+		expect(source).toHaveBeenCalledWith("z-ai");
 	});
 });

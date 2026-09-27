@@ -1,9 +1,11 @@
 import { afterEach, describe, expect, it } from "bun:test";
+import type { Api, Model } from "@oh-my-pi/pi-ai";
 import { ModelRegistry } from "@oh-my-pi/pi-coding-agent/config/model-registry";
 import { resolveModelRoleValue, resolveRoleChain } from "@oh-my-pi/pi-coding-agent/config/model-resolver";
 import { roleCandidatePool } from "@oh-my-pi/pi-coding-agent/config/model-roles";
 import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import type { AuthStorage } from "@oh-my-pi/pi-coding-agent/session/auth-storage";
+import { isCodexSearchAffinityModel } from "@oh-my-pi/pi-coding-agent/web/search/providers/codex-affinity";
 import { getSearchProvider } from "@oh-my-pi/pi-coding-agent/web/search/provider";
 import { createInMemoryAuthStorage } from "../../helpers/agent-session-setup";
 
@@ -108,16 +110,25 @@ describe("web model candidate availability", () => {
 		expect(await provider.isExplicitlyAvailable(authStorage, candidate.model)).toBe(true);
 	});
 
-	it("admits the affinity-promoted codex provider ahead of the chain for a GPT session", async () => {
-		enableKeyBackedProviders();
-		setExcludedSearchProviders(SEARCH_PROVIDER_ORDER.filter(id => id !== "codex" && id !== "jina"));
-		const modelRegistry = { hasConfiguredAuth: () => true } as unknown as ModelRegistry;
+	it("classifies only GPT session models as codex-affine", () => {
+		const gpt = {
+			provider: "openai",
+			id: "gpt-5.6-sol",
+			requestModelId: "gpt-5.6-sol",
+			api: "openai-codex-responses",
+			baseUrl: "https://chatgpt.com/backend-api/codex",
+		} as unknown as Model<Api>;
+		const glm = {
+			provider: "z-ai",
+			id: "glm-5.3",
+			api: "openai-completions",
+			baseUrl: "https://glm.example/v1",
+		} as unknown as Model<Api>;
 
-		const providers = await resolveProviderChain(authStorage, undefined, {
-			activeModel: codexAffinityModel,
-			modelRegistry,
-		});
-
-		expect(providers.map(provider => provider.id)).toEqual(["codex", "jina"]);
+		// This classification is the gate prependSearchAffinity uses to promote
+		// the session's own model; a non-GPT model must never qualify, or a
+		// leftover codex gateway config would hijack its searches.
+		expect(isCodexSearchAffinityModel(gpt)).toBe(true);
+		expect(isCodexSearchAffinityModel(glm)).toBe(false);
 	});
 });

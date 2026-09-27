@@ -5,9 +5,11 @@
  *   bun packages/coding-agent/test/web-search-affinity-driver.ts
  */
 import type { AuthStorage, Model } from "@oh-my-pi/pi-ai";
-import type { ModelRegistry } from "@oh-my-pi/pi-coding-agent/config/model-registry";
+import { ModelRegistry } from "@oh-my-pi/pi-coding-agent/config/model-registry";
 import { runSearchQuery } from "@oh-my-pi/pi-coding-agent/web/search";
-import { setExcludedSearchProviders, setSearchProviderOrder } from "@oh-my-pi/pi-coding-agent/web/search/provider";
+import { cfgRetryFallbackChains } from "@oh-my-pi/pi-coding-agent/session/settings";
+import { createInMemoryAuthStorage } from "./helpers/agent-session-setup";
+import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 
 const hits: Array<{ path: string; body: Record<string, unknown> | null }> = [];
 
@@ -55,18 +57,16 @@ const server = Bun.serve({
 	},
 });
 
-const authStorage = {
-	hasAuth: () => false,
-	getCredentialOrigin: () => undefined,
-} as unknown as AuthStorage;
-const modelRegistry = {
-	authStorage,
-	resolver: () => "test-key",
-	hasConfiguredAuth: () => true,
-	getProviderHeaders: () => ({}),
-	getProviderWebSearchDelayMs: () => 0,
-	hasCommandBackedApiKey: () => false,
-} as unknown as ModelRegistry;
+const settings = await Settings.init({ inMemory: true });
+// The web role chain is the only lever left: an empty fallback list means
+// "admit whatever the primary selector resolves to, nothing else".
+cfgRetryFallbackChains.set(settings, { web: [] });
+
+const authStorage = createInMemoryAuthStorage();
+// The mock relay's provider id is what Codex availability keys off, so seed a
+// runtime key for it rather than stubbing the whole cascade.
+authStorage.keys.setRuntime("mockgpt", "test-key");
+const modelRegistry = new ModelRegistry(authStorage, undefined, { settings });
 
 function affinityModel(): Model {
 	return {
@@ -87,8 +87,6 @@ function check(label: string, ok: boolean, extra?: unknown): void {
 
 // Case 1: GPT affinity model — duckduckgo is hand-ordered FIRST, codex must still
 // run before it and succeed via the affinity transport (mock relay).
-setSearchProviderOrder(["duckduckgo"]);
-setExcludedSearchProviders([]);
 hits.length = 0;
 const affinityResult = await runSearchQuery(
 	{ query: "latest stable Node.js LTS version" },
@@ -113,29 +111,6 @@ check(
 // webSearchOrder=["codex"] (leftover gateway config). Codex must be dropped
 // from the chain entirely — not attempted, no failure record — while every
 // other provider except exa stays excluded to keep the run hermetic.
-setSearchProviderOrder(["codex"]);
-setExcludedSearchProviders([
-	"perplexity",
-	"gemini",
-	"xai",
-	"zai",
-	"tinyfish",
-	"jina",
-	"kagi",
-	"tavily",
-	"firecrawl",
-	"brave",
-	"kimi",
-	"parallel",
-	"synthetic",
-	"searxng",
-	"startpage",
-	"duckduckgo",
-	"ecosia",
-	"google",
-	"mojeek",
-	"public",
-]);
 hits.length = 0;
 const plainModel = {
 	provider: "z-ai",
@@ -153,10 +128,9 @@ check(
 	hits.map(h => h.path),
 );
 check(
-	"non-affinity control attempted nothing (only exa allowed, unauthenticated)",
-	controlResult.details.response.provider === "none" &&
-		controlResult.details.error === "No web search provider configured.",
-	`${controlResult.details.response.provider} / ${controlResult.details.error}`,
+	"non-affinity control attempted nothing (empty fallback chain)",
+	controlResult.details.response.provider === "none",
+	`${controlResult.details.response.provider} / ${controlResult.details.error ?? "no error"}`,
 );
 check(
 	"non-affinity control recorded no codex failure",

@@ -5,7 +5,7 @@
  * any dimension that would eliminate every result.
  */
 import { afterEach, describe, expect, it, vi } from "bun:test";
-import type { AuthStorage } from "@oh-my-pi/pi-ai";
+import type { AuthStorage, Model } from "@oh-my-pi/pi-ai";
 import { ModelRegistry } from "@oh-my-pi/pi-coding-agent/config/model-registry";
 import { resetSettingsForTest, Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import { runSearchQuery } from "@oh-my-pi/pi-coding-agent/web/search";
@@ -76,13 +76,14 @@ describe("web search directive pipeline", () => {
 			api: "openai-responses",
 			baseUrl: "https://current.example/v1",
 		} as unknown as Model;
+		const context = await stubRoleProvider("codex", async () => ({ provider: "codex", sources: SOURCES }));
 		let seenSearchParams: SearchParams | undefined;
 		let seenAvailabilityModel: Model | undefined;
 		const searchProvider: provider.SearchProvider = {
 			id: "codex",
 			label: "codex",
-			isAvailable: (_authStorage, context) => {
-				seenAvailabilityModel = context?.activeModel;
+			isAvailable: (_authStorage, model) => {
+				seenAvailabilityModel = model;
 				return true;
 			},
 			isExplicitlyAvailable: () => true,
@@ -91,23 +92,24 @@ describe("web search directive pipeline", () => {
 				return { provider: "codex", sources: SOURCES };
 			},
 		};
-		vi.spyOn(provider, "resolveProviderCandidates").mockReturnValue([{ id: "codex", explicit: false }]);
-		vi.spyOn(provider, "getSearchProvider").mockResolvedValue(searchProvider);
+		provider.resetSearchProvidersForTest();
+		const getGrounded = vi.spyOn(provider, "getGroundedSearchProvider").mockResolvedValue(searchProvider);
 
-		await runSearchQuery({ query: "active provider" }, { authStorage: {} as AuthStorage, activeModel });
+		await runSearchQuery({ query: "active provider" }, { ...context, activeModel });
+		getGrounded.mockRestore();
 
-		expect(seenAvailabilityModel).toBe(activeModel);
-		expect(seenSearchParams?.activeModel).toBe(activeModel);
+		// Affinity copies the running model and stamps the Codex grounding on it.
+		expect(seenAvailabilityModel).toMatchObject({ ...activeModel, webSearch: "codex" });
+		expect(seenSearchParams?.model).toMatchObject({ ...activeModel, webSearch: "codex" });
 	});
 
-	it("skips standalone Codex without credentials for a non-GPT session and continues to Exa", async () => {
-		const activeModel = {
-			provider: "z-ai",
-			id: "glm-5.3",
-			api: "openai-responses",
-			baseUrl: "https://glm.example/v1",
-		} as unknown as Model;
-		const codexProvider = new CodexProvider();
+	it("skips a credential-less Codex role and continues to the next configured provider", async () => {
+		const settings = await Settings.init({ inMemory: true });
+		settings.setModelRole("web", "web/codex");
+		cfgRetryFallbackChains.set(settings, { web: ["web/exa"] });
+		const authStorage = createInMemoryAuthStorage();
+		openAuthStorages.push(authStorage);
+		const modelRegistry = new ModelRegistry(authStorage, undefined, { settings });
 		const exaProvider: provider.SearchProvider = {
 			id: "exa",
 			label: "exa",
@@ -115,18 +117,11 @@ describe("web search directive pipeline", () => {
 			isExplicitlyAvailable: () => true,
 			search: async () => ({ provider: "exa", sources: SOURCES }),
 		};
-		vi.spyOn(provider, "resolveProviderCandidates").mockReturnValue([
-			{ id: "codex", explicit: false },
-			{ id: "exa", explicit: false },
-		]);
 		vi.spyOn(provider, "getSearchProvider").mockImplementation(async id =>
-			id === "codex" ? codexProvider : exaProvider,
+			id === "exa" ? exaProvider : new CodexProvider(),
 		);
 
-		const result = await runSearchQuery(
-			{ query: "non-GPT fallback" },
-			{ authStorage: { hasAuth: () => false } as unknown as AuthStorage, activeModel },
-		);
+		const result = await runSearchQuery({ query: "credential-less Codex" }, { authStorage, modelRegistry });
 
 		expect(result.details.response.provider).toBe("exa");
 		expect(result.details.response.sources).toEqual(SOURCES);

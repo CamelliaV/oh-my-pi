@@ -87,7 +87,7 @@ interface AgentSessionWithMnemopiState extends AgentSession {
 	[kMnemopiSessionState]?: MnemopiSessionState;
 }
 
-interface MnemopiScopedMemory {
+export interface MnemopiScopedMemory {
 	bank: string;
 	memory: Mnemopi;
 }
@@ -281,6 +281,16 @@ export class MnemopiSessionState {
 
 	getScopedRetainTarget(): MnemopiScopedMemory {
 		return this.scoped.retain;
+	}
+
+	/**
+	 * Bank for `scope: "global"` writes: the retain bank under `global` scoping, the shared bank
+	 * under `per-project-tagged`. Throws under `per-project`, which has no bank every project recalls.
+	 */
+	getGlobalRetainTarget(): MnemopiScopedMemory {
+		const target = this.config.scoping === "global" ? this.scoped.retain : this.scoped.global;
+		if (!target) throw new Error("Mnemopi global scope requires global or per-project-tagged scoping.");
+		return target;
 	}
 
 	/**
@@ -479,10 +489,18 @@ export class MnemopiSessionState {
 		}
 	}
 
-	/** Explicit write: throws the storage error, so the caller can report why nothing was stored. */
-	rememberScoped(memory: MnemopiRememberInput, options: MnemopiRememberOptions = {}): string {
-		const [scrubbed, scrubbedOptions] = redactRememberWrite(memory, options);
-		return this.scoped.retain.memory.remember(scrubbed, scrubbedOptions);
+	/**
+	 * Explicit write: throws the storage error, so the caller can report why nothing was stored.
+	 * `target` defaults to the retain bank; pass {@link getGlobalRetainTarget} for a global write.
+	 */
+	rememberScoped(
+		memory: MnemopiRememberInput,
+		options: MnemopiRememberOptions = {},
+		target: MnemopiScopedMemory = this.scoped.retain,
+	): string {
+		const safe = redactSecretFields({ memory, options }, this.session.obfuscator);
+		const [scrubbed, scrubbedOptions] = redactRememberWrite(safe.memory, safe.options);
+		return target.memory.remember(scrubbed, scrubbedOptions);
 	}
 
 	async recallForContext(query: string, question = query, signal?: AbortSignal): Promise<string | undefined> {
@@ -829,7 +847,7 @@ export class MnemopiSessionState {
 }
 
 // `per-project-tagged` is implemented by opening both the project bank and the
-// shared bank, then merging recall results while keeping writes project-local.
+// shared bank, then merging recall results while keeping writes project-local by default.
 function createScopedResources(config: MnemopiBackendConfig): MnemopiScopedResources {
 	// Env vars (MNEMOPI_POLYPHONIC_RECALL / MNEMOPI_ENHANCED_RECALL) still override
 	// these config-driven defaults inside the core gates. Proactive linking is

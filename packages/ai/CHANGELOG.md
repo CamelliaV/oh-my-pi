@@ -15,6 +15,12 @@
 - Anthropic user turns always serialize as content blocks, so a message no longer changes wire shape depending on whether it holds the rolling prompt-cache anchor — previously each user turn rewrote a byte inside the cached prefix, truncating the reusable region at that point.
 - Fixed Bun's `unknown certificate verification error` (a transient relay/MITM-proxy TLS handshake blip) being classified as terminal, so provider streams now auto-retry it like `tls: bad record MAC`; the config-level `tls: failed to verify certificate` wording stays non-retryable.
 - Fixed Codex (ChatGPT-subscription) turns dying on `invalid_prompt` moderation false positives — the backend spuriously flags long code-laden prompts, so those failure events now retry instead of aborting the turn.
+## [18.3.4] - 2026-09-27
+
+### Fixed
+
+- Fixed Anthropic OAuth requests capping output at 64k tokens; they now request the model's full ceiling (128k on Opus 5.5), matching Claude Code and API-key requests
+
 ## [18.3.2] - 2026-09-25
 
 ### Fixed

@@ -1,5 +1,6 @@
 import { type } from "@oh-my-pi/omptype";
 import type { AgentTool, AgentToolResult } from "@oh-my-pi/pi-agent-core";
+import { prompt } from "@oh-my-pi/pi-utils";
 import { sanitizeSkillName, writeManagedSkill } from "../autolearn/managed-skills";
 import { isNameClaimedByAuthoredSkill } from "../extensibility/skills";
 import { isHindsightConfigured, loadHindsightConfig } from "../hindsight/config";
@@ -10,34 +11,56 @@ import type { ToolSession } from ".";
 
 import { cfgAutolearnEnabled } from "../autolearn/settings";
 import { cfgMemoryBackend } from "../memory-backend/settings";
+import { isGlobalMemoryScopeAvailable } from "../mnemopi/settings";
+import { getMnemopiSessionState } from "../mnemopi/state";
 
-const learnSchema = type({
+const learnSkillSchema = type({
+	action: "'create' | 'update'",
+	name: type("string").describe("kebab-case skill name"),
+	description: type("string").describe("one-line description of when to use the skill"),
+	body: type("string").describe("the SKILL.md body in markdown (no frontmatter)"),
+}).describe("also create or enhance a managed skill in the same call");
+
+const learnSchemaBase = type({
 	memory: type("string").describe("the durable, self-contained lesson to remember (what, when, why)"),
 	"context?": type("string").describe("optional source context for the lesson"),
-	"skill?": type({
-		action: "'create' | 'update'",
-		name: type("string").describe("kebab-case skill name"),
-		description: type("string").describe("one-line description of when to use the skill"),
-		body: type("string").describe("the SKILL.md body in markdown (no frontmatter)"),
-	}).describe("also create or enhance a managed skill in the same call"),
+	"skill?": learnSkillSchema,
 });
 
-export type LearnParams = typeof learnSchema.infer;
+/** Offered only where a shared bank exists; see {@link isGlobalMemoryScopeAvailable}. */
+const learnSchemaWithScope = type({
+	memory: type("string").describe("the durable, self-contained lesson to remember (what, when, why)"),
+	"context?": type("string").describe("optional source context for the lesson"),
+	"scope?": type("'project' | 'global'").describe(
+		"storage scope; defaults to project, global is for durable cross-project knowledge",
+	),
+	"skill?": learnSkillSchema,
+});
+
+type LearnSchema = typeof learnSchemaBase | typeof learnSchemaWithScope;
+
+export type LearnParams = typeof learnSchemaWithScope.infer;
 
 /**
  * Persists a lesson through the native backend, optionally writing a managed skill
  * when that backend permits direct publication. Candidate-gated backends require
  * verified behavior or manual approval through their skill workflow instead.
  */
-export class LearnTool implements AgentTool<typeof learnSchema> {
+export class LearnTool implements AgentTool<LearnSchema> {
 	readonly name = "learn";
-	readonly approval = (args: unknown) =>
-		(args as Partial<LearnParams>).skill
-			? "write"
-			: memoryBackendCapabilities[cfgMemoryBackend.get(this.session.settings)].saveApproval;
+	/** A global lesson reaches every project's recall, so it needs the same approval as a file write. */
+	readonly approval = (args: unknown) => {
+		const params = args as Partial<LearnParams>;
+		const capabilities = memoryBackendCapabilities[cfgMemoryBackend.get(this.session.settings)];
+		return params.skill || params.scope === "global" ? "write" : capabilities.saveApproval;
+	};
 	readonly label = "Learn";
-	readonly description = learnDescription;
-	readonly parameters = learnSchema;
+	get description(): string {
+		return prompt.render(learnDescription, { globalScope: isGlobalMemoryScopeAvailable(this.session.settings) });
+	}
+	get parameters(): LearnSchema {
+		return isGlobalMemoryScopeAvailable(this.session.settings) ? learnSchemaWithScope : learnSchemaBase;
+	}
 	readonly strict = true;
 	readonly loadMode = "essential" as const;
 	readonly summary = "Capture a reusable lesson to memory (and optionally a managed skill)";
@@ -59,15 +82,29 @@ export class LearnTool implements AgentTool<typeof learnSchema> {
 				"This memory backend requires verified or manually approved skill candidates. Use /memory skill propose; the lesson and skill were not saved.",
 			);
 		}
+		if (params.scope === "global") {
+			if (cfgMemoryBackend.get(this.session.settings) !== "mnemopi") {
+				throw new Error("Global memory scope is only available with the Mnemopi backend.");
+			}
+			const owner = this.session.getMemoryContext?.()?.session;
+			getMnemopiSessionState(owner)?.getGlobalRetainTarget();
+		}
 		const result = await createToolMemoryRuntimeContext(this.session).save({
 			content: params.memory,
 			context: params.context,
 			source: "coding-agent-learn",
 			importance: 0.8,
+			scope: params.scope,
 			tool: "learn",
 		});
 		if (result.error || (!result.queued && result.stored < 1)) {
-			throw new Error(result.error ?? result.message ?? "The memory backend did not store the lesson.");
+			const raw = result.error ?? result.message ?? "The memory backend did not store the lesson.";
+			const reason = raw.replace(/^Mnemopi did not store the memory: /, "");
+			const prefixed =
+				cfgMemoryBackend.get(this.session.settings) === "mnemopi" && !reason.startsWith("Mnemopi ")
+					? `Mnemopi did not store the lesson: ${reason}`
+					: reason;
+			throw new Error(prefixed);
 		}
 		const memoryMessage = result.queued ? "Lesson queued for retention" : "Lesson stored";
 

@@ -317,8 +317,6 @@ Test the contract the system exposes — not the easiest internal detail to asse
 
 Location: `packages/*/CHANGELOG.md` (per package).
 
-**NEVER update changelogs unless explicitly asked.** Do not add, edit, or reorder entries as part of a feature, fix, or PR unless the user requests it.
-
 **Format** — sections under `## [Unreleased]`:
 
 - `### Breaking Changes` (first if present)
@@ -433,7 +431,9 @@ patch series by hand/cherry-pick.
    PTY probes for extensions (`/tools`) — debug sessions MUST use `--no-session`.
 
 
-### Patch list (v18.3.0 baseline)
+v18.3.2→v18.3.4 (2026-09-27) parented `upstream/v18.3.4` on `d633fbf9` (555 files, +63063−6801, 11 conflicts resolved in trial/v18.3.4).
+
+### Patch list (v18.3.4 baseline)
 
 Index only. Full rationale, wire measurements, and verification recipes live in
 [`docs/fork-patches.md`](docs/fork-patches.md) — read it before rebasing, before

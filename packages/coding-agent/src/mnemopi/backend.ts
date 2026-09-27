@@ -38,6 +38,7 @@ import {
 	getMnemopiSessionState,
 	loadMnemopi,
 	loadMnemopiCore,
+	type MnemopiScopedMemory,
 	MnemopiSessionState,
 	requireMnemopi,
 	requireMnemopiCore,
@@ -293,8 +294,6 @@ export const mnemopiBackend: MemoryBackend = {
 	},
 
 	async save({ cwd, session }, input: MemoryBackendSaveInput) {
-		if (input.scope !== undefined)
-			throw new Error("Mnemopi does not support per-save scope; its configured bank scope is unchanged.");
 		const state = getMnemopiSessionState(session);
 		if (!state) {
 			return {
@@ -307,21 +306,28 @@ export const mnemopiBackend: MemoryBackend = {
 		if (!content.trim()) return { backend: "mnemopi", stored: 0, message: "Memory content is empty." };
 		let id: string;
 		try {
-			id = state.rememberScoped(content, {
-				source: input.source || "coding-agent-memory-command",
-				importance: normalizeImportance(input.importance),
-				metadata: {
-					session_id: state.sessionId,
-					cwd: input.tool ? state.session.sessionManager.getCwd() : cwd,
-					context: input.context ?? null,
-					...(input.tool ? { tool: input.tool } : { operation: "memory.save" }),
+			let target: MnemopiScopedMemory | undefined;
+			if (input.scope === "global") target = state.getGlobalRetainTarget();
+			id = state.rememberScoped(
+				content,
+				{
+					source: input.source || "coding-agent-memory-command",
+					importance: normalizeImportance(input.importance),
+					metadata: {
+						session_id: state.sessionId,
+						cwd: input.tool ? state.session.sessionManager.getCwd() : cwd,
+						context: input.context ?? null,
+						...(input.tool ? { tool: input.tool } : { operation: "memory.save" }),
+					},
+					scope: "bank",
+					extract: true,
+					extractEntities: true,
+					veracity: input.tool ? "tool" : "user",
+					memoryType: "fact",
 				},
-				scope: "bank",
-				extract: true,
-				extractEntities: true,
-				veracity: input.tool ? "tool" : "user",
-				memoryType: "fact",
-			});
+				target,
+			);
+
 		} catch (error) {
 			const reason = error instanceof Error ? error.message : String(error);
 			return { backend: "mnemopi", stored: 0, ids: [], message: `Mnemopi did not store the memory: ${reason}` };

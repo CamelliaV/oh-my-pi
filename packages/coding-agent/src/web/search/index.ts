@@ -17,6 +17,7 @@ import { settings } from "../../config/settings";
 import type { CustomTool, CustomToolContext } from "../../extensibility/custom-tools/types";
 import webSearchSystemPrompt from "../../prompts/system/web-search.md" with { type: "text" };
 import webSearchDescription from "../../prompts/tools/web-search.md" with { type: "text" };
+import { resolveConfiguredModelTarget } from "../../session/role-models";
 import { discoverAuthStorage } from "../../sdk";
 import type { ToolSession } from "../../tools";
 import { throwIfAborted } from "../../tools/tool-errors";
@@ -176,7 +177,34 @@ interface ExecuteSearchOptions {
 	modelRegistry?: ModelRegistry;
 	activeModel?: Model<Api>;
 	sessionId?: string;
+	/** The session's active model; `web/hosted` searches through it. */
+	sessionModel?: Model<Api>;
 	signal?: AbortSignal;
+}
+
+function isHostedPlaceholder(model: Model<Api>): boolean {
+	return model.provider === "web" && model.id === "hosted";
+}
+
+/**
+ * Expand the `web/hosted` placeholder into models on the session's own
+ * provider, which bill the credential the session already uses: first the
+ * session model's cheaper `webSearchModel` swap, then the session model itself.
+ * A swap the host does not expose is skipped; a failing swap falls through to
+ * the session model. Left unexpanded when neither can search.
+ */
+function expandHostedCandidate(
+	candidate: RoleChainCandidate,
+	sessionModel: Model<Api> | undefined,
+	pool: Model<Api>[],
+): RoleChainCandidate[] {
+	if (!isHostedPlaceholder(candidate.model) || !sessionModel) return [candidate];
+	const swap = resolveConfiguredModelTarget(sessionModel.webSearchModel, sessionModel, pool);
+	const models = [swap, sessionModel].filter(
+		(model, index, all): model is Model<Api> => !!model?.webSearch && all.indexOf(model) === index,
+	);
+	if (models.length === 0) return [candidate];
+	return models.map(model => ({ ...candidate, model }));
 }
 
 /** Execute web search */
@@ -200,9 +228,10 @@ async function executeSearch(
 					: [];
 			})()
 		: resolveRoleChain("web", settings, pool);
-	const candidates = params.model
-		? configuredCandidates
-		: prependSearchAffinity(configuredCandidates, options.activeModel);
+	const hosted = configuredCandidates.flatMap(candidate =>
+		expandHostedCandidate(candidate, options.sessionModel, pool),
+	);
+	const candidates = params.model ? hosted : prependSearchAffinity(hosted, options.activeModel);
 
 	const parsedQuery = parseSearchQuery(params.query);
 
@@ -236,17 +265,22 @@ async function executeSearch(
 		};
 		lastProvider = candidateMeta;
 		try {
-			if (modelKind(candidate.model) === "search") {
-				provider = await getSearchProvider(candidate.model.id);
-			} else if (candidate.model.webSearch) {
-				provider = await getGroundedSearchProvider(candidate.model.webSearch);
+			const model = candidate.model;
+			if (isHostedPlaceholder(model)) {
+				if (!candidate.explicit) continue;
+				throw new Error("The session model has no web search grounding.");
+			}
+			if (modelKind(model) === "search") {
+				provider = await getSearchProvider(model.id);
+			} else if (model.webSearch) {
+				provider = await getGroundedSearchProvider(model.webSearch);
 			} else {
-				throw new Error(`Model ${candidate.model.provider}/${candidate.model.id} does not support web search`);
+				throw new Error(`Model ${model.provider}/${model.id} does not support web search`);
 			}
 			lastProvider = provider;
 			const available = candidate.explicit
-				? await provider.isExplicitlyAvailable(authStorage, candidate.model)
-				: await provider.isAvailable(authStorage, candidate.model);
+				? await provider.isExplicitlyAvailable(authStorage, model)
+				: await provider.isAvailable(authStorage, model);
 			if (!available && !candidate.explicit) continue;
 			if (!available && candidate.explicit) {
 				throw new SearchProviderError(
@@ -269,13 +303,23 @@ async function executeSearch(
 				signal,
 				timeoutMs,
 				authStorage,
-				model: candidate.model,
+				model,
 				thinkingLevel: candidate.thinkingLevel,
 				modelRegistry,
 				explicit: candidate.explicit,
 				sessionId,
 				antigravityEndpointMode,
 			});
+
+			// A host that silently drops the hosted search tool still answers from the
+			// model's weights; without sources that answer is not a search result.
+			if (modelKind(model) !== "search" && response.sources.length === 0 && !response.citations?.length) {
+				throw new SearchProviderError(
+					provider.id,
+					`${provider.label} returned no sources; ${model.provider}/${model.id} may not support hosted web search.`,
+					204,
+				);
+			}
 
 			// Lenient constraint pass over whatever the provider returned: enforce
 			// site:/inurl:/intitle:/filetype:/date directives the provider could
@@ -367,6 +411,7 @@ export async function runSearchQuery(
 		modelRegistry?: ModelRegistry;
 		activeModel?: Model<Api>;
 		sessionId?: string;
+		sessionModel?: Model<Api>;
 		signal?: AbortSignal;
 	} = {},
 ): Promise<{
@@ -384,6 +429,7 @@ export async function runSearchQuery(
 			modelRegistry: options.modelRegistry,
 			activeModel: options.activeModel,
 			sessionId: options.sessionId,
+			sessionModel: options.sessionModel,
 			signal: options.signal,
 		});
 	} finally {
@@ -427,6 +473,7 @@ export class WebSearchTool implements AgentTool<typeof webSearchSchema, SearchRe
 			modelRegistry: this.#session.modelRegistry,
 			activeModel: this.#session.getActiveModel?.(),
 			sessionId,
+			sessionModel: this.#session.getActiveModel?.(),
 			signal,
 		});
 	}
@@ -454,6 +501,7 @@ export const webSearchCustomTool: CustomTool<typeof webSearchSchema, SearchResul
 			modelRegistry: ctx.modelRegistry,
 			activeModel: ctx.model,
 			sessionId,
+			sessionModel: ctx.model,
 			signal,
 		});
 	},

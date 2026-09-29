@@ -1,10 +1,11 @@
 import { type } from "@oh-my-pi/omptype";
 import type { AgentTool, AgentToolResult } from "@oh-my-pi/pi-agent-core";
-import { untilAborted } from "@oh-my-pi/pi-utils";
+import { prompt, untilAborted } from "@oh-my-pi/pi-utils";
 import { isHindsightConfigured, loadHindsightConfig } from "../hindsight/config";
 import { createToolMemoryRuntimeContext } from "../memory-backend/runtime";
 import { memoryBackendCapabilities } from "../memory-backend/types";
 import recallDescription from "../prompts/tools/recall.md" with { type: "text" };
+import { sessionMemoryToolRefs } from "../memory-backend/tool-names";
 import type { ToolSession } from ".";
 
 import { cfgMemoryBackend } from "../memory-backend/settings";
@@ -19,7 +20,11 @@ export class MemoryRecallTool implements AgentTool<typeof memoryRecallSchema> {
 	readonly name = "recall";
 	readonly approval = "read" as const;
 	readonly label = "Recall";
-	readonly description = recallDescription;
+	get description(): string {
+		return prompt.render(recallDescription, {
+			toolRefs: sessionMemoryToolRefs(this.session),
+		});
+	}
 	readonly parameters = memoryRecallSchema;
 	readonly strict = true;
 	readonly loadMode = "discoverable";

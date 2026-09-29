@@ -1,3 +1,4 @@
+import type { ImageContent } from "@oh-my-pi/pi-ai";
 import type { AgentTool } from "@oh-my-pi/pi-agent-core";
 import { Box } from "../components/box";
 import { SPINNER_ADVANCE_MS } from "../components/loader";
@@ -27,7 +28,7 @@ import { isWaitingPollDetails } from "../tools/wait";
 import { formatStatusIcon, replaceTabs, resolveImageOptions } from "../render/render-utils";
 import type { XdevMountedState } from "../tools/xdev";
 import { isFramedBlockComponent, markFramedBlockComponent, renderStatusLine, WidthAwareText } from "../render/index";
-import { convertImageToPng } from "./image-loading";
+import { cachedPngConversion, convertImageToPngShared, imagePayloadKey } from "./image-loading";
 import { sanitizeWithOptionalSixelPassthrough } from "../render/sixel";
 import { renderDiff } from "../chrome/diff";
 import { type AnimationFrame, trimBlankEdges } from "../chrome/transcript-container";
@@ -309,6 +310,14 @@ export class ToolExecutionComponent extends Container {
 	// so a terminal resize re-shapes image-bearing results to rescale them without
 	// forcing the common image-free result to re-shape on every resize tick.
 	#renderedImageCount = 0;
+	// `stateBgKey|themeEpoch` of the tint last handed to #contentText. Re-tinting
+	// drops its wrap cache, so a rebuild whose tint is unchanged skips it and the
+	// inner Text re-wraps only when the reformatted card text actually differs.
+	#contentTextBgKey: string | undefined;
+	// Memoized #getTextOutput(), keyed by every input it reads: the result
+	// (versioned by #resultVersion), #showImages, and the image protocol.
+	#textOutput = "";
+	#textOutputKey: string | undefined;
 	#tool?: AgentTool;
 	#renderer?: ToolRenderer;
 	#ui: ToolExecutionUi;
@@ -321,12 +330,15 @@ export class ToolExecutionComponent extends Container {
 	#editMode?: EditMode;
 	#editDiffPreview?: PerFileDiffPreview[];
 	#previewReady?: PromiseWithResolvers<void>;
-	// Cached converted images for Kitty protocol (which requires PNG), keyed by index
-	#convertedImages: Map<number, { data: string; mimeType: string }> = new Map();
-	// Non-PNG images whose kitty conversion is in flight (render-level retry + finalization gate).
-	#kittyConversionsInFlight = new Set<number>();
-	// Indices whose kitty conversion failed; they no longer gate finalization.
-	#kittyConversionsFailed = new Set<number>();
+	// Payload keys whose Kitty PNG conversion is already awaited; the converted
+	// images themselves live in the process-wide cache behind
+	// `convertImageToPngShared`, so rebuilt components reuse them.
+	#kittyConversionsAwaited = new Set<string>();
+	// Conversions this component displays, held so a later re-render still finds
+	// them after the bounded shared cache evicts them.
+	#kittyConverted = new Map<string, ImageContent>();
+	// Payload keys whose kitty conversion failed; they no longer gate finalization.
+	#kittyConversionsFailed = new Set<string>();
 	// Spinner animation for partial task results
 	#spinnerFrame?: number;
 	#spinnerActive = false;
@@ -597,13 +609,11 @@ export class ToolExecutionComponent extends Container {
 
 	#pendingKittyConversions(): number {
 		if (TERMINAL.imageProtocol !== ImageProtocol.Kitty) return 0;
-		const blocks = this.#getAllImageBlocks();
 		let pending = 0;
-		for (let i = 0; i < blocks.length; i++) {
-			const img = blocks[i];
-			if (!img?.data || !img.mimeType) continue;
-			if (img.mimeType === "image/png") continue;
-			if (this.#convertedImages.has(i) || this.#kittyConversionsFailed.has(i)) continue;
+		for (const img of this.#getAllImageBlocks()) {
+			if (!img?.data || !img.mimeType || img.mimeType === "image/png") continue;
+			const key = imagePayloadKey({ type: "image", data: img.data, mimeType: img.mimeType });
+			if (this.#kittyConverted.has(key) || this.#kittyConversionsFailed.has(key)) continue;
 			pending++;
 		}
 		return pending;
@@ -618,31 +628,34 @@ export class ToolExecutionComponent extends Container {
 		if (TERMINAL.imageProtocol !== ImageProtocol.Kitty) return;
 		if (!this.#result) return;
 
-		const imageBlocks = this.#getAllImageBlocks();
-
-		for (let i = 0; i < imageBlocks.length; i++) {
-			const img = imageBlocks[i];
+		for (const img of this.#getAllImageBlocks()) {
 			if (!img.data || !img.mimeType) continue;
 			// Skip if already PNG, already converted, in flight, or already failed
 			if (img.mimeType === "image/png") continue;
-			if (this.#convertedImages.has(i) || this.#kittyConversionsInFlight.has(i)) continue;
-			if (this.#kittyConversionsFailed.has(i)) continue;
+			const image: ImageContent = { type: "image", data: img.data, mimeType: img.mimeType };
+			const key = imagePayloadKey(image);
+			if (this.#kittyConverted.has(key) || this.#kittyConversionsFailed.has(key)) continue;
+			const cached = cachedPngConversion(image);
+			if (cached) {
+				this.#kittyConverted.set(key, cached);
+				continue;
+			}
+			if (this.#kittyConversionsAwaited.has(key)) continue;
+			this.#kittyConversionsAwaited.add(key);
 
 			// Convert async - catch errors from processing
-			const index = i;
-			this.#kittyConversionsInFlight.add(index);
-			convertImageToPng({ type: "image", data: img.data, mimeType: img.mimeType })
+			convertImageToPngShared(image)
 				.then(converted => {
-					this.#kittyConversionsInFlight.delete(index);
-					this.#convertedImages.set(index, converted);
+					this.#kittyConversionsAwaited.delete(key);
+					this.#kittyConverted.set(key, converted);
 					this.#displayInputVersion++;
 					this.#updateDisplay();
 					this.#ui.requestRender();
 				})
 				.catch(() => {
 					// Ignore conversion failures - display will use original image format
-					this.#kittyConversionsInFlight.delete(index);
-					this.#kittyConversionsFailed.add(index);
+					this.#kittyConversionsAwaited.delete(key);
+					this.#kittyConversionsFailed.add(key);
 				});
 		}
 	}
@@ -922,7 +935,9 @@ export class ToolExecutionComponent extends Container {
 	}
 
 	override render(width: number): readonly string[] {
-		if (!this.#toolActivityVisible || this.#allocation === 0) return [];
+		if (!this.#toolActivityVisible || this.#allocation === 0 || (this.#toolName === "wait" && this.#isBenignSkip())) {
+			return [];
+		}
 		this.#maybeConvertImagesForKitty();
 		let lines = super.render(width);
 		if (this.#allocation < 3) {
@@ -1011,6 +1026,12 @@ export class ToolExecutionComponent extends Container {
 		this.#renderState.argsComplete = this.#argsComplete;
 		this.#renderState.executionStarted = this.#executionStarted;
 		this.#renderState.spinnerFrame = this.#spinnerFrame;
+
+		// Interrupted waits carry only model-facing retry guidance, not user-facing output.
+		if (this.#toolName === "wait" && this.#isBenignSkip()) {
+			this.#contentBox.clear();
+			return;
+		}
 
 		// Non-self-framing tools (custom/extension renderers and the generic
 		// fallback) get a padded, state-tinted block — built-ins that draw their
@@ -1263,9 +1284,10 @@ export class ToolExecutionComponent extends Container {
 		} else {
 			// Generic fallback (no custom/built-in renderer). WidthAwareText
 			// reformats at render time so output fills the actual terminal width
-			// instead of a fixed column cap.
-			this.#contentText.setCustomBgFn(stateBgFn);
-			this.#contentText.invalidate();
+			// instead of a fixed column cap. Result states render without a tint;
+			// only a benign skip carries the pending background.
+			if (stateBgKey && stateBgFn) this.#refreshContentText(stateBgKey, stateBgFn);
+			else this.#contentText.reformat();
 		}
 
 		// Handle images (same for both custom and built-in)
@@ -1285,7 +1307,11 @@ export class ToolExecutionComponent extends Container {
 				const img = imageBlocks[i];
 				if (TERMINAL.imageProtocol && this.#showImages && img.data && img.mimeType) {
 					// Use converted PNG for Kitty protocol if available
-					const converted = this.#convertedImages.get(i);
+					const source: ImageContent = { type: "image", data: img.data, mimeType: img.mimeType };
+					const converted =
+						TERMINAL.imageProtocol === ImageProtocol.Kitty && img.mimeType !== "image/png"
+							? (this.#kittyConverted.get(imagePayloadKey(source)) ?? cachedPngConversion(source))
+							: undefined;
 					const imageData = converted?.data ?? img.data;
 					const imageMimeType = converted?.mimeType ?? img.mimeType;
 
@@ -1427,6 +1453,8 @@ export class ToolExecutionComponent extends Container {
 	}
 	#getTextOutput(): string {
 		if (!this.#result) return "";
+		const key = `${this.#resultVersion}|${this.#showImages}|${TERMINAL.imageProtocol ?? "-"}`;
+		if (key === this.#textOutputKey) return this.#textOutput;
 
 		const textBlocks = this.#result.content.filter(c => c.type === "text");
 		const imageBlocks = this.#getAllImageBlocks();
@@ -1448,7 +1476,19 @@ export class ToolExecutionComponent extends Container {
 			output = output ? `${output}\n${imageIndicators}` : imageIndicators;
 		}
 
+		this.#textOutputKey = key;
+		this.#textOutput = output;
 		return output;
+	}
+
+	/** Re-tint (only when the tint changed) and reformat the generic #contentText card. */
+	#refreshContentText(stateBgKey: string, stateBgFn: (text: string) => string): void {
+		const bgKey = `${stateBgKey}|${getThemeEpoch()}`;
+		if (bgKey !== this.#contentTextBgKey) {
+			this.#contentTextBgKey = bgKey;
+			this.#contentText.setCustomBgFn(stateBgFn);
+		}
+		this.#contentText.reformat();
 	}
 
 	/**
@@ -1494,8 +1534,7 @@ export class ToolExecutionComponent extends Container {
 	 */
 	#renderBenignSkipCard(stateBgFn: (text: string) => string): void {
 		if (!this.#usesContentBox) {
-			this.#contentText.setCustomBgFn(stateBgFn);
-			this.#contentText.invalidate();
+			this.#refreshContentText("toolPendingBg", stateBgFn);
 			return;
 		}
 		for (const box of this.#multiFileBoxes) {

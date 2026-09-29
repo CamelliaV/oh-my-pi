@@ -145,7 +145,7 @@ describe("AuthStorage api-key login upsert", () => {
 			error: geminiQuota,
 			modelId: "gemini-3.8-flash",
 		});
-		expect(switched).toBe(true);
+		expect(switched.switched).toBe(true);
 
 		const next = await authStorage.keys.get("google", sessionId);
 		expect(next).toMatch(/^sk-fake-\d{2}$/);

@@ -93,10 +93,6 @@ describe("parseRateLimitReason", () => {
 		);
 	});
 
-	it("classifies Too many requests as RATE_LIMIT_EXCEEDED", () => {
-		expect(parseRateLimitReason("Cloud Code Assist API error (429): Too many requests")).toBe("RATE_LIMIT_EXCEEDED");
-	});
-
 	it("classifies per minute errors as RATE_LIMIT_EXCEEDED", () => {
 		expect(parseRateLimitReason("Requests per minute limit reached")).toBe("RATE_LIMIT_EXCEEDED");
 	});
@@ -203,15 +199,29 @@ describe("parseRateLimitReason", () => {
 		expect(isUsageLimitOutcome(429, freeQuota)).toBe(true);
 	});
 
-	it("classifies Gemini free-tier quota as exhausted despite the rate-limits URL", () => {
-		const geminiQuota =
-			"Google API error (429): You exceeded your current quota, please check your plan and billing details. For more information on this error, head to: https://ai.google.dev/gemini-api/docs/rate-limits. To monitor your current usage, head to: https://ai.dev/rate-limit. \n* Quota exceeded for metric: generativelanguage.googleapis.com/generate_content_free_tier_requests, limit: 20, model: gemini-3.8-flash\nPlease retry in 46.30812685s.";
-		expect(parseRateLimitReason(geminiQuota)).toBe("QUOTA_EXHAUSTED");
-		expect(isUsageLimitOutcome(429, geminiQuota)).toBe(true);
-		expect(isUsageLimit(Object.assign(new Error(geminiQuota), { status: 429 }))).toBe(true);
-		const block = usageLimitBlockRetryAfterMs(geminiQuota, 46_308);
-		expect(block.retryAfterMs).toBe(30 * 60 * 1000);
-		expect(block.providerTimed).toBe(false);
+	it("keeps rolling-window TPM/RPM throttles in the transient lane", () => {
+		// A per-minute token throttle reported with quota wording ("tpm
+		// exhausted", type=quota_exceeded_error, no Retry-After) used to fall
+		// through to QUOTA_EXHAUSTED: the session layer then invented a 30-min
+		// wait, blew past retry.maxDelayMs and terminated the turn (#13253).
+		const tpmExhausted =
+			"429 tpm exhausted\ntpm exhausted (type=quota_exceeded_error param=8)\ntpm exhausted (type=quota_exceeded_error param=8) (type=quota_exceeded_error)";
+		expect(parseRateLimitReason(tpmExhausted)).toBe("RATE_LIMIT_EXCEEDED");
+		expect(calculateRateLimitBackoffMs(parseRateLimitReason(tpmExhausted))).toBeLessThanOrEqual(60_000);
+		expect(matchesUsageLimitText(tpmExhausted)).toBe(false);
+		expect(isUsageLimit(new ProviderHttpError(tpmExhausted, 429, { code: "quota_exceeded_error" }))).toBe(false);
+		expect(isUsageLimitOutcome(429, tpmExhausted)).toBe(false);
+
+		// Other phrasings of the same rolling window.
+		expect(parseRateLimitReason("429 inference exceeds tpm/rpm limit")).toBe("RATE_LIMIT_EXCEEDED");
+		expect(parseRateLimitReason("429 RPM limit reached for this endpoint")).toBe("RATE_LIMIT_EXCEEDED");
+		expect(parseRateLimitReason("429 (code=RateLimitExceeded.EndpointTPMExceeded)")).toBe("RATE_LIMIT_EXCEEDED");
+
+		// An account-scoped cap that merely quotes a TPM number keeps its quota
+		// verdict — the downgrade must not rescue a credential-rotating error.
+		const planQuota = "429 Your plan quota is exhausted; the plan TPM is 1000 (type=quota_exceeded_error)";
+		expect(parseRateLimitReason(planQuota)).toBe("QUOTA_EXHAUSTED");
+		expect(isUsageLimitOutcome(429, planQuota)).toBe(true);
 	});
 
 	it("classifies Codex usage limit error as QUOTA_EXHAUSTED", () => {

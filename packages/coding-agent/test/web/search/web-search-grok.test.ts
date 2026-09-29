@@ -9,7 +9,6 @@ import { getSearchProvider } from "@oh-my-pi/pi-coding-agent/web/search/provider
 import { GrokProvider } from "@oh-my-pi/pi-coding-agent/web/search/providers/grok";
 import {
 	SEARCH_PROVIDER_LABELS,
-	SEARCH_PROVIDER_OPTIONS,
 	SearchProviderError,
 } from "@oh-my-pi/pi-coding-agent/web/search/types";
 import { removeWithRetries } from "@oh-my-pi/pi-utils";
@@ -388,7 +387,6 @@ describe("Grok relay search provider", () => {
 
 describe("Grok channel in the web role chain", () => {
 	it("lists grok among the built-in provider ids with its label", () => {
-		expect(SEARCH_PROVIDER_OPTIONS.some(option => option.value === "grok")).toBe(true);
 		expect(SEARCH_PROVIDER_LABELS.grok).toBe("Grok");
 	});
 

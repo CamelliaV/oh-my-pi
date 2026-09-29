@@ -327,7 +327,6 @@ export const mnemopiBackend: MemoryBackend = {
 				},
 				target,
 			);
-
 		} catch (error) {
 			const reason = error instanceof Error ? error.message : String(error);
 			return { backend: "mnemopi", stored: 0, ids: [], message: `Mnemopi did not store the memory: ${reason}` };

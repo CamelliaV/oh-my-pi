@@ -11,6 +11,7 @@ import {
 	modelMentionDisplayName,
 	modelMentionTag,
 } from "@oh-my-pi/pi-tui/prompt/model-mention-syntax";
+import { MAX_THINKING_SUFFIX_OPTIONS, splitThinkingSuffix } from "@oh-my-pi/pi-tui/overlays/model-selector";
 import type { SessionEntry } from "./session-entries";
 import type { SessionManager } from "./session-manager";
 
@@ -49,6 +50,20 @@ export interface ModelMentionHost {
 	inheritedAgents?: readonly AgentDefinition[];
 }
 
+/**
+ * Display name for a mention selector: the catalog name plus any explicit
+ * `:level` suffix the user pinned, so same-model mentions at different levels
+ * stay distinguishable in tags, chips, and the persisted journal.
+ */
+export function mentionDisplayName(model: Model, selector: string): string {
+	const name = modelMentionDisplayName(model);
+	// A literal id that itself ends in a level-like segment (`router:low`) must
+	// not have that segment re-read as a pinned level.
+	if (formatModelString(model) === selector) return name;
+	const { level } = splitThinkingSuffix(selector, -1, MAX_THINKING_SUFFIX_OPTIONS);
+	return level ? `${name} :${level}` : name;
+}
+
 /** Owns branch-local pseudonyms for models explicitly tagged by the user. */
 export class ModelMentionRegistry {
 	readonly #host: ModelMentionHost;
@@ -85,7 +100,15 @@ export class ModelMentionRegistry {
 	findMentionable(selector: string): Model | undefined {
 		const scoped = this.#host.scopedModels();
 		const models = scoped.length > 0 ? scoped : this.#host.modelRegistry.getAvailable();
-		return models.find(model => formatModelString(model) === selector);
+		// Exact match first so literal ids ending in a level-like segment
+		// (`router:low`, `glm-4.7:max`) win over the suffix reading — the same
+		// precedence the model picker applies.
+		const exact = models.find(model => formatModelString(model) === selector);
+		if (exact) return exact;
+		// Otherwise strip a valid `:level` suffix and match the bare selector so
+		// a mention can pin the thinking level its spawned subagent runs at.
+		const { base, level } = splitThinkingSuffix(selector, -1, MAX_THINKING_SUFFIX_OPTIONS);
+		return level ? models.find(model => formatModelString(model) === base) : undefined;
 	}
 
 	/** Register user-tagged models and replace their tokens with persisted agent tags. */
@@ -98,7 +121,7 @@ export class ModelMentionRegistry {
 				if (!model) return token;
 				let next = 1;
 				while (this.#agents.has(`m${next}`)) next++;
-				mention = { agent: `m${next}`, selector, name: modelMentionDisplayName(model) };
+				mention = { agent: `m${next}`, selector, name: mentionDisplayName(model, selector) };
 				this.#host.sessionManager.appendCustomEntry(MODEL_MENTION_ENTRY_TYPE, mention);
 				this.#mentions.push(mention);
 				this.#bySelector.set(selector, mention);

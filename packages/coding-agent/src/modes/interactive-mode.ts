@@ -135,8 +135,8 @@ import { syncTextPrediction, textPredictionBackend } from "../predict/client";
 import { setWordPredictionHost } from "@oh-my-pi/pi-tui/prompt/word-completion";
 import { USER_INTERRUPT_LABEL } from "../session/messages";
 import { resolveMarkdownLinkTargets } from "../internal-urls/hyperlink-targets";
-import { modelMentionDisplayName } from "@oh-my-pi/pi-tui/prompt/model-mention-syntax";
 import { modelMentionChipLabel, shiftImageMarkers } from "@oh-my-pi/pi-tui/prompt/composer-attachments";
+import { mentionDisplayName } from "../session/model-mentions";
 import type { SessionContext } from "../session/session-context";
 import { getRecentSessions } from "../session/session-listing";
 import type { SessionManager } from "../session/session-manager";
@@ -1785,7 +1785,7 @@ export class InteractiveMode implements InteractiveModeContext {
 		this.editor.skillFilePath = name => this.skillCommands.get(`skill:${name}`)?.filePath;
 		this.editor.modelMentionLabel = selector => {
 			const model = this.session.findMentionableModel(selector);
-			return model ? modelMentionChipLabel(modelMentionDisplayName(model)) : undefined;
+			return model ? modelMentionChipLabel(mentionDisplayName(model, selector)) : undefined;
 		};
 		this.editor.modelMentionSelector = agent => this.session.modelMentions.find(m => m.agent === agent)?.selector;
 		this.editor.fileHyperlink = (filePath, text) => fileHyperlink(filePath, text, { line: 1 });
@@ -7095,7 +7095,7 @@ export class InteractiveMode implements InteractiveModeContext {
 		nextEditor.skillFilePath = name => this.skillCommands.get(`skill:${name}`)?.filePath;
 		nextEditor.modelMentionLabel = selector => {
 			const model = this.session.findMentionableModel(selector);
-			return model ? modelMentionChipLabel(modelMentionDisplayName(model)) : undefined;
+			return model ? modelMentionChipLabel(mentionDisplayName(model, selector)) : undefined;
 		};
 		nextEditor.modelMentionSelector = agent => this.session.modelMentions.find(m => m.agent === agent)?.selector;
 		nextEditor.fileHyperlink = (filePath, text) => fileHyperlink(filePath, text, { line: 1 });

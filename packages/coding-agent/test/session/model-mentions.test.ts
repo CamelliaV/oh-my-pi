@@ -179,6 +179,50 @@ describe("model mentions", () => {
 		expect(agents[0].systemPrompt).toBe(task.systemPrompt);
 	});
 
+	test("registers suffixed mentions, pins their level, and keeps literal tier ids intact", () => {
+		// A `:level` mention registers as its own pseudonym and pins the level
+		// for the spawned subagent (the executor prefers the explicit suffix).
+		expect(mentions.expandMentions("run ^a/x:xhigh and ^a/x and ^b/y:med")).toBe(
+			'run <model agent="m1" name="X One :xhigh"/> and <model agent="m2" name="X One"/> and <model agent="m3" name="Y :medium"/>',
+		);
+		expect(readModelMentions(session.getBranch())).toEqual([
+			{ agent: "m1", selector: "a/x:xhigh", name: "X One :xhigh" },
+			{ agent: "m2", selector: "a/x", name: "X One" },
+			{ agent: "m3", selector: "b/y:med", name: "Y :medium" },
+		]);
+		expect(mentions.sessionAgents().map(agent => [agent.name, agent.model])).toEqual([
+			["m1", ["a/x:xhigh"]],
+			["m2", ["a/x"]],
+			["m3", ["b/y:med"]],
+		]);
+		// Unknown suffixes do not register: the token stays literal.
+		expect(mentions.expandMentions("ignore ^a/x:oops")).toBe("ignore ^a/x:oops");
+		expect(mentions.mentions).toHaveLength(3);
+	});
+
+	test("a literal model id ending in a level-like segment wins over the suffix reading", () => {
+		const tiered = buildModel({
+			provider: "nanogpt",
+			id: "coding-router:low",
+			name: "Router Low",
+			api: "openai-completions",
+			baseUrl: "https://example.com",
+			reasoning: false,
+			input: ["text"],
+			cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+			contextWindow: 8192,
+			maxTokens: 1024,
+		});
+		vi.spyOn(registry, "getAvailable").mockReturnValue([tiered]);
+		// The whole token is the literal id; no level is stripped or displayed.
+		expect(mentions.expandMentions("use ^nanogpt/coding-router:low")).toBe(
+			'use <model agent="m1" name="Router Low"/>',
+		);
+		expect(mentions.sessionAgents()[0].model).toEqual(["nanogpt/coding-router:low"]);
+		// A level the model list cannot resolve still registers nothing.
+		expect(mentions.expandMentions("use ^nanogpt/coding-router:xhigh")).toBe("use ^nanogpt/coding-router:xhigh");
+	});
+
 	test("replays first valid entries and frees discarded branch numbers", () => {
 		const first = session.appendCustomEntry(MODEL_MENTION_ENTRY_TYPE, {
 			agent: "m1",

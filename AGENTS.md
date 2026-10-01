@@ -434,8 +434,9 @@ patch series by hand/cherry-pick.
 v18.3.2→v18.3.4 (2026-09-27) parented `upstream/v18.3.4` on `d633fbf9` (555 files, +63063−6801, 11 conflicts resolved in trial/v18.3.4).
 v18.3.4→v18.4.3 (2026-09-29) parented `upstream/v18.4.3` on `0c1b9acf7` (via `upstream/v18.4.2` `da3bb473`, 27 conflicts, resolved directly on master as `upgrade/v18.4.3` = `58b90e4`).
 v18.4.3→v18.4.8 (2026-10-01) parented `upstream/v18.4.8` on `fc728b9f2` (1175 files, +96241−11929, 17 conflicts across 32 blocks resolved in trial/v18.4.8). Notable unions: fork bubble/ImageStrip + upstream native `describe()` coexist in `user-message.ts`; fork `#workUsage` (bubble usage row) + upstream `TurnUsageTally` (assistant turn chip) both run in `event-controller.ts`; fork HUD pin predicate `isHudPinnedSubagent` kept under upstream's `livePreview` multi-row shape; `stats-cli.ts` local `printStatsSummary` deleted in favor of the omp-stats package version (already carries the fork cost-provenance rows); `sessionUsageSegment` gained the upstream-required native `describe()`.
+v18.4.8→v18.4.9 (2026-10-02) parented `upstream/v18.4.9` on `26db729d2` (187 files, +10153−1208, 0 conflicts; merge `upgrade/v18.4.9`). Auto-merged overlap kept every fork marker (`[1210]`/`始终思考` in `flags.ts`, `configPoolProviders`, `requestUsage` in `session-manager.ts`, `#workUsage`, kitty graphics store). Collapsed the duplicate `images` field in `UserBubbleOptions` (`user-message.ts`) that the v18.4.8 merge left behind — upstream's native chip field and the fork's ImageStrip field were the same type. Natives bumped to 18.4.9 (`Shell.pids()`, `readTextFromClipboard`); `Shell.pids()` is unguarded and only reached from the Jobs panel.
 
-### Patch list (v18.4.8 baseline)
+### Patch list (v18.4.9 baseline)
 
 Index only. Full rationale, wire measurements, and verification recipes live in
 [`docs/fork-patches.md`](docs/fork-patches.md) — read it before rebasing, before

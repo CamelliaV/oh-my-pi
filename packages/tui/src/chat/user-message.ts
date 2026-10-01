@@ -56,7 +56,11 @@ const OSC133_ZONE_CLOSE = OSC133_ZONE_END + OSC133_COMMAND_START + OSC133_COMMAN
 export interface UserBubbleOptions {
 	/** Materialized `file://` targets per attached image, indexed by chip number. */
 	imageLinks?: readonly (string | undefined)[];
-	/** The message's attached images in chip order (`#1` first); a native bubble shows them. */
+	/**
+	 * The message's attached images in chip order (`#1` first). The native
+	 * bubble shows them as chips; the inline image strip renders the payloads
+	 * below the text when `imageBudget` is set.
+	 */
 	images?: readonly ImageContent[];
 	/** Agent-attributed input: dim, flat prose. */
 	synthetic?: boolean;
@@ -66,8 +70,6 @@ export interface UserBubbleOptions {
 	skillPath?: (name: string) => string | undefined;
 	/** Preformatted cumulative session usage line rendered inside the card. */
 	sessionUsageText?: string;
-	/** Inline image payloads rendered inside the bubble below the text. */
-	images?: readonly ImageContent[];
 	/** Shared graphics budget the inline image strip allocates placements from. */
 	imageBudget?: ImageBudget;
 	/** Repaint hook for async image conversions (kitty webp→PNG). */

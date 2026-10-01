@@ -166,17 +166,6 @@ describe("session_usage status-line segment", () => {
 		expect(text).not.toContain("tok/s");
 		expect(text).not.toContain("0ms");
 	});
-
-	it("uses the startup placeholder while the session is still painting", () => {
-		const result = renderSegment("session_usage", {
-			...ctxWith(SESSION),
-			startupPlaceholder: true,
-		} as SegmentContext);
-		const text = plain(result.content);
-		expect(result.visible).toBe(true);
-		expect(text).toContain("…");
-		expect(text).not.toContain("7d7h");
-	});
 });
 
 describe("session_usage data source: replayed persisted branch", () => {

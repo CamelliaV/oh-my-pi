@@ -71,6 +71,7 @@ export async function selectSession<T extends SessionSelectorEntry>(
 					allSessions: options.allSessions,
 					getTerminalRows: () => ui.terminal.rows,
 					fillHeight: true,
+					standalone: true,
 					title: options.title,
 					initialQuery: options.initialQuery,
 					scopeLabel: options.scopeLabel,

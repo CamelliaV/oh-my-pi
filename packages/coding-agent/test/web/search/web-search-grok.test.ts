@@ -7,10 +7,7 @@ import { rolePriorityDefaults } from "@oh-my-pi/pi-coding-agent/config/model-res
 import { resetSettingsForTest, Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import { getSearchProvider } from "@oh-my-pi/pi-coding-agent/web/search/provider";
 import { GrokProvider } from "@oh-my-pi/pi-coding-agent/web/search/providers/grok";
-import {
-	SEARCH_PROVIDER_LABELS,
-	SearchProviderError,
-} from "@oh-my-pi/pi-coding-agent/web/search/types";
+import { SEARCH_PROVIDER_LABELS, SearchProviderError } from "@oh-my-pi/pi-coding-agent/web/search/types";
 import { removeWithRetries } from "@oh-my-pi/pi-utils";
 
 type CapturedRequest = {

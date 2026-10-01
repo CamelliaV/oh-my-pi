@@ -259,7 +259,7 @@ For the bash tool specifically:
 
 - NEVER commit unless asked.
 - Never use `tsc`/`npx tsc` — always `bun check`.
-- Never run `cargo test` directly for Rust tests — use `bun run test:rs`. It runs `cargo nextest run` (config: `.config/nextest.toml`) followed by a `cargo test --doc` pass, because nextest does not execute doctests. The doctest pass currently executes nothing (pi-natives is a `cdylib`, which rustdoc skips; pi-builtins' examples are `ignore`d vendored uutils docs) and exists so the first runnable doctest added to a lib crate is actually run.
+- Never run `cargo test` directly for Rust tests — use `bun run test:rs`. It runs `cargo nextest run` (config: `.config/nextest.toml`) followed by a `cargo test --doc` pass, because nextest does not execute doctests. The doctest pass runs every runnable doctest in the workspace's lib crates; today that is tree-sitter-go's one example (pi-natives is a `cdylib`, which rustdoc skips; pi-builtins' examples are `ignore`d vendored uutils docs).
 - Merge commits (maintainer merges of PRs) follow: `Merge PR #<number>: <conventional PR subject> (@<author>)` — e.g. `Merge PR #6386: feat(catalog): add native Meta Model API provider (@eggpeat)`.
 ## Rust Build Profiles
 
@@ -432,8 +432,10 @@ patch series by hand/cherry-pick.
 
 
 v18.3.2→v18.3.4 (2026-09-27) parented `upstream/v18.3.4` on `d633fbf9` (555 files, +63063−6801, 11 conflicts resolved in trial/v18.3.4).
+v18.3.4→v18.4.3 (2026-09-29) parented `upstream/v18.4.3` on `0c1b9acf7` (via `upstream/v18.4.2` `da3bb473`, 27 conflicts, resolved directly on master as `upgrade/v18.4.3` = `58b90e4`).
+v18.4.3→v18.4.8 (2026-10-01) parented `upstream/v18.4.8` on `fc728b9f2` (1175 files, +96241−11929, 17 conflicts across 32 blocks resolved in trial/v18.4.8). Notable unions: fork bubble/ImageStrip + upstream native `describe()` coexist in `user-message.ts`; fork `#workUsage` (bubble usage row) + upstream `TurnUsageTally` (assistant turn chip) both run in `event-controller.ts`; fork HUD pin predicate `isHudPinnedSubagent` kept under upstream's `livePreview` multi-row shape; `stats-cli.ts` local `printStatsSummary` deleted in favor of the omp-stats package version (already carries the fork cost-provenance rows); `sessionUsageSegment` gained the upstream-required native `describe()`.
 
-### Patch list (v18.3.4 baseline)
+### Patch list (v18.4.8 baseline)
 
 Index only. Full rationale, wire measurements, and verification recipes live in
 [`docs/fork-patches.md`](docs/fork-patches.md) — read it before rebasing, before

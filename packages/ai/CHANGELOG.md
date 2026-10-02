@@ -15,6 +15,17 @@
 - Anthropic user turns always serialize as content blocks, so a message no longer changes wire shape depending on whether it holds the rolling prompt-cache anchor — previously each user turn rewrote a byte inside the cached prefix, truncating the reusable region at that point.
 - Fixed Bun's `unknown certificate verification error` (a transient relay/MITM-proxy TLS handshake blip) being classified as terminal, so provider streams now auto-retry it like `tls: bad record MAC`; the config-level `tls: failed to verify certificate` wording stays non-retryable.
 - Fixed Codex (ChatGPT-subscription) turns dying on `invalid_prompt` moderation false positives — the backend spuriously flags long code-laden prompts, so those failure events now retry instead of aborting the turn.
+## [18.4.10] - 2026-10-02
+
+### Fixed
+
+- Factory Droid login now reports the account's organization error instead of accepting a credential that every request rejects ([#14032](https://github.com/can1357/oh-my-pi/issues/14032)).
+- Fixed Cursor turns being aborted with "Provider stream stalled while waiting for the next event" right after a long local tool finished; the provider now gets a full idle window once local tool work completes ([#13682](https://github.com/can1357/oh-my-pi/pull/13682) by [@eggpeat](https://github.com/eggpeat))
+- Tool calls whose final argument JSON is cut off or followed by trailing text are no longer executed from an auto-closed preview. OpenAI Completions, Anthropic, Bedrock, Responses, Codex, Devin, Ollama, Apple, Cursor, GitLab Duo, and the in-band JSON dialects now give such a call the existing parse-error arguments, so the tool is not run and the model receives the parse error and can resend the call ([#13868](https://github.com/can1357/oh-my-pi/pull/13868) by [@alphastorm](https://github.com/alphastorm))
+- Fixed Cursor "prepaid balance is used up" (`USAGE_PRICING_REQUIRED`) failures repeating on the same account instead of rotating to a sibling Cursor credential ([#14053](https://github.com/can1357/oh-my-pi/issues/14053))
+- Sessions no longer get stuck on `400 string_above_max_length` after a model writes its whole tool invocation into the tool name. Tool calls with blank names, names longer than 128 characters, or names containing whitespace or control characters are dropped from replayed history, together with their tool results. This also applies when OpenAI Responses replays its stored native history ([#13985](https://github.com/can1357/oh-my-pi/pull/13985) by [@Xytronix](https://github.com/Xytronix)).
+- Fixed Bedrock Converse requests failing with a "bound to a different conversation" 400 after the system prompt changed under signed thinking: the request is retried once without replayed reasoning ([#14019](https://github.com/can1357/oh-my-pi/pull/14019) by [@nick-maderight](https://github.com/nick-maderight))
+
 ## [18.4.9] - 2026-10-01
 
 ### Fixed

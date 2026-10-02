@@ -1382,7 +1382,10 @@ export class InteractiveMode implements InteractiveModeContext {
 	}
 	/** Message the working row shows; mirrors what the loader was last given. */
 	#workingMessage = DEFAULT_WORKING_MESSAGE;
-	/** When the current working loader was created (the native row's `elapsed` origin). */
+	/**
+	 * The native row's `elapsed` origin: the viewed session's run start, so a
+	 * loader recreated by a focus switch keeps the real elapsed time.
+	 */
 	#workingStartedAt = 0;
 	#idleStatusNative: { rate: number | undefined; node: NativeNode } | undefined;
 	#statusHudNative: { children: readonly Component[]; slot: NativeNode | undefined; node: NativeNode } | undefined;
@@ -7282,6 +7285,7 @@ export class InteractiveMode implements InteractiveModeContext {
 		this.transcriptMessageComponents = new WeakMap<AgentMessage, Component>();
 		this.chatContainer.dispose();
 		this.chatContainer.clear();
+		this.#commandController.resetContextView();
 	}
 
 	showStatus(message: string, options?: { dim?: boolean }): void {
@@ -7467,7 +7471,7 @@ export class InteractiveMode implements InteractiveModeContext {
 				() => this.interruptFromPointer(),
 			);
 			this.#workingMessage = DEFAULT_WORKING_MESSAGE;
-			this.#workingStartedAt = Date.now();
+			this.#workingStartedAt = this.viewSession.runStartedAt ?? Date.now();
 			this.statusContainer.addChild(this.loadingAnimation);
 		} else if (!this.statusContainer.children.includes(this.loadingAnimation)) {
 			this.statusContainer.disposeChildren();
@@ -7670,8 +7674,8 @@ export class InteractiveMode implements InteractiveModeContext {
 		return this.#commandController.handleAdvisorStatusCommand();
 	}
 
-	handleJobsCommand(): Promise<void> {
-		return this.#commandController.handleJobsCommand();
+	handleJobsCommand(options?: { full?: boolean }): Promise<void> {
+		return this.#commandController.handleJobsCommand(options);
 	}
 
 	handleUsageCommand(reports?: UsageReport[] | null): Promise<void> {

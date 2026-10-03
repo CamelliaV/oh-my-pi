@@ -806,6 +806,38 @@ reasoning matters.
    asserts the rendered transcript contains none of `# ` ` ``` ` `| ` `> `,
    `- [`/`[x]`, `**`, `~~`, `](`, `:---` or `---` from the source.
 
+34. `fix(tui)` Linux `text/uri-list` clipboard paste — KDE Spectacle's
+   save-to-file flow (and file-manager Ctrl+C) puts only a
+   `text/uri-list` entry pointing at the saved PNG on the Wayland
+   clipboard — no image bytes, an empty `text/plain` (plus KDE's
+   `application/x-kde-onlyReplaceEmpty` marker) — so upstream's paste
+   dead-ends at "Clipboard is empty": the file-URL probe it ships is
+   macOS-only (`readMacFileUrlsFromClipboard` → AppleScript
+   `public.file-url`, returns [] off darwin), the bitmap read finds no
+   image mimes, and the smart-paste text fallback reads "". New
+   `readLinuxFileUrlsFromClipboard` in `utils/clipboard.ts` is the
+   Wayland/X11 counterpart: `wl-paste --type text/uri-list --no-newline`
+   (or `xclip -o -t text/uri-list` under bare X11), freedesktop comment
+   (`#`) and CRLF handling, `file://` entries percent-decoded via
+   `fileURLToPath`, non-file/malformed URIs skipped, non-zero exit (type
+   absent) = empty list. `handleImagePaste` now probes both readers in
+   parallel (`Promise.all`) and concatenates — off-darwin/off-linux the
+   dead one returns [] so exactly one probe is live per platform, and
+   every entry still flows through the shared
+   `extractImagePathFromText` → `#pasteImagePath` contract (multi-file
+   selections, non-image siblings, SSH diagnostics unchanged). The DI
+   seam gained an optional `readLinuxFileUrls`. Verified live: Spectacle
+   screenshot → `wl-copy --type text/uri-list` repro clipboard → real TUI
+   (tmux, `~/.local/bin/omp-patched` rebuild) Ctrl+V attaches Image #1.
+   New `test/issue-linux-uri-list-paste.test.ts` (3 cases: uri-list-only
+   attaches, percent-encoded non-ASCII path resolves, empty uri-list
+   falls through to text); paste suites 105 pass / 0 fail across 7
+   files. Full-suite failures observed this session (SSE timeouts,
+   sharpshooter, LSP render, AuthStorage) reproduce on a stashed clean
+   tree — pre-existing, unrelated. Binary proof: `strings | grep -c
+   "text/uri-list"` 2 → 5 between installed and rebuilt
+   `omp-patched`; `--smoke-test` ok; live TUI paste verified.
+
 
 
 

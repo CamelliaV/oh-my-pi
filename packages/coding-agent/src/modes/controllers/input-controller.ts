@@ -60,6 +60,7 @@ import { vocalizer } from "../../tts/vocalizer";
 import {
 	copyToClipboard,
 	readImageFromClipboard,
+	readLinuxFileUrlsFromClipboard,
 	readMacFileUrlsFromClipboard,
 	readTextFromClipboard,
 } from "../../utils/clipboard";
@@ -250,10 +251,12 @@ export class InputController {
 			readImage: typeof readImageFromClipboard;
 			readText: typeof readTextFromClipboard;
 			readMacFileUrls?: typeof readMacFileUrlsFromClipboard;
+			readLinuxFileUrls?: typeof readLinuxFileUrlsFromClipboard;
 		} = {
 			readImage: readImageFromClipboard,
 			readText: readTextFromClipboard,
 			readMacFileUrls: readMacFileUrlsFromClipboard,
+			readLinuxFileUrls: readLinuxFileUrlsFromClipboard,
 		},
 	) {
 		// Draft-image bookkeeping: deleting an `[Image #N]` marker token must drop
@@ -2472,10 +2475,17 @@ export class InputController {
 			// {@link #pasteImagePath}, matching the bracketed-paste
 			// handler in `CustomEditor.handleInput`; multi-image Finder
 			// selections must not silently drop after the first attach.
-			// `readMacFileUrls` returns an empty list off Darwin, so on every
-			// other platform this is a no-op and the bitmap read below still
-			// runs first.
-			const fileUrls = textOnlyPrompt ? [] : ((await this.clipboard.readMacFileUrls?.()) ?? []);
+			//
+			// Linux mirrors this with `text/uri-list` (KDE Spectacle "Save",
+			// file-manager Ctrl+C): the clipboard carries file URLs, no image
+			// bytes, and an empty `text/plain`, so without this probe both the
+			// bitmap read and the text fallback report an empty clipboard.
+			// `readMacFileUrls` returns [] off Darwin and `readLinuxFileUrls`
+			// returns [] off Linux, so exactly one probe is live per platform.
+			const [macFileUrls, linuxFileUrls] = textOnlyPrompt
+				? [[], []]
+				: await Promise.all([this.clipboard.readMacFileUrls?.() ?? [], this.clipboard.readLinuxFileUrls?.() ?? []]);
+			const fileUrls = [...macFileUrls, ...linuxFileUrls];
 			let attachedFromFileUrls = false;
 			for (const url of fileUrls) {
 				const candidate = extractImagePathFromText(url);

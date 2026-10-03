@@ -8,6 +8,7 @@ import { writeTerminalSequence } from "@oh-my-pi/pi-tui/terminal";
 import { isWsl } from "@oh-my-pi/pi-utils";
 import * as logger from "@oh-my-pi/pi-utils/logger";
 import { SUPPORTED_IMAGE_MIME_TYPES } from "@oh-my-pi/pi-utils/mime";
+import { fileURLToPath } from "node:url";
 import MAC_FILE_URL_SCRIPT from "./mac-file-urls.applescript" with { type: "text" };
 
 type SpawnCaptureOptions = { input?: string; timeoutMs?: number; env?: Record<string, string | undefined> };
@@ -96,6 +97,59 @@ export async function readMacFileUrlsFromClipboard(): Promise<string[]> {
 			.filter(line => line.length > 0);
 	} catch (error) {
 		logger.warn("clipboard: failed to read macOS file URLs", { error: String(error) });
+		return [];
+	}
+}
+
+/**
+ * Read file paths from the Linux clipboard's `text/uri-list` representation.
+ *
+ * The Wayland/X11 counterpart of {@link readMacFileUrlsFromClipboard}: tools
+ * that put a saved file on the clipboard (KDE Spectacle "Save", file-manager
+ * `Ctrl+C`) advertise only `text/uri-list` — no image bytes and an empty
+ * `text/plain` — so both the bitmap read and the smart-paste text fallback
+ * report "empty" and the paste dead-ends. `wl-paste --type text/uri-list`
+ * (Wayland) or `xclip` (X11) reach the file URLs the same way AppleScript
+ * reaches `public.file-url` on the pasteboard.
+ *
+ * Per the freedesktop URI-list spec, `#`-prefixed lines are comments and the
+ * list may be CRLF-terminated; entries are `file://` URLs, percent-encoded.
+ * Returns plain filesystem paths, matching the macOS reader's shape so the
+ * shared `extractImagePathFromText` consumer treats them identically.
+ *
+ * Returns an empty array off Linux, with no display server, when
+ * wl-clipboard/xclip is unavailable, or when the clipboard holds no
+ * `file://` entries.
+ */
+export async function readLinuxFileUrlsFromClipboard(): Promise<string[]> {
+	if (process.platform !== "linux") return [];
+	try {
+		let stdout: string;
+		if (process.env.WAYLAND_DISPLAY) {
+			stdout = await spawnCapture(["wl-paste", "--type", "text/uri-list", "--no-newline"]);
+		} else if (process.env.DISPLAY) {
+			stdout = await spawnCapture(["xclip", "-selection", "clipboard", "-o", "-t", "text/uri-list"]);
+		} else {
+			return [];
+		}
+		const lines = stdout.split(/\r?\n/).map(line => line.trim());
+		const paths: string[] = [];
+		for (const line of lines) {
+			if (!line || line.startsWith("#")) continue;
+			// Non-file URIs (remote listings, `http://` links) have no local
+			// bytes to attach; malformed `file://` URLs are skipped likewise.
+			if (!line.startsWith("file://")) continue;
+			try {
+				paths.push(fileURLToPath(line));
+			} catch {
+				// Skip rather than dead-end the paste.
+			}
+		}
+		return paths;
+	} catch (error) {
+		// No uri-list offered (wl-paste/xclip exit non-zero when the target
+		// type is absent) — same "no file URLs" answer as an empty list.
+		logger.warn("clipboard: failed to read Linux file URLs", { error: String(error) });
 		return [];
 	}
 }

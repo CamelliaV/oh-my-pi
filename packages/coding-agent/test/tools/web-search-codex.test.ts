@@ -5,6 +5,7 @@ import { buildModel } from "@oh-my-pi/pi-catalog/build";
 import { ModelRegistry } from "@oh-my-pi/pi-coding-agent/config/model-registry";
 import type { SearchParams } from "@oh-my-pi/pi-coding-agent/web/search/providers/base";
 import { CodexProvider, hasCodexSearch, searchCodex } from "@oh-my-pi/pi-coding-agent/web/search/providers/codex";
+import { USER_AGENT } from "@oh-my-pi/pi-utils";
 
 /**
  * Minimal AuthStorage surface the Codex provider actually reads: a credential
@@ -419,7 +420,7 @@ describe("searchCodex model selection", () => {
 
 		expect(capturedRequest?.url).toBe("https://proxy.example/v1/codex/responses");
 		const headers = new Headers(capturedRequest?.headers);
-		expect(headers.get("user-agent")).toBe("omp/18.3.2");
+		expect(headers.get("user-agent")).toBe(USER_AGENT);
 		expect(headers.get("x-proxy-tenant")).toBe("tenant-1");
 		expect(result.answer).toBe("Codex answer");
 	});
@@ -462,7 +463,7 @@ describe("searchCodex model selection", () => {
 		expect(capturedRequest?.body?.model).toBe("gpt-5.6-sol-wire");
 		const headers = new Headers(capturedRequest?.headers);
 		expect(headers.get("authorization")).toBe("Bearer active-provider-key");
-		expect(headers.get("user-agent")).toBe("omp/18.3.2");
+		expect(headers.get("user-agent")).toBe(USER_AGENT);
 		expect(headers.get("x-provider-route")).toBe("active-provider");
 		expect(headers.get("x-model-route")).toBe("active");
 		expect(headers.has("chatgpt-account-id")).toBe(false);

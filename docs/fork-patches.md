@@ -5,7 +5,7 @@ patch on top of upstream. `AGENTS.md` carries only the index; read this file
 before rebasing, before touching a patched region, or when a patch's
 reasoning matters.
 
-## Patch list (v18.2.3 baseline; merged 2026-09-20 from v18.1.10 via trial/v18.1.19-master then upgrade/v18.2.3 — adjudications at the bottom)
+## Patch list (v18.5.1 baseline; merged 2026-10-04 from v18.5.0 via trial/v18.5.1 — adjudications at the bottom)
 
 
 1. `feat(tui)` user message bubble rounded frame — `user-message.ts` Box +
@@ -1012,3 +1012,110 @@ partial-stream-death 4/4; memory-tools + queued-policy 117/117; resume
 tests 12/12; gallery `--surface=segment` paints; `--smoke-test` ok;
 installed `~/.local/bin/omp-patched` reports `omp/18.2.3`.
 
+
+## Merge adjudications (v18.5.0 → v18.5.1, 2026-10-04)
+
+485 files, +59463−7077. 9 content conflicts across 8 files, all unions except
+the two generated JSONs. Trial `trial/v18.5.1`, master merge `3fd18a19`.
+
+- `openai-codex-responses.ts`: `CODEX_RETRYABLE_EVENT_CODES` — upstream
+  replaced the one-line `new Set([...4])` with a documented declaration
+  adding `CODEX_NATIVE_LANE_STEER_REJECTED_CODE`
+  (`unsupported_native_inflight_message`, the experimental native turn lane's
+  `response.steer` refusal). Fork's `invalid_prompt` (false-positive
+  moderation retry) kept; union = 5 keys. Callsites at 2761/4095/5269 take
+  the new constant verbatim — unguarded.
+- `turn-recovery.ts`: upstream inserted `GENERIC_ABORT_MESSAGES` (bare abort
+  sentinels: "Request was aborted[.]", "The operation was aborted[.]")
+  exactly where the fork's mid-stream-death doc comment sat. Both kept:
+  upstream's const + fork's comment relocated above
+  `retryableAssistantTurnEnd` (patch #31 wording survives in the family).
+- `terminal.ts`: upstream extracted active-terminal plumbing into
+  `active-terminal.ts` (getActiveTerminal/setActiveTerminal/
+  writeThroughActiveTerminal/registerStdoutErrorHandler) and re-exports
+  `writeTerminalSequence, writeThroughActiveTerminal` from terminal.ts.
+  Adopted wholesale — including the re-export — and kept the fork-only
+  DEC 1004 focus registry (`onActiveTerminalFocusChange`,
+  `terminalFocusListeners`, `lastTerminalFocus`) in terminal.ts; its only
+  consumer is `extensions/pet-bridge.ts` (patch #12). Watch: a second
+  re-export line inside the resolved block duplicated the header one (TS2300)
+  — removed. Upstream also added `Win32PasteMarkerNormalizer` + bracketed
+  paste re-assert and OSC 52 regex capture on this path.
+- `history-storage.ts`: upstream added `HistoryFilter {cwd?, sessionId?}`
+  and threaded it through `getRecent`/`search`/`#searchSubstring` (consumed
+  by the new `archive` eval global). Fork's `HistorySearchSource` interface
+  (bash-mode Ctrl+R, patch #15 — upstream's overlay defines its own
+  structural `HistorySource`) kept alongside.
+- `mnemopi/backend.ts`: import-block conflict only — upstream added
+  judgment usage ledger (`journalJudgmentUsage` charges memory completions),
+  fork's `memoryBackendCapabilities` value import kept in the same block.
+- `ui-helpers.ts`: import-block conflict — fork work-usage imports +
+  upstream slash-command registry imports, both kept.
+- `task-async-contract.md`: upstream narrowed `wait` ("first settled job
+  **you started**", dropped "or peer message"); fork's `resume=1`
+  continuation clause kept. Merged: upstream sentence + fork sentence.
+- `stats/formatters.ts`: upstream added `formatPercent` +
+  `formatErrorRate` (small-nonzero-rate preservation). Conflict: fork's
+  `formatPercent` accepts `number | null` → "N/A" (per-work accounting,
+  patch #7). Kept the fork signature; upstream's `formatErrorRate` passes
+  plain numbers so both compile. Resolution initially produced a duplicate
+  declaration (TS2393) — one copy kept.
+- `rules.json`/`models.json`: binary conflicts (single-line JSON). Took the
+  fork side (grok seed), then recompiled `rules.json` from the merged KDL
+  tree (`gen:compat`, 941 rules; `providers/tool-result-images.kdl` now in
+  the file list, `k3` taxonomy rows compiled). `web/grok` verified in
+  `providers.web.seed.models` after every subsequent models.json edit.
+
+New upstream contract that bit the fork: the machine-readable RPC wire schema
+(`src/modes/rpc/wire/`, `bun run gen:rpc`) plus
+`test/rpc-wire/conformance.types.ts` assert that generated wire types match
+the server's hand-written `rpc-types.ts` **exactly**. Every field the fork
+added server-side must now also live in the wire DSL
+(`wire/{content,state,frames}.ts`), or conformance fails with `unnamedKeys`:
+- `Usage.cacheTelemetry`/`costTelemetry` (patch #22 telemetry) — optional
+  `JSON_OBJECT` in `content.ts` `Usage`.
+- `CompactionResult.requestUsage` (patch #7 compaction billing) — new
+  `CompactionRequestUsage` def in `state.ts` (kind literal `'remote-v2'`,
+  provider/model strings, `Usage`, timestamp, duration).
+- `SubagentLifecycle/ProgressPayload.execution` (patch #30 execution state) —
+  optional `JSON_OBJECT` in `frames.ts`.
+- Upstream's own `detached` field on both payloads was dropped by the first
+  pass (execution insertion replaced the block) — conformance re-caught it;
+  keep both.
+
+`models.json` baked-row alignment (NOT `gen:models` — full regen drifts
+1200+ rows via live stencil fetches): muse-spark-1.3-contributor max tier
+(meta + muse-code), `supportsSamplingParams` aligned to upstream on 216 rows
+(upstream 18.5.1 extended the axis to bedrock/devin/google and baked explicit
+values; engine resolves them from `classes/anthropic.kdl` +
+`classes/openai.kdl` revision ranges), `supportsThinkingBindingControls`
+(2 rows), baseten `zai-org/GLM-5.3-Fast` thinking ladder (low/high/max +
+defaultLevel + requiresEffort), kimi-code `k3`/`k3-256k` identity
+(`{class:"kimi",family:"k3"}`) + full compat block (nativeKimiK3Reasoning),
+opencode-go `longcat-2.5-preview-free` reasoningDisableMode →
+`openrouter-enabled-false`. Each fix was driven by a real test failure
+(meta-provider 2, compat-parity ~260, kimi-code-thinking 2,
+reasoning-disable-dialects 1) and verified against the upstream tag's baked
+row before patching.
+
+Natives: `index.d.ts` byte-identical between v18.5.0 and v18.5.1 → ABI
+unchanged, restamped the existing 18.5.0 binaries with
+`bun scripts/stamp-native-version.ts` (baseline + modern). The build embed
+gate rejects unstamped addons.
+
+Verification: `bun run check:ts` 0 errors; zh driver 6/6 (`[1210]` replay);
+partial-stream-death + codex-error 22/22; rpc-wire conformance 30/30;
+catalog 1080/1081 (1 fail = compat-parity `extraBetas`/
+`usageInputIncludesCache` — identical on pre-merge master, fork patches
+#19/#22 known state); ai+agent full suite: 5 fails, byte-identical failure
+list on master (many-image resize ×2, tool-result image hoisting, head
+caching, first-event timeout); trial-only failures after all fixes: **0**.
+Built binary installed to `~/.local/bin/omp-patched` (`omp/18.5.1`),
+`--smoke-test` ok, PTY TUI boot ok, live relay probe ok.
+
+Process miss worth remembering: patch #34 (Linux `text/uri-list` paste)
+landed on master at 00:48, after trial branched at 00:26 — the first
+rebuilt binary silently lacked it and the user hit the regression live.
+Fix: `git merge master` into trial (clean), rebuild, reinstall
+(`strings | grep -c text/uri-list` 2 → 5). Rule: before any post-upgrade
+binary build, `git log HEAD..master` must be empty.

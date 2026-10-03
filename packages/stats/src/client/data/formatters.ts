@@ -60,6 +60,12 @@ export function formatMessageCost(
 	return formatEstimatedCost(message.usage.cost.total, isUnpricedMessage(message) ? 1 : 0, digits);
 }
 
+/** Show small nonzero failure rates without rounding them to zero. */
+export function formatErrorRate(value: number): string {
+	const percent = value * 100;
+	if (percent > 0 && percent < 0.005) return "<0.01%";
+	return formatPercent(value, percent > 0 && percent < 0.1 ? 2 : 1);
+}
 export function formatDurationMs(value: number | null, digits?: number): string {
 	if (value === null) return "-";
 	const sec = value / 1000;

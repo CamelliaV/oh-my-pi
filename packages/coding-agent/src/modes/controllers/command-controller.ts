@@ -1888,6 +1888,7 @@ export class CommandController {
 			}
 		} finally {
 			this.#finishHandoffUi(handoffLoader);
+			await this.ctx.flushCompactionQueue({ willRetry: false });
 		}
 		this.ctx.ui.requestRender(true, { clearScrollback: true });
 	}

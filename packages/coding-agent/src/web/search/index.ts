@@ -248,6 +248,7 @@ async function executeSearch(
 	let failedResponseProvider: SearchResponse["provider"] = "none";
 	for (const candidate of candidates) {
 		let provider: SearchProvider | undefined;
+		const attemptStartedAtMs = performance.now();
 		const candidateMeta = {
 			id: candidate.model.id as SearchProviderId,
 			label: candidate.model.name,
@@ -348,7 +349,9 @@ async function executeSearch(
 			// summary error), masking the cancellation.
 			throwIfAborted(signal);
 			failedResponseProvider = provider?.id ?? "none";
-			failures.push(createSearchProviderFailure(error, provider ?? candidateMeta));
+			failures.push(
+				createSearchProviderFailure(error, provider ?? candidateMeta, performance.now() - attemptStartedAtMs),
+			);
 		}
 	}
 

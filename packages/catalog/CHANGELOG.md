@@ -2,6 +2,18 @@
 
 ## [Unreleased]
 
+## [18.5.0] - 2026-10-03
+
+### Added
+
+- Added `closeModelCache()` (`@oh-my-pi/pi-catalog/model-cache`) to release the shared default `models.db` handle so an agent directory can be deleted on Windows; the next cache access reopens it
+
+## [18.4.11] - 2026-10-02
+
+### Fixed
+
+- Fixed new Fireworks sessions failing on the first turn by updating the default model to `kimi-k3`, which is currently supported by Fireworks.
+
 ## [18.4.10] - 2026-10-02
 
 ### Fixed

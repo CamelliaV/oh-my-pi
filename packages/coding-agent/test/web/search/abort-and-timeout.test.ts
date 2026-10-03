@@ -322,11 +322,11 @@ describe("executeSearch abort propagation", () => {
 		}));
 		const context = await configureProviderChain([
 			fakeProvider(
-				"codex",
+				"exa",
 				async () => {
-					throw new SearchProviderError("codex", "Codex web search rate limited.", 429);
+					throw new SearchProviderError("exa", "Exa web search rate limited.", 429);
 				},
-				"OpenAI",
+				"Exa",
 			),
 			fakeProvider("brave", fallbackSearch),
 		]);
@@ -336,16 +336,16 @@ describe("executeSearch abort propagation", () => {
 		expect(result.details.response.provider).toBe("brave");
 		expect(result.details.providerFailures).toEqual([
 			{
-				provider: "codex",
-				label: "OpenAI",
-				message: "Codex web search rate limited.",
+				provider: "exa",
+				label: "Exa",
+				message: "Exa web search rate limited.",
 				status: 429,
 				durationMs: expect.any(Number),
 			},
 		]);
 		const text = result.content.map(block => ("text" in block ? block.text : "")).join("\n");
 		expect(text).toContain("Note: Web search fallback used.");
-		expect(text).toContain("OpenAI: Codex web search rate limited. (HTTP 429)");
+		expect(text).toContain("Exa: Exa web search rate limited. (HTTP 429)");
 		expect(text).toContain("Results below were returned by Brave (brave), not the failed provider.");
 		expect(context.getProvider).toHaveBeenCalledTimes(2);
 		expect(fallbackSearch).toHaveBeenCalledTimes(1);

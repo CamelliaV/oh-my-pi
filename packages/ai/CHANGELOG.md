@@ -15,6 +15,13 @@
 - Anthropic user turns always serialize as content blocks, so a message no longer changes wire shape depending on whether it holds the rolling prompt-cache anchor — previously each user turn rewrote a byte inside the cached prefix, truncating the reusable region at that point.
 - Fixed Bun's `unknown certificate verification error` (a transient relay/MITM-proxy TLS handshake blip) being classified as terminal, so provider streams now auto-retry it like `tls: bad record MAC`; the config-level `tls: failed to verify certificate` wording stays non-retryable.
 - Fixed Codex (ChatGPT-subscription) turns dying on `invalid_prompt` moderation false positives — the backend spuriously flags long code-laden prompts, so those failure events now retry instead of aborting the turn.
+## [18.6.0] - 2026-10-03
+
+### Fixed
+
+- Fixed Antigravity chat and image requests sending an outdated client version when the model list came from cache, which could make newer models such as Claude Opus 5.5 unavailable.
+- When a DeepSeek model writes a broken DSML tool call (for example with the opening `<｜DSML｜tool_calls>` and `<｜DSML｜invoke>` tags missing), its closing tags are now kept in the streamed text instead of being dropped. This lets the agent remove exactly the broken call while keeping any text after it ([#14202](https://github.com/can1357/oh-my-pi/pull/14202) by [@H4vC](https://github.com/H4vC)).
+
 ## [18.5.1] - 2026-10-03
 
 ### Fixed

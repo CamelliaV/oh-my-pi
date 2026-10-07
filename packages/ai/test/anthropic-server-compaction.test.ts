@@ -429,7 +429,8 @@ describe("Anthropic compaction replay", () => {
 			],
 		});
 		expect(wire[1]).toEqual({ role: "user", content: "<files>handlers.ts (Read)</files>" });
-		expect(wire[2]).toMatchObject({ role: "user", content: "next" });
+		// Fork patch #21: conversational user content serializes as a single text block.
+		expect(wire[2]).toMatchObject({ role: "user", content: [{ type: "text", text: "next" }] });
 		const request = await captureRequest(model, { thinkingEnabled: true }, messages);
 		expect(request.beta).toContain("compact-2026-09-04");
 		expect(request.payload.context_management).toEqual({ edits: [{ type: "clear_thinking_20251015", keep: "all" }] });
@@ -470,8 +471,16 @@ describe("Anthropic compaction replay", () => {
 			],
 			12,
 		);
+		// Fork patch #21: conversational user turns always serialize as a single
+		// text block, so recover the plain text the way string content used to read.
 		const roles = (wire: Array<{ role: string; content: unknown }>) =>
-			wire.map(param => (typeof param.content === "string" ? param.content : param.role));
+			wire.map(param =>
+				typeof param.content === "string"
+					? param.content
+					: Array.isArray(param.content) && param.content.length === 1 && param.content[0]?.type === "text"
+						? param.content[0].text
+						: param.role,
+			);
 
 		it("emits file metadata before the first message created after the summary, never inside the tail", () => {
 			const summary = summaryMessage({ signature: SIGNATURE, filesText: files }, "anthropic", 20);

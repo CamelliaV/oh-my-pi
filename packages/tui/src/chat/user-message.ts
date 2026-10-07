@@ -23,7 +23,13 @@ import { MODEL_MENTION_TAG_RE } from "../prompt/model-mention-syntax";
 import { card, md, node, row, span, text } from "../native/describe";
 import { base64ImageNode } from "../native/blobs";
 import { hasTranscriptActions, runTranscriptAction } from "./transcript-actions";
-import { type NativeChild, type NativeNode, type NativeUiEvent, rootToggleExpanded } from "../native/node";
+import {
+	type DescribeContext,
+	type NativeChild,
+	type NativeNode,
+	type NativeUiEvent,
+	rootToggleExpanded,
+} from "../native/node";
 import { Memo } from "../native/memo";
 
 import { imageReferenceHyperlink } from "../prompt/image-references";
@@ -172,6 +178,8 @@ export class UserMessageComponent extends Container implements ReactionTarget {
 	readonly #tokens: RegExp;
 	#reaction: string | undefined;
 	#native: NativeNode | undefined;
+	/** The terminal's clock {@link #native} was described with. */
+	#nativeHour12: boolean | undefined;
 
 	constructor(text: string, options: UserBubbleOptions = {}) {
 		const { sessionUsageText, images, imageBudget, requestRepaint, imageKeyPrefix = "user" } = options;
@@ -294,17 +302,20 @@ export class UserMessageComponent extends Container implements ReactionTarget {
 	 * agent's reaction are chips at the bottom-right, so a reaction landing
 	 * later updates the frame in place, even deep in scrollback.
 	 */
-	override describe(): NativeNode {
-		if (this.#native) return this.#native;
+	override describe(cx?: DescribeContext): NativeNode {
+		// The terminal's clock: Bun's own default locale ignores the user's.
+		const hour12 = cx?.hour12;
+		if (this.#native && this.#nativeHour12 === hour12) return this.#native;
+		this.#nativeHour12 = hour12;
 		const children: NativeChild[] = [];
 		if (!this.#synthetic && hasTranscriptActions()) {
 			const tools: NativeChild[] = [];
 			if (this.#timestamp !== undefined) {
 				const at = new Date(this.#timestamp);
 				tools.push(
-					text([span(at.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }), "dim mono")], {
+					text([span(at.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", hour12 }), "dim mono")], {
 						role: "omp.user.time",
-						title: at.toLocaleString(),
+						title: at.toLocaleString([], { hour12 }),
 					}),
 				);
 			}

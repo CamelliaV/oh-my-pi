@@ -4,7 +4,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 
 import { AuthStorage, SqliteAuthCredentialStore } from "@oh-my-pi/pi-ai/auth-storage";
-import * as aiStream from "@oh-my-pi/pi-ai/stream";
+import * as aiStream from "@oh-my-pi/pi-ai/env-api-key";
 import { removeWithRetries } from "../../utils/src/temp";
 
 /**

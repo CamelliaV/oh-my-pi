@@ -452,7 +452,10 @@ describe("anthropic head caching (general API-key path)", () => {
 		// The note reaches the wire as a `user` message at index 0.
 		const note = body.messages[0];
 		expect(note?.role).toBe("user");
-		expect(String(note?.content)).toContain("<stale-tool-result");
+		// Fork patch #21: user turns serialize as text blocks; the note is synthetic
+		// but flows through the same block-form branch when it carries the anchor.
+		const noteText = typeof note?.content === "string" ? note.content : JSON.stringify(note?.content ?? "");
+		expect(noteText).toContain("<stale-tool-result");
 
 		// User 1 therefore sits at index 1 and the 15th conversational turn at index 29.
 		// Counting the note would anchor index 27 after only 14 real turns.

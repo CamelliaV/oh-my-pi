@@ -30,6 +30,10 @@ const NEW_COMPAT_FIELDS = new Set([
 	"requiresSkipThoughtSignature",
 	"dropUnsignedThinking",
 	"ccaLegacyParametersSchema",
+	// Fork patches #19/#22: declared per-provider via models.yml `compat`,
+	// never baked into models.json rows upstream refreshes.
+	"extraBetas",
+	"usageInputIncludesCache",
 	"multimodalFunctionResponse",
 	"flashStreamLeakWorkaround",
 	"claudeThinkingBetaHeader",

@@ -757,6 +757,15 @@ export interface CreateAgentSessionOptions {
 	 */
 	allowRestrictedCustomTools?: boolean;
 
+	/**
+	 * Zero-injection mode for plain knowledge Q&A: no system prompt (unless
+	 * {@link systemPrompt} is supplied explicitly), no tools, no skills, rules,
+	 * context files, workspace tree, prompt templates, slash commands,
+	 * extensions, MCP, LSP, IRC, advisors, or memory. Every discovery source
+	 * stays off, so the request carries nothing but the user's messages.
+	 */
+	lightweight?: boolean;
+
 	/** Output schema for structured completion (subagents). */
 	outputSchema?: unknown;
 	/** Enforcement policy for {@link outputSchema}; defaults to legacy permissive behavior. */
@@ -1623,11 +1632,53 @@ export function createAutoLearnCaptureRunner(
 	};
 }
 /**
+ * Rewrite every injection-bearing option to its empty form. Runs before the
+ * extension-root computation and every discovery arm so a lightweight session
+ * performs none of them: the fixed-`systemPrompt` override (empty array)
+ * short-circuits the prompt builder, and the explicit empty lists skip
+ * skills/rules/context-file/template/command discovery. Memory, MCP, IRC, LSP
+ * pathing, and custom-command discovery all key off `restrictToolNames`.
+ */
+function normalizeLightweightOptions(options: CreateAgentSessionOptions): CreateAgentSessionOptions {
+	return {
+		...options,
+		// Only an explicit fixed prompt survives; a template/custom prompt would
+		// re-introduce environment and project-context rendering.
+		systemPrompt: options.systemPrompt ?? [],
+		systemPromptTemplate: undefined,
+		customSystemPrompt: undefined,
+		appendSystemPrompt: undefined,
+		toolNames: [],
+		restrictToolNames: true,
+		allowRestrictedCustomTools: false,
+		customTools: [],
+		mcpTools: [],
+		skills: [],
+		rules: [],
+		contextFiles: [],
+		workspaceTree: {
+			rootPath: options.cwd ?? getProjectDir(),
+			rendered: "",
+			truncated: false,
+			totalLines: 0,
+			agentsMdFiles: [],
+		},
+		promptTemplates: [],
+		slashCommands: [],
+		extensions: [],
+		additionalExtensionPaths: [],
+		disableExtensionDiscovery: true,
+		enableMCP: false,
+		enableLsp: false,
+		enableIrc: false,
+	};
+}
+
+/**
  * Create an AgentSession with the specified options.
  *
  * @example
  * ```typescript
- * // Minimal - uses defaults
  * const { session } = await createAgentSession();
  *
  * // With explicit model
@@ -1654,6 +1705,7 @@ export function createAutoLearnCaptureRunner(
  * ```
  */
 export async function createAgentSession(options: CreateAgentSessionOptions = {}): Promise<CreateAgentSessionResult> {
+	if (options.lightweight === true) options = normalizeLightweightOptions(options);
 	registerLocalInferenceApi();
 	const extensionRoots = options.extensionRoots?.();
 	const explicit = extensionRoots?.explicit ?? options.additionalExtensionPaths ?? [];
@@ -1793,11 +1845,24 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 			return null;
 		}
 	};
-	const activeRepoContextPromise = logger.time("resolveActiveRepoContext", resolveRepoContext, cwd);
+	// Lightweight sessions skip these discoveries entirely — their outputs only
+	// feed system-prompt rendering and advisor wiring, both of which stay off.
+	const activeRepoContextPromise = options.lightweight
+		? Promise.resolve(null)
+		: logger.time("resolveActiveRepoContext", resolveRepoContext, cwd);
 	activeRepoContextPromise.catch(() => {});
-	const watchdogFilesPromise = logger.time("discoverWatchdogFiles", () => discoverWatchdogFiles(cwd, agentDir));
+	const watchdogFilesPromise = options.lightweight
+		? Promise.resolve([])
+		: logger.time("discoverWatchdogFiles", () => discoverWatchdogFiles(cwd, agentDir));
 	watchdogFilesPromise.catch(() => {});
-	const advisorConfigsPromise = logger.time("discoverAdvisorConfigs", () => discoverAdvisorConfigs(cwd, agentDir));
+	const advisorConfigsPromise = options.lightweight
+		? Promise.resolve({
+				advisors: [],
+				warnings: [],
+				sharedInstructions: undefined,
+				sharedMaxNotesPerUpdate: undefined,
+			})
+		: logger.time("discoverAdvisorConfigs", () => discoverAdvisorConfigs(cwd, agentDir));
 	advisorConfigsPromise.catch(() => {});
 	const promptTemplatesPromise = options.promptTemplates
 		? Promise.resolve(options.promptTemplates)

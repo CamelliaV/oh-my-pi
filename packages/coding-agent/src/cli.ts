@@ -79,6 +79,7 @@ function getWorkerParentPort(): MessagePort | null {
  * valid; anything else (subcommands, `-p`, model/session selectors) skips it.
  */
 const PREPAINT_SAFE_FLAGS: Record<string, true> = {
+	"--lightweight": true,
 	"--no-session": true,
 	"--no-extensions": true,
 	"--no-skills": true,

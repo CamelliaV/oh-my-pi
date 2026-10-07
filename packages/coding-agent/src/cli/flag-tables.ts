@@ -305,6 +305,7 @@ export const VALUELESS_FLAGS: ReadonlySet<string> = new Set([
 	"--continue",
 	"--from-claude",
 	"--from-codex",
+	"--lightweight",
 	"--no-session",
 	"--no-tools",
 	"--no-lsp",

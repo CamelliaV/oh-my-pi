@@ -82,6 +82,8 @@ export interface Args {
 	noSkills?: boolean;
 	skills?: string[];
 	noRules?: boolean;
+	/** Zero-injection knowledge-Q&A mode: no system prompt, tools, skills, rules, context files, or extensions. */
+	lightweight?: boolean;
 	noTitle?: boolean;
 	/** RPC modes only: run extensions without a UI; `rpc-ui` tool UI remains enabled. */
 	noUi?: boolean;
@@ -350,6 +352,8 @@ export function parseArgs(inputArgs: string[], extensionFlags?: Map<string, { ty
 			result.noUi = true;
 		} else if (arg === "--auto-approve" || arg === "--yolo") {
 			result.autoApprove = true;
+		} else if (arg === "--lightweight") {
+			result.lightweight = true;
 		} else if (arg.startsWith("@")) {
 			let filePath = arg.slice(1);
 			if (filePath.startsWith('"') && filePath.endsWith('"') && filePath.length > 1) {
@@ -403,6 +407,20 @@ export function parseArgs(inputArgs: string[], extensionFlags?: Map<string, { ty
 
 	if (result.systemPrompt !== undefined && result.systemPromptTemplate !== undefined) {
 		throw new CliUsageError("--system-prompt and --system-prompt-template cannot be combined");
+	}
+
+	if (result.lightweight) {
+		// Lightweight forces the empty form of these surfaces; combining them
+		// would silently drop what the user explicitly asked for.
+		const conflict = [
+			[result.tools !== undefined, "--tools"],
+			[result.systemPromptTemplate !== undefined, "--system-prompt-template"],
+			[result.advisor, "--advisor"],
+			[(result.extensions?.length ?? 0) > 0, "--extension"],
+			[(result.hooks?.length ?? 0) > 0, "--hook"],
+			[(result.trustedExtensions?.length ?? 0) > 0, "--trusted-extension"],
+		].find(([active]) => active)?.[1];
+		if (conflict) throw new CliUsageError(`--lightweight cannot be combined with ${conflict}`);
 	}
 	return result;
 }

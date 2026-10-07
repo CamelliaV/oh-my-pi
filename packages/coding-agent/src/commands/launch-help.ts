@@ -67,6 +67,9 @@ export const launchHelp = {
 		"session-dir": Flags.string({ description: "Directory for session storage and lookup" }),
 		"no-session": Flags.boolean({ description: "Don't save session (ephemeral)" }),
 		models: Flags.string({ description: `Comma-separated model patterns for ${formatKeyHint("ctrl+p")} cycling` }),
+		lightweight: Flags.boolean({
+			description: "Pure knowledge Q&A: no system prompt, tools, skills, rules, or context injection",
+		}),
 		"no-tools": Flags.boolean({ description: "Disable all built-in tools" }),
 		"no-lsp": Flags.boolean({ description: "Disable LSP tools, formatting, and diagnostics" }),
 		"no-pty": Flags.boolean({ description: "Disable PTY-based interactive bash execution" }),

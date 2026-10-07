@@ -1204,3 +1204,42 @@ many-image-resize ×2, tool-result image hoisting, first-event timeout,
 bedrock UA, head-caching-era suites, hindsight deadline, role-thinking ×2,
 issue-9816/handoff ×3, mcp-http ×2, mcp-legacy-sse, advisor-memory,
 SYSTEM.md preference, lsp-render ×3.
+
+## Patch 35: `feat(cli)` lightweight zero-injection Q&A mode (2026-10-07)
+
+`--lightweight` (SDK: `CreateAgentSessionOptions.lightweight`) for pure
+knowledge Q&A with zero context overhead. One gate: `normalizeLightweightOptions()`
+rewrites every injection-bearing option BEFORE the extension-root computation
+and the discovery arms launch (`createAgentSession` entry, `packages/coding-agent/src/sdk.ts`),
+so no discovery I/O happens at all:
+
+- `systemPrompt: []` (unless caller supplies an explicit fixed prompt) → rides
+  the existing fixed-override early return in the prompt builder; the
+  anthropic wire then OMITS `system` entirely and `tools` is absent (verified
+  via fetch-capture probe: `[lightweight] system: undefined, tools: (absent)`,
+  messages only the user turn).
+- `toolNames: []`, `restrictToolNames: true`, `allowRestrictedCustomTools: false`,
+  `customTools/mcpTools: []` — memory, MCP, IRC, LSP, and custom-command
+  discovery all key off `restrictToolNames` upstream, so they stay off with
+  no extra code.
+- `skills/rules/contextFiles/promptTemplates/slashCommands/extensions: []`,
+  `disableExtensionDiscovery: true`, `enableMCP/enableLsp/enableIrc: false`.
+- `workspaceTree`: literal empty tree so a user `includeWorkspaceTree` setting
+  cannot trigger a scan.
+- `repo-context/watchdog/advisor` discoveries short-circuit on
+  `options.lightweight` (three ternaries before the arms).
+- Date/cwd reminders: upstream already suppresses them when the prompt is
+  empty — no change needed.
+
+CLI surface: valueless `--lightweight` (args.ts, flag-tables VALUELESS_FLAGS,
+cli.ts PREPAINT_SAFE_FLAGS, launch-help table, `buildSessionOptions` maps it
+into `options.lightweight`). Cross-validation rejects the contradictory
+combinations (`--tools`, `--system-prompt-template`, `--advisor`, `--extension`,
+`--hook`, `--trusted-extension`) with `--lightweight cannot be combined with …`.
+`--system-prompt` + `--lightweight` is allowed (explicit fixed prompt with
+zero other injection).
+
+Verification: `bun run check:ts` green; fetch-capture probe (lightweight vs
+normal: system absent vs 8 segments, tools absent vs 16); live binary probe
+`omp --lightweight --no-session -p "9.11和9.9哪个大"` answers correctly with
+no tool/system context.

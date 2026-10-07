@@ -1119,3 +1119,88 @@ rebuilt binary silently lacked it and the user hit the regression live.
 Fix: `git merge master` into trial (clean), rebuild, reinstall
 (`strings | grep -c text/uri-list` 2 → 5). Rule: before any post-upgrade
 binary build, `git log HEAD..master` must be empty.
+
+## v18.6.0 → v18.8.0 (2026-10-07)
+
+Synthetic `upstream/v18.8.0` parented on `upstream/v18.6.0`'s tree (merge-base
+correct; only fork-touched regions conflicted). 17 content conflicts + 2
+generated artifacts (`rules.json`, `models.json`, binary-marked).
+
+Conflict adjudications (all verified by marker grep after merge):
+
+- `openai-codex-responses.ts`: retryable event codes kept as upstream
+  `ReadonlySet` shape with the 5-key union — fork `invalid_prompt` +
+  upstream `AIError.CODEX_NATIVE_LANE_STEER_REJECTED_CODE`.
+- `openai-shared.ts`: kept fork `usage.costTelemetry.estimatedTotal`
+  assignment alongside upstream's served-tier change.
+- `main.ts`: fork fuzzy `--resume` retained; upstream's new exact-path-miss
+  error path folded so a miss falls through to fuzzy instead of hard-failing.
+- `task/executor.ts`: fork `initialExecution` (AgentRegistry history) read
+  kept; upstream's owner-routed wake-job (turn-spanning job for parent
+  messages, yield-registering otherwise) adopted.
+- `stats/db.ts`: full column union — fork
+  `cache_read_status/cache_write_status/cost_source/cost_estimated_total` +
+  upstream `cost_unpriced/service_tier`; INSERT now 31 select params + 3
+  NOT EXISTS params; upsert COALESCE guards preserved with the two new
+  `IS NOT` rows appended.
+- `tui/tui.ts`: fork kitty `OMP_IMG_DEBUG` response log kept above
+  upstream's focused-capture input branch.
+- `tui/autocomplete.ts`: fork `getInsertableHint` (patch #16 ghost insert)
+  kept next to upstream's new `getCommandNameSuggestions` doc block.
+- `tui/history-search.ts`: fork suffix time budget kept; upstream cached
+  `#highlightedPrompt` adopted.
+- `tui/tools/lsp.ts`: upstream memoized two-slot `renderBody` taken; the
+  fork's `parseDiagnosticSummary`/`renderDiagnostics` branch lives inside
+  `renderBody` (patch #9 tool-intent state coloring preserved).
+- `sdk/rust wire.rs`: fork `LitRemoteV2` ("remote-v2" protocol kind) +
+  upstream `LogoutAccountType` both emitted.
+- `interactive-mode.ts`: import followed upstream rename
+  `resolveMarkdownLinkTargets` → `resolveMarkdownLinkHrefs`.
+
+Generated artifacts:
+
+- `rules.json`: `bun run gen:compat` from merged KDL tree; `web/grok` seed
+  verified present post-compile.
+- `models.json`: upstream v18.8.0 bake taken wholesale (fork leaves were
+  stale pre-18.4 bakes; upstream re-baked tps/names/contextWindow), then
+  re-injected: 24 fork-only ids (`web/grok`, aiand/nanogpt/nvidia/synthetic
+  discovery rows, antigravity variants, `openai-codex/gpt-5.5`), 4
+  deliberate zero-cost overrides (aiand qwen3.6-27b, vercel ling-sante,
+  xai-oauth grok-build/grok-composer-2.5-fast). `gpt-5.5` row aligned
+  `storeResponses: false` for compat-parity.
+
+New fork fix forced by the upstream bake: `anthropic.ts` iterates
+`compat.extraBetas` for the beta-header union (patch #19); upstream rows
+omit the key, so the loop is now guarded `?? []` — snowflake provider
+(exposed in 18.8.0) crashed the stream before the guard.
+
+Test adjudications:
+
+- `compat-parity.test.ts`: `extraBetas`/`usageInputIncludesCache` added to
+  the exempt field list — fork patch #19/#22 declare them via models.yml
+  `compat`, they are never baked into `models.json` rows upstream refreshes.
+- `anthropic-server-compaction.test.ts`: `roles()` helper unwraps
+  single-text-block user content (patch #21 block-form invariant); the
+  `wire[2]` assertion expects `[{type:"text",text:"next"}]`.
+- `anthropic-head-caching.test.ts`: stale-tool-result note assertion reads
+  block-form content via JSON stringify.
+- `subagent-mcp-follow.test.ts`: loader stub gained `lazyConfigs`/
+  `lazySources` (upstream lazy MCP result fields).
+- `auth-storage-config-api-key-pool.test.ts`: spy import retargeted
+  `@oh-my-pi/pi-ai` → `@oh-my-pi/pi-ai/env-api-key` (upstream moved
+  `getEnvApiKey`).
+
+Natives: 18.6.0 → 18.8.0, ABI grew (menuSelect/listApplications/holdKeys/
+captureRegion/bringToCurrentSpace; computer-use menu APIs). Official
+release binary smoke-extracted under isolated HOME, both linux-x64 variants
+copied and stamped with `scripts/stamp-native-version.ts`.
+
+Verification: `bun run check:ts` 0 errors; zh driver 3/3; rpc-wire
+conformance regenerated (`gen:rpc`) and typechecks; `--smoke-test` ok;
+`omp --no-session -p` probe ok; installed `omp/18.8.0` at
+`~/.local/bin/omp-patched` (uri-list marker 5, remote-v2 marker 4).
+Pre-existing master failures re-confirmed identical on both trees:
+many-image-resize ×2, tool-result image hoisting, first-event timeout,
+bedrock UA, head-caching-era suites, hindsight deadline, role-thinking ×2,
+issue-9816/handoff ×3, mcp-http ×2, mcp-legacy-sse, advisor-memory,
+SYSTEM.md preference, lsp-render ×3.

@@ -3712,7 +3712,7 @@ export function buildAnthropicClientOptions(args: AnthropicClientOptionsArgs): A
 	// the github-copilot branch above is excluded deliberately, since that proxy
 	// rejects Anthropic betas outright.
 	const betaFeatures = [...extraBetas];
-	for (const beta of compat.extraBetas) {
+	for (const beta of compat.extraBetas ?? []) {
 		if (!betaFeatures.includes(beta)) betaFeatures.push(beta);
 	}
 	if (needsFineGrainedToolStreamingBeta) {

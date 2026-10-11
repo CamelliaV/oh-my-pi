@@ -1,5 +1,5 @@
 import type { Database, SQLQueryBindings } from "bun:sqlite";
-import { logger } from "@oh-my-pi/pi-utils";
+import { logger, withLoopPhase } from "@oh-my-pi/pi-utils";
 import { transaction } from "../../db";
 import { toUtcIso } from "../../util/datetime";
 import { generateId } from "../../util/ids";
@@ -366,11 +366,13 @@ async function runFactExtraction(beam: BeamMemoryState, memoryId: string, conten
 		const source = captureMemorySource(beam, memoryId);
 		if (source === null) return;
 		const extracted = await extractFactCategoriesSafe(content);
-		if (countExtractedFactCategories(extracted) === 0) return;
-		transaction(beam.db, () => {
-			if (!memorySourceUnchanged(beam, source)) return;
-			storeExtractedFactCategories(beam, extracted, 0, memoryId);
-			invalidateCaches(beam);
+		withLoopPhase("mnemopi.extract", () => {
+			if (countExtractedFactCategories(extracted) === 0) return;
+			transaction(beam.db, () => {
+				if (!memorySourceUnchanged(beam, source)) return;
+				storeExtractedFactCategories(beam, extracted, 0, memoryId);
+				invalidateCaches(beam);
+			});
 		});
 	} catch {
 		// Background fact extraction is best-effort and never surfaces to the caller.
@@ -874,7 +876,7 @@ export function get(beam: BeamMemoryState, memoryId: string): Row | null {
 	const visibility = memoryVisibilityWhere(beam);
 	using workingStatement = beam.db.prepare(`
 		SELECT id, content, source, timestamp, session_id,
-			   importance, metadata_json, veracity, created_at
+			   importance, metadata_json, veracity, created_at, valid_until, superseded_by
 		FROM working_memory
 		WHERE id = ? AND ${visibility.where}
 	`);
@@ -888,7 +890,7 @@ export function get(beam: BeamMemoryState, memoryId: string): Row | null {
 
 	using episodicStatement = beam.db.prepare(`
 		SELECT id, content, source, timestamp, session_id,
-			   importance, metadata_json, veracity, created_at
+			   importance, metadata_json, veracity, created_at, valid_until, superseded_by
 		FROM episodic_memory
 		WHERE id = ? AND ${visibility.where}
 	`);

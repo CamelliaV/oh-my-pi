@@ -2,7 +2,6 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import type { CompactionRequestUsage } from "@oh-my-pi/pi-agent-core/compaction";
 import type {
-	AssistantMessage,
 	ImageContent,
 	Message,
 	MessageAttribution,
@@ -10,9 +9,9 @@ import type {
 	TextContent,
 	Usage,
 } from "@oh-my-pi/pi-ai";
-import { createSyntheticToolResultMessage } from "@oh-my-pi/pi-agent-core";
 import {
 	directoryIsEnterable,
+	directoryIsMissing,
 	getBlobsDir,
 	getProjectDir,
 	getSessionsDir,
@@ -42,6 +41,7 @@ import {
 	stripInternalDetailsFields,
 } from "./messages";
 import type { WorkPoolYieldItem } from "../task/workpool-yield";
+import { createInterruptedToolResults, sessionExitFollowsLastMessage } from "./exit-diagnostics";
 import type { RetryFallbackRole } from "./retry-fallback-chains";
 import { type BuildSessionContextOptions, buildSessionContext, type SessionContext } from "./session-context";
 import {
@@ -63,7 +63,6 @@ import {
 	type SessionHeader,
 	type SessionInitEntry,
 	type SessionMessageEntry,
-	type SessionTitleCard,
 	type SessionTitleSource,
 	type SessionTreeNode,
 	type ThinkingLevelChangeEntry,
@@ -97,6 +96,7 @@ import {
 	hasPositiveMovedProjectEvidence,
 	readTerminalBreadcrumbEntry,
 	resolveManagedSessionRoot,
+	worktreeSessionDirs,
 	writeTerminalBreadcrumb,
 } from "./session-paths";
 import { forgetExternalizedImages, prepareEntryForPersistence } from "./session-persistence";
@@ -874,6 +874,8 @@ export class SessionManager {
 	#fileIsCurrent = false;
 	/** In-memory entries diverged from disk (load-migration/sanitize) → next persist must full-rewrite. */
 	#rewriteRequired = false;
+	/** Malformed records the loader skipped for the current session file; reported by `/dump anon`. */
+	#loadedMalformedRecords = 0;
 	/** Byte length this manager last loaded or durably wrote; `null` means the path was absent. */
 	#expectedDiskSize: number | null = null;
 	/**
@@ -1973,6 +1975,7 @@ export class SessionManager {
 		this.#index.clear();
 		this.#fileIsCurrent = false;
 		this.#rewriteRequired = false;
+		this.#loadedMalformedRecords = 0;
 		this.#forceFileCreation = false;
 		this.#draftOnlySessionCleanupArmed = false;
 		this.#turnBudgetTotal = null;
@@ -2340,6 +2343,7 @@ export class SessionManager {
 		this.#hasTitleSlot = titleSlot !== undefined;
 		this.#fileIsCurrent = true;
 		this.#rewriteRequired = migrated || loaded.malformedRecords > 0;
+		this.#loadedMalformedRecords = loaded.malformedRecords;
 		this.#forceFileCreation = true;
 		this.#artifactManager = null;
 		this.#artifactManagerSessionFile = null;
@@ -3205,6 +3209,11 @@ export class SessionManager {
 		return this.#titleRevision;
 	}
 
+	/** Malformed JSONL records skipped when this session file was loaded (0 for new sessions). */
+	get loadedMalformedRecords(): number {
+		return this.#loadedMalformedRecords;
+	}
+
 	/** Invalidate older generated renames before starting a new request. */
 	reserveTitleRevision(): number {
 		return ++this.#titleRevision;
@@ -3212,22 +3221,6 @@ export class SessionManager {
 
 	getSessionName(): string | undefined {
 		return this.#sessionName;
-	}
-
-	/**
-	 * The card index of the current title, if it has one. Read from the latest
-	 * title change rather than stored beside the title (header, title slot,
-	 * listings): a rename that passes no card drops it, and a resumed session
-	 * gets it back from its own entries.
-	 */
-	getSessionTitleCard(): SessionTitleCard | undefined {
-		const title = this.#sessionName;
-		if (!title) return undefined;
-		for (let i = this.#entries.length - 1; i >= 0; i--) {
-			const entry = this.#entries[i]!;
-			if (entry.type === TITLE_CHANGE_ENTRY_TYPE) return entry.title === title ? entry.card : undefined;
-		}
-		return undefined;
 	}
 
 	onSessionNameChanged(cb: () => void): () => void {
@@ -3273,14 +3266,8 @@ export class SessionManager {
 	 * Set the session display name.
 	 * @param source "user" for explicit renames; "auto" for generated titles.
 	 *   Auto titles are ignored once the user has set a name.
-	 * @param card The card index generated with this title (see {@link getSessionTitleCard}).
 	 */
-	async setSessionName(
-		name: string,
-		source: SessionTitleSource = "auto",
-		trigger?: string,
-		card?: SessionTitleCard,
-	): Promise<boolean> {
+	async setSessionName(name: string, source: SessionTitleSource = "auto", trigger?: string): Promise<boolean> {
 		if (this.#released) return false;
 		if (this.#titleSource === "user" && source === "auto") return false;
 
@@ -3305,7 +3292,6 @@ export class SessionManager {
 		};
 		if (previousTitle) entry.previousTitle = previousTitle;
 		if (trigger) entry.trigger = trigger;
-		if (card) entry.card = card;
 		this.#entries.push(entry);
 		this.#index.insert(entry);
 		this.#notifyEntryAppended(entry);
@@ -4027,50 +4013,27 @@ export class SessionManager {
 	}
 
 	/**
-	 * Pair any tool calls the forked active branch's final assistant turn left
-	 * unresolved with synthetic aborted results, in place.
+	 * Pair unresolved calls on the fork's active branch with diagnostic results.
 	 *
-	 * A `/tan` fork of a *live* parent is taken while the parent may be mid-turn
-	 * — its last assistant turn emitted a tool call whose `toolResult` is
-	 * delivered only to the parent. {@link createInterruptedTurnAbortMessage}
-	 * cannot repair this: it requires a persisted `session_exit` after the tail,
-	 * which a running parent never wrote. Left unpaired, the clone renders the
-	 * parent's in-flight tool call as its own perpetually pending work (the
-	 * transcript keeps dangling calls while the clone streams) and replays an
-	 * orphan `tool_use` into the model. Synthesizing the same `assistant_stop_
-	 * aborted` results the agent loop records for an interrupted turn makes the
-	 * forked transcript terminal and well-formed before the clone is prompted.
+	 * Forks can be taken while the source parent is still running. A result that
+	 * arrives later is only present in that parent's history, so the child must
+	 * preserve an unknown outcome instead of asserting the tool never ran.
 	 *
-	 * Assistant turns and results on sibling branches are excluded: the clone
-	 * consumes only the root-to-active-leaf path.
+	 * A source whose process exit follows its last message is no longer running;
+	 * it keeps the resume recovery instead: startup warns about the pending
+	 * calls, then pairs them with process-exit results and the interrupted-turn
+	 * abort record.
+	 *
+	 * Sibling branches are excluded: only the root-to-active-leaf path is copied.
 	 */
 	static #repairForkedInterruptedTail(history: SessionEntry[], branch: readonly SessionEntry[]): void {
 		const leaf = branch.at(-1);
-		if (!leaf) return;
-		let assistant: AssistantMessage | undefined;
-		for (let i = branch.length - 1; i >= 0; i--) {
-			const entry = branch[i]!;
-			if (entry.type === "message" && entry.message.role === "assistant") {
-				assistant = entry.message;
-				break;
-			}
-		}
-		if (!assistant) return;
-		const pairedResultIds = new Set<string>();
-		for (const entry of branch) {
-			if (entry.type === "message" && entry.message.role === "toolResult")
-				pairedResultIds.add(entry.message.toolCallId);
-		}
-		const dangling = assistant.content.filter(
-			(block): block is Extract<AssistantMessage["content"][number], { type: "toolCall" }> =>
-				block.type === "toolCall" && !pairedResultIds.has(block.id),
-		);
-		if (dangling.length === 0) return;
+		if (!leaf || sessionExitFollowsLastMessage(branch)) return;
+		const results = createInterruptedToolResults(branch, "fork");
+		if (results.length === 0) return;
 		const usedIds = new Set(history.map(entry => entry.id));
-		// Chain the synthetic results after the active leaf so they extend the
-		// selected branch without mutating or depending on sibling paths.
 		let parentId = leaf.id;
-		for (const call of dangling) {
+		for (const result of results) {
 			const id = generateId(usedIds);
 			usedIds.add(id);
 			const entry: SessionMessageEntry = {
@@ -4078,7 +4041,7 @@ export class SessionManager {
 				id,
 				parentId,
 				timestamp: nowIso(),
-				message: createSyntheticToolResultMessage(call, "aborted"),
+				message: result,
 			};
 			history.push(entry);
 			parentId = id;
@@ -4128,6 +4091,49 @@ export class SessionManager {
 			throwIfMissing: options?.throwIfMissing,
 			newSession: { parentSession: options?.parentSession },
 		});
+		return manager;
+	}
+
+	/**
+	 * Whether `session` was recorded in a worktree of `cwd`'s repository that no
+	 * longer exists, e.g. a `/wt` worktree removed since. Resume such a session
+	 * through {@link openRelocated} into `cwd`: its own directory cannot be entered.
+	 * @param sessionDir `cwd`'s session directory; defaults to the cwd-derived one.
+	 */
+	static async isFromRemovedWorktree(
+		session: Pick<SessionInfo, "path" | "cwd">,
+		cwd: string,
+		sessionDir?: string,
+	): Promise<boolean> {
+		if (!session.cwd || !(await directoryIsMissing(session.cwd))) return false;
+		const dir = sessionDir ?? SessionManager.getDefaultSessionDir(cwd);
+		const home = path.resolve(path.dirname(session.path));
+		return (await worktreeSessionDirs(cwd, dir)).some(sibling => path.resolve(sibling) === home);
+	}
+
+	/**
+	 * Open a session whose recorded directory `recordedCwd` is gone and move it,
+	 * artifacts included, into `cwd` so it resumes from there.
+	 * @param sessionDir Target session directory; defaults to `cwd`'s.
+	 * @throws {SessionMoveRefusedError} when another live omp process writes the session.
+	 */
+	static async openRelocated(
+		sessionPath: string,
+		recordedCwd: string,
+		cwd: string,
+		sessionDir?: string,
+	): Promise<SessionManager> {
+		// Anchor at the missing recorded cwd: `open` otherwise falls back to the
+		// launch cwd, which would make the `moveTo` below a no-op whenever the move
+		// target equals it. moveTo never chdirs, so the stale cwd is only the
+		// relocation source, not a directory we enter.
+		const manager = await SessionManager.open(sessionPath, sessionDir, undefined, { initialCwd: recordedCwd });
+		try {
+			await manager.moveTo(cwd, sessionDir);
+		} catch (error) {
+			await manager.close();
+			throw error;
+		}
 		return manager;
 	}
 
@@ -4311,6 +4317,8 @@ export class SessionManager {
 	/**
 	 * Picker-facing project list: pinned sessions first, untitled empties
 	 * dropped. Titled empties stay — a title is user intent worth resuming.
+	 * Includes the same folder in the repository's other git worktrees, so a
+	 * session `/wt` moved stays reachable from the checkout it left.
 	 */
 	static async listForPicker(
 		cwd: string,
@@ -4318,8 +4326,8 @@ export class SessionManager {
 		storage: SessionStorage = new FileSessionStorage(),
 	): Promise<SessionInfo[]> {
 		const dir = sessionDir ?? SessionManager.getDefaultSessionDir(cwd, undefined, storage);
-		const pinned = await loadPinnedSessionIds();
-		return sortPinnedFirst(filterSessionsForPicker(await listSessions(dir, storage), pinned), pinned);
+		const [pinned, siblingDirs] = await Promise.all([loadPinnedSessionIds(), worktreeSessionDirs(cwd, dir)]);
+		return sortPinnedFirst(filterSessionsForPicker(await listSessions(dir, storage, siblingDirs), pinned), pinned);
 	}
 
 	/** Picker-facing cross-project list, same empty-session rule as {@link listForPicker}. */

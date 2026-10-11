@@ -236,9 +236,7 @@ export class ChatTranscriptBuilder {
 		}
 		if (previous.canBeDisplacedBy(nextToolName)) {
 			this.#todoSnapshot = null;
-			if (this.container.canRemoveBlock(previous)) {
-				this.container.removeChild(previous);
-			}
+			this.container.removeChild(previous);
 			previous.seal();
 			return;
 		}

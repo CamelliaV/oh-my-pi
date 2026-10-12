@@ -783,14 +783,15 @@ export interface CreateAgentSessionOptions {
 	allowRestrictedCustomTools?: boolean;
 
 	/**
-	 * Zero-injection mode for knowledge Q&A: no system prompt (unless
-	 * {@link systemPrompt} is supplied explicitly), no skills, no workspace
-	 * tree, no prompt templates, no slash commands, no extensions, MCP, LSP,
-	 * IRC, advisors, or memory. Project rules and context files (AGENTS.md,
-	 * CLAUDE.md, extra instruction files) still load so the model can answer
-	 * questions against this repo's conventions. An explicit `toolNames`
-	 * whitelist survives — `omp --lightweight --tools read,bash` injects only
-	 * the named tools.
+	 * Lightweight Q&A mode: skips tools, skills, extensions, slash commands,
+	 * MCP, LSP, IRC, advisors, and memory — but keeps the workspace's system
+	 * prompt pipeline, project rules, and context files. An explicit
+	 * `toolNames` whitelist survives — `omp --lightweight --tools read,bash`
+	 * injects only the named tools.
+	 *
+	 * Behaves as a plain chat session: answers to project-convention questions
+	 * see the AGENTS.md / CLAUDE.md / extra rule-file content the full mode
+	 * would, and only the heavy tooling/discovery surfaces are absent.
 	 */
 	lightweight?: boolean;
 
@@ -1682,9 +1683,11 @@ function normalizeLightweightOptions(options: CreateAgentSessionOptions): Create
 	const toolNames = options.toolNames ?? [];
 	return {
 		...options,
-		// Only an explicit fixed prompt survives; a template/custom prompt would
-		// re-introduce environment and project-context rendering.
-		systemPrompt: options.systemPrompt ?? [],
+		// Only an explicit fixed prompt survives untouched; otherwise the bundled
+		// system prompt generation runs so context files (AGENTS.md, CLAUDE.md,
+		// extra rule files) contribute. Templates/custom prompts are cleared so
+		// the runtime cannot accidentally re-introduce project-context inline.
+		systemPrompt: options.systemPrompt,
 		systemPromptTemplate: undefined,
 		customSystemPrompt: undefined,
 		appendSystemPrompt: undefined,

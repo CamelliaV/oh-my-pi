@@ -955,7 +955,7 @@ describe("Mnemopi backend lifecycle", () => {
 		expect(state.lastRecallSnippet).toContain("west-region deployment");
 	});
 
-	it("does not let an older in-flight recall replace the newer question's context", async () => {
+	it("does not let an older in-flight recall commit over the newer question's recall", async () => {
 		const state = registerMnemopiState();
 		const old = Promise.withResolvers<RecallResult[]>();
 		vi.spyOn(state, "collectScopedRecallResults").mockImplementation(async query =>
@@ -963,10 +963,14 @@ describe("Mnemopi backend lifecycle", () => {
 		);
 		const pending = state.beforeAgentStartPrompt("older topic");
 		const newer = await state.beforeAgentStartPrompt("newer topic");
-		newer?.commit();
+		expect(newer?.commit()).toBe(true);
 		expect(newer?.context).toContain("newer topic memory");
 		old.resolve([{ id: "m0", content: "older topic memory" } as RecallResult]);
-		expect((await pending)?.context).toBeUndefined();
+		// The superseded preparation still carries its block, but its commit is rejected,
+		// so the caller (which gates on its own turn currency before promoting) never
+		// adopts the older recall.
+		const stale = await pending;
+		expect(stale?.commit()).toBe(false);
 		expect(state.lastRecallSnippet).toContain("newer topic memory");
 	});
 

@@ -442,7 +442,45 @@ v18.5.0→v18.5.1 (2026-10-04) parented `upstream/v18.5.1` on `0e1b238d7` (485 f
 v18.5.1→v18.6.0 (2026-10-04) parented `upstream/v18.6.0` on `223d4b6727` (414 files, +28485−3678; merge `76e6447eeb`, merged directly on master). Natives bumped to 18.6.0; models.json kept fork-side wholesale (fork bakes + web/grok seed).
 v18.6.0→v18.8.0 (2026-10-07) parented `upstream/v18.8.0` on `upstream/v18.6.0`'s tree (via `trial/v18.8.0`; master merge `upgrade/v18.8.0` = `4d0dcfa317`). 17 conflicts: codex-responses kept the 5-key retryable union (`invalid_prompt` + `CODEX_NATIVE_LANE_STEER_REJECTED_CODE`) under upstream's `ReadonlySet`; openai-shared kept fork `costTelemetry.estimatedTotal` assignment; main.ts kept fork fuzzy `--resume` with upstream's exact-path-miss falling through to fuzzy instead of hard-failing; executor.ts kept fork `initialExecution` read + upstream's owner-routed wake-job semantics; stats db.ts union of fork cache/cost-provenance columns + upstream `service_tier`/`cost_unpriced` (new `INSERT` column list 31 params + NOT EXISTS guard); tui.ts kept fork kitty debug log + upstream focused-capture branch; autocomplete kept fork `getInsertableHint` + upstream `getCommandNameSuggestions` docs; history-search kept fork suffix budget + upstream cached `#highlightedPrompt`; lsp.ts took upstream memoized `renderBody` with fork `parseDiagnosticSummary` branch inside; wire.rs kept fork `LitRemoteV2` + upstream `LogoutAccountType`. models.json: took upstream v18.8.0 bake wholesale, re-injected 24 fork-only ids (incl. `web/grok`) + 4 deliberate zero-cost overrides; `gpt-5.5` row aligned `storeResponses:false`. NEW fork fix required by upstream row bake: `compat.extraBetas` union loop guarded `?? []` (upstream rows omit the key — snowflake provider hit it). compat-parity test now exempts `extraBetas`/`usageInputIncludesCache` (patch #19/#22 fields no longer baked into rows). Test adjudications for patch #21 block-form user turns: compaction-replay `roles()` helper unwraps single-text-block content; head-caching note assertion reads blocks. Natives 18.6.0→18.8.0 ABI grew (menuSelect/listApplications/holdKeys…); official binary smoke-extracted to `~/.omp`-isolated HOME, both variants copied + stamped.
 
-### Patch list (v18.8.0 baseline)
+v18.8.0→v18.10.0 (2026-10-12) went through `trial/v18.9.1` (33 conflicts across 21 files)
+then `trial/v18.10.0` (3 more conflicts: main.ts + two catalogs; merge `upgrade/v18.10.0`
+= `abeb752c08`, fork master head after stage was `f84deef3cb`). Synthetic commits:
+`upstream/v18.9.1` on `8d9f3a6371` (`1fd6f60697`); `upstream/v18.10.0` parented on `1fd6f60697`
+(`bf5ccb976c`). Natives refreshed from the official v18.10.0 Linux binary (`wasmGrammarFor`,
+`__ompSetGrammarDir`, `missingGrammars` — new unguarded callers in `tools/ast-grep.ts`,
+`tools/ast-edit.ts`, `tools/read-summary.ts`); index.d.ts identical across v18.8.0→v18.10.0.
+
+Notable adjudications: `mnemopi/state.ts` took upstream's `withLoopPhase` wrappers and
+RecallBlock/persisted-recall structure wholesale, while keeping fork's per-call
+`redactSecretFields(result, this.session.obfuscator)` chain and `selectRecallContext`
+import removed (orphaned by upstream refactor, `#recallBlock` replaces it; wiki backend
+is the active path with no mnemopi `llm` configured, so the fork gate was dormant);
+fork's memory-retain keeps the unified runtime branch (upstream split mnemopi-only
+with loop-phase tagging); `image.ts` adopted upstream's `#retire` loop wholesale
+(upstream deleted the `placement-emit` machinery but left a single stray
+`#deletePlacementState` call as a merge orphan caught by `check:ts`); `main.ts` resumed
+upstream's `moveMissingCwdSessionIfNeeded` + `forkIfMovedAway` wrapping while re-anchoring
+patch #6's fuzzy fallback to run after the upstream no-match dispatch; `models.json`
+keeps fork's 62 fork-only rows (incl. `web/grok`) on top of the upstream bake; `rules.json`
+is regenerated (web.kdl keeps fork's seed row for `model "grok"`); `publisher-stack`
+guide-dog severity on the markdown tests left untouched. `update-cli.test` and
+`sse/legacy-sse/http-transport` flakes all fail identically on the pre-upgrade master.
+ai suite: 1 baseline flake on `anthropic-stream-timeout` (matches master);
+`supersede-prune` expectation adjusted from 14 to 15 wire positions for fork's
+per-call image-group separator in tool_result hosting (`febfdebc95` made hoist
+exclude `msg.isError`), and `anthropic-many-image-resize` extraction helper
+taught to walk hoisted image blocks (fork hoist takes them out of tool_result
+content entirely, not just on error) — fork wire-shape wins; upstream test was
+asserting its own build's hoist policy.
+
+`agent-session-message-pipeline.test.ts` fake backend gained
+`capabilities: memoryBackendCapabilities.mnemopi` to satisfy the upstream-typed
+`MemoryBackend` contract; `memory-tools.test.ts`'s first-turn supersede test
+now asserts the `commit()` gate contract (upstream's prepare-time staleness
+vaults moved into commit(), so a stale `RecallContextPreparation.context` is
+returned but never injected — only `commit()` supersedes).
+
+### Patch list (v18.10.0 baseline)
 
 Index only. Full rationale, wire measurements, and verification recipes live in
 [`docs/fork-patches.md`](docs/fork-patches.md) — read it before rebasing, before

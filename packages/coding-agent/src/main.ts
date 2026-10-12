@@ -1268,7 +1268,10 @@ export async function createSessionManager(
 					return undefined;
 				}
 			}
-			return await forkIfMovedAway(await SessionManager.open(match.session.path, parsed.sessionDir), parsed.sessionDir);
+			return await forkIfMovedAway(
+				await SessionManager.open(match.session.path, parsed.sessionDir),
+				parsed.sessionDir,
+			);
 		}
 		// Exact id/filename prefix missed: fuzzy-match titles and first messages.
 		// A single confident hit resumes directly; several hits open the picker

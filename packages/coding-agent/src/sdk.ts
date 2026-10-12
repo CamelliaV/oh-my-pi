@@ -784,12 +784,12 @@ export interface CreateAgentSessionOptions {
 
 	/**
 	 * Zero-injection mode for knowledge Q&A: no system prompt (unless
-	 * {@link systemPrompt} is supplied explicitly), no skills, no context files,
-	 * no workspace tree, no prompt templates, no slash commands, no extensions,
-	 * MCP, LSP, IRC, advisors, or memory. Project rules (AGENTS.md, CLAUDE.md,
-	 * extra rule files) still load so the model can answer questions against
-	 * this repo's conventions. An explicit `toolNames` whitelist survives —
-	 * light-weight calls like `omp --lightweight --tools read,bash` inject only
+	 * {@link systemPrompt} is supplied explicitly), no skills, no workspace
+	 * tree, no prompt templates, no slash commands, no extensions, MCP, LSP,
+	 * IRC, advisors, or memory. Project rules and context files (AGENTS.md,
+	 * CLAUDE.md, extra instruction files) still load so the model can answer
+	 * questions against this repo's conventions. An explicit `toolNames`
+	 * whitelist survives — `omp --lightweight --tools read,bash` injects only
 	 * the named tools.
 	 */
 	lightweight?: boolean;
@@ -1694,7 +1694,6 @@ function normalizeLightweightOptions(options: CreateAgentSessionOptions): Create
 		customTools: [],
 		mcpTools: [],
 		skills: [],
-		contextFiles: [],
 		workspaceTree: {
 			rootPath: options.cwd ?? getProjectDir(),
 			rendered: "",

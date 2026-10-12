@@ -82,7 +82,7 @@ export interface Args {
 	noSkills?: boolean;
 	skills?: string[];
 	noRules?: boolean;
-	/** Zero-injection knowledge-Q&A mode: no system prompt, tools, skills, or context files; project rules still load. */
+	/** Zero-injection knowledge-Q&A mode: no system prompt, tools, skills, or workspace tree; project rules (AGENTS.md/CLAUDE.md) and context files still load. `--tools` whitelists selective tools. */
 	lightweight?: boolean;
 	noTitle?: boolean;
 	/** RPC modes only: run extensions without a UI; `rpc-ui` tool UI remains enabled. */

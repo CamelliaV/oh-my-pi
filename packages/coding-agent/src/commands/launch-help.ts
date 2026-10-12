@@ -68,7 +68,8 @@ export const launchHelp = {
 		"no-session": Flags.boolean({ description: "Don't save session (ephemeral)" }),
 		models: Flags.string({ description: `Comma-separated model patterns for ${formatKeyHint("ctrl+p")} cycling` }),
 		lightweight: Flags.boolean({
-			description: "Pure knowledge Q&A: no system prompt, tools, skills, or context files; project rules still load",
+			description:
+				"Pure knowledge Q&A: no system prompt, tools, skills, workspace tree, or slash commands; project rules and AGENTS.md/CLAUDE.md context still load; --tools whitelists selective tools",
 		}),
 		"no-tools": Flags.boolean({ description: "Disable all built-in tools" }),
 		"no-lsp": Flags.boolean({ description: "Disable LSP tools, formatting, and diagnostics" }),

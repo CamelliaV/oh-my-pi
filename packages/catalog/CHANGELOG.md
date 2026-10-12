@@ -2,6 +2,18 @@
 
 ## [Unreleased]
 
+## [18.10.0] - 2026-10-12
+
+### Changed
+
+- Raised the default context window for `openai-codex/gpt-6.1-sol` and `gpt-6.1-sol-wm` from 272K to 500K, matching OpenAI's new Codex default; extended context still opens 922K ([#15421](https://github.com/can1357/oh-my-pi/issues/15421))
+
+## [18.9.2] - 2026-10-11
+
+### Removed
+
+- Removed `parseCloudflareAiGatewayCredential`, `serializeCloudflareAiGatewayCredential`, and `CloudflareAiGatewayCredential` from `@oh-my-pi/pi-catalog/wire/cloudflare-ai-gateway`. Use the equivalents from `@oh-my-pi/pi-catalog/wire/cloudflare` instead.
+
 ## [18.9.1] - 2026-10-11
 
 ### Added

@@ -2200,12 +2200,6 @@ export class InteractiveMode implements InteractiveModeContext {
 				this.hookWidgetContainerBelow,
 			],
 			{
-				// Inline dialogs and a tall multi-line draft swap into the editor
-				// container and collapse again, as a command report above it closes
-				// on Esc: they clip the transcript instead of retiring it to
-				// scrollback, so the editor returns to the bottom when they go.
-				// Everything else is turn-scoped.
-				transient: [this.editorContainer, this.reportContainer],
 				// Natively the HUD pills lead the dock, queued messages sit between
 				// the working row and the composer, and the attachment chips live
 				// inside the composer.
@@ -2384,13 +2378,12 @@ export class InteractiveMode implements InteractiveModeContext {
 		// not be titled. Deferred via setImmediate so it runs AFTER the render
 		// callback requestRender(true) queued above (immediates are FIFO) — the
 		// spawn syscall never lands in the same loop turn ahead of the first paint.
-		// The native syntax set (syntect defaults plus the vendored TypeScript/TSX/
-		// Julia grammars, parsed from YAML) costs ~1s to build on first use, and each
-		// language's regexes compile on its first highlight (~250ms for TS/TSX).
-		// Warm both on the native worker pool now so the first highlighted code
-		// block, bash command preview, or file diff does not stall the render thread.
 		setImmediate(() => {
-			void warmHighlighter();
+			// Resumed sessions paint their restored transcript (code blocks, diffs)
+			// right after init; warm the native syntax set (~60ms, ~24 MiB) off-thread
+			// so that paint does not build it on the JS thread. Fresh sessions skip it
+			// and pay the cost lazily on the first highlight, if any.
+			if (this.session.messages.length > 0) void warmHighlighter();
 			if (!$env.PI_NO_TITLE && !this.sessionManager.getSessionName()) {
 				this.#inputController.prewarmTinyTitleModel();
 			}
@@ -8265,15 +8258,6 @@ export class InteractiveMode implements InteractiveModeContext {
 	commandReportRows(): number | undefined {
 		const below = this.composer.rowsBelow(this.reportContainer);
 		return below === undefined ? undefined : this.ui.terminal.rows - below;
-	}
-
-	composerInputAtBottom(): boolean {
-		const viewport = this.ui.getMutableViewport();
-		return viewport.length > 0 && viewport.top + viewport.length >= this.ui.terminal.rows;
-	}
-
-	pinComposerToBottom(): void {
-		this.composer.pinInputToBottom();
 	}
 
 	cycleThinkingLevel(): void {

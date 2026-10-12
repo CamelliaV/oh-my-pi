@@ -3887,6 +3887,22 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 			const inlineToolDescriptors = resolveInlineToolDescriptors();
 			// Unset only during the initial build; the agent is constructed with it.
 			if (agent) agent.pruneToolDescriptions = inlineToolDescriptors;
+			// Lightweight carve-out: replaces the bundled behaviors, tool catalog,
+			// workspace tree, and advisor guidance with just project rules and
+			// context files. The wire still carries a system prompt so rules can
+			// reach the model, but the heavy `--lightweight` machinery stays off.
+			// Phrased to run before the explicit-systemPrompt shortcut so a caller's
+			// `--lightweight` without a fixed prompt still picks this up.
+			if (options.lightweight === true && options.systemPrompt === undefined) {
+				const parts: string[] = [];
+				for (const rule of alwaysApplyRules) {
+					if (rule.content) parts.push(`# Rule: ${rule.name}\n\n${rule.content}`);
+				}
+				for (const file of contextFiles) {
+					parts.push(`# Context file: ${file.path}\n\n${file.content}`);
+				}
+				return { systemPrompt: parts };
+			}
 			// A fixed string or array in systemPrompt replaces all generated blocks.
 			// Preserve the bookkeeping above, but skip discovering or rendering a
 			// template whose output would be discarded.

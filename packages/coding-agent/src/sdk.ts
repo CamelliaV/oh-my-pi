@@ -783,11 +783,14 @@ export interface CreateAgentSessionOptions {
 	allowRestrictedCustomTools?: boolean;
 
 	/**
-	 * Zero-injection mode for plain knowledge Q&A: no system prompt (unless
-	 * {@link systemPrompt} is supplied explicitly), no tools, no skills, rules,
-	 * context files, workspace tree, prompt templates, slash commands,
-	 * extensions, MCP, LSP, IRC, advisors, or memory. Every discovery source
-	 * stays off, so the request carries nothing but the user's messages.
+	 * Zero-injection mode for knowledge Q&A: no system prompt (unless
+	 * {@link systemPrompt} is supplied explicitly), no skills, no context files,
+	 * no workspace tree, no prompt templates, no slash commands, no extensions,
+	 * MCP, LSP, IRC, advisors, or memory. Project rules (AGENTS.md, CLAUDE.md,
+	 * extra rule files) still load so the model can answer questions against
+	 * this repo's conventions. An explicit `toolNames` whitelist survives —
+	 * light-weight calls like `omp --lightweight --tools read,bash` inject only
+	 * the named tools.
 	 */
 	lightweight?: boolean;
 
@@ -1673,6 +1676,10 @@ export function createAutoLearnCaptureRunner(
  * pathing, and custom-command discovery all key off `restrictToolNames`.
  */
 function normalizeLightweightOptions(options: CreateAgentSessionOptions): CreateAgentSessionOptions {
+	// An explicit tool whitelist is the supported escalation path: `--lightweight
+	// --tools read,bash` runs the zero-injection session with only the named
+	// tools restored. Everything else stays off.
+	const toolNames = options.toolNames ?? [];
 	return {
 		...options,
 		// Only an explicit fixed prompt survives; a template/custom prompt would
@@ -1681,13 +1688,12 @@ function normalizeLightweightOptions(options: CreateAgentSessionOptions): Create
 		systemPromptTemplate: undefined,
 		customSystemPrompt: undefined,
 		appendSystemPrompt: undefined,
-		toolNames: [],
+		toolNames,
 		restrictToolNames: true,
 		allowRestrictedCustomTools: false,
 		customTools: [],
 		mcpTools: [],
 		skills: [],
-		rules: [],
 		contextFiles: [],
 		workspaceTree: {
 			rootPath: options.cwd ?? getProjectDir(),

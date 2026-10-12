@@ -130,6 +130,8 @@ export interface TuiSlashCommandRuntime {
 	input?: Pick<SubmittedUserInput, "images" | "imageLinks">;
 	/** The editor snapshot was cleared before asynchronous input hooks ran. */
 	draftDetached?: boolean;
+	/** Push host-side config-change notification when the command alters what the session exposes. */
+	notifyConfigChanged?: SlashCommandRuntime["notifyConfigChanged"];
 }
 
 /** Unified slash-command spec consumed by both TUI and ACP dispatchers. */

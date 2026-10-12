@@ -539,6 +539,59 @@ export const BUILTIN_LIFECYCLE_SLASH_COMMANDS: ReadonlyArray<SlashCommandSpec> =
 		},
 	},
 	{
+		name: "inject",
+		icon: "tools",
+		description:
+			"Inject named tools into the session (`/inject read,bash`). Overrides the current tool whitelist; pass `--all` to restore the full catalog.",
+		acpDescription: "Inject named tools into the session",
+		inlineHint: "<tools|--all|list>",
+		allowArgs: true,
+		getTuiAutocompleteDescription: runtime => {
+			const names = runtime.ctx.session.getActiveToolNames?.() ?? [];
+			return names.length === 0
+				? "No tool whitelist active — `/inject read,bash` enables just those, `--all` restores the full set"
+				: `Active tools: ${names.join(", ")}`;
+		},
+		handleTui: async (command, runtime) => {
+			clearSubmittedText(runtime);
+			const argsText = command.args.trim();
+			const session = runtime.ctx.session;
+			const showInfo = (msg: string): void => runtime.ctx.showStatus(msg, { toast: false });
+			const catalog = session.getEnabledToolNames().toSorted();
+			if (argsText === "list" || argsText === "--list") {
+				showInfo(
+					catalog.length ? `Available tools: ${catalog.join(", ")}` : "No tools discovered for this session.",
+				);
+				return;
+			}
+			const fullyRestore = argsText === "--all" || argsText === "all";
+			const requested = fullyRestore
+				? null
+				: argsText
+						.split(/[,\s]+/)
+						.map(s => s.trim())
+						.filter(Boolean);
+			if (!fullyRestore && (!requested || requested.length === 0)) {
+				showInfo("Usage: /inject <tools>[,<tools>...] — pass `--all` to restore full catalog, `list` to inspect");
+				return;
+			}
+			const known = new Set(catalog);
+			const unknown = requested?.filter(name => !known.has(name)) ?? [];
+			if (unknown.length > 0) {
+				runtime.ctx.showError(`Unknown tools: ${unknown.join(", ")}. See /inject list.`);
+				return;
+			}
+			const restored = fullyRestore ? catalog : (requested ?? []);
+			await session.setActiveToolsByName(restored);
+			showInfo(
+				fullyRestore
+					? `Tool whitelist cleared — full catalog (${restored.length}) active`
+					: `Injected ${restored.length} tool(s): ${restored.join(", ")}`,
+			);
+			await runtime.notifyConfigChanged?.();
+		},
+	},
+	{
 		name: "memory",
 		icon: "memory",
 		description: "Inspect and operate memory maintenance",

@@ -82,7 +82,7 @@ export interface Args {
 	noSkills?: boolean;
 	skills?: string[];
 	noRules?: boolean;
-	/** Zero-injection knowledge-Q&A mode: no system prompt, tools, skills, rules, context files, or extensions. */
+	/** Zero-injection knowledge-Q&A mode: no system prompt, tools, skills, or context files; project rules still load. */
 	lightweight?: boolean;
 	noTitle?: boolean;
 	/** RPC modes only: run extensions without a UI; `rpc-ui` tool UI remains enabled. */
@@ -410,10 +410,10 @@ export function parseArgs(inputArgs: string[], extensionFlags?: Map<string, { ty
 	}
 
 	if (result.lightweight) {
-		// Lightweight forces the empty form of these surfaces; combining them
-		// would silently drop what the user explicitly asked for.
+		// Lightweight keeps an explicit `--tools` whitelist as a deliberate
+		// escalation path (inject just those tools); combining it with
+		// surfaces that imply other injection stays rejected.
 		const conflict = [
-			[result.tools !== undefined, "--tools"],
 			[result.systemPromptTemplate !== undefined, "--system-prompt-template"],
 			[result.advisor, "--advisor"],
 			[(result.extensions?.length ?? 0) > 0, "--extension"],

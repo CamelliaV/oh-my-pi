@@ -50,6 +50,8 @@ export interface AgentHistorySummary {
 	/** Whether the last resolved model was selected by retry fallback routing. */
 	resolvedModelIsFallback?: boolean;
 	metrics?: AgentMetricsSummary;
+	/** Cumulative own-session assistant and model_usage cost, excluding nested task results. */
+	directCost?: number;
 	readOnly?: boolean;
 	/** Durable task execution phase and recovery history. */
 	execution?: SubagentExecutionState;

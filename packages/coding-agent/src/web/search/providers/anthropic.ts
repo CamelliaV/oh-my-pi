@@ -20,7 +20,7 @@ import {
 	withAuth,
 } from "@oh-my-pi/pi-ai";
 import { isOfficialAnthropicApiUrl } from "@oh-my-pi/pi-catalog/compat/anthropic";
-import { classifyModel, compareRevision, parseRevision } from "@oh-my-pi/pi-catalog/identity";
+import { compareRevision, parseRevision } from "@oh-my-pi/pi-catalog/identity";
 import { buildAnthropicSystemBlocks, wrapFetchForCch } from "@oh-my-pi/pi-ai/providers/anthropic";
 
 import { $env } from "@oh-my-pi/pi-utils";
@@ -28,8 +28,7 @@ import type { AnthropicApiResponse, AnthropicCitation } from "../../../web/searc
 import type { SearchCitation, SearchResponse, SearchSource } from "../types";
 import { SearchProviderError } from "../../../web/search/types";
 import { formatQuery, parseSearchQuery, type QuerySyntax, type StructuredQuery } from "../query";
-import { resolveAnthropicSearchTransport } from "./anthropic-affinity";
-import type { SearchParams, SearchProviderAvailabilityContext } from "./base";
+import type { SearchParams } from "./base";
 import { SearchProvider } from "./base";
 import { classifyProviderHttpError, withHardTimeout } from "./utils";
 
@@ -152,7 +151,13 @@ async function callSearch(
 	timeoutMs?: number,
 ): Promise<AnthropicApiResponse> {
 	const url = buildAnthropicUrl(auth);
-	const headers = { ...configuredHeaders, ...buildAnthropicSearchHeaders(auth) };
+	const headers = buildAnthropicSearchHeaders(auth, {
+		modelHeaders: configuredHeaders,
+		allowAnthropicHeaderOverrides:
+			model.compat !== undefined &&
+			"allowAnthropicHeaderOverrides" in model.compat &&
+			model.compat.allowAnthropicHeaderOverrides === true,
+	});
 
 	const injectClaudeCodeInstruction =
 		model.compat === undefined ||
@@ -335,7 +340,7 @@ export async function searchAnthropic(params: SearchParams): Promise<SearchRespo
 	const response = await withAuth(
 		keyOrResolver,
 		async key => {
-			const auth = buildAnthropicAuthConfig(key, params.model.baseUrl);
+			const auth = buildAnthropicAuthConfig(key, params.model.baseUrl, { isOAuth: params.model.isOAuth });
 			const configuredHeaders = await params.modelRegistry.resolveModelHeaders(params.model, params.signal);
 			// Mirror the main Messages path: OAuth requests need a Claude-Code-shaped
 			// metadata.user_id (`{session_id, account_uuid?, device_id}`) so the

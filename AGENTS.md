@@ -480,7 +480,47 @@ now asserts the `commit()` gate contract (upstream's prepare-time staleness
 vaults moved into commit(), so a stale `RecallContextPreparation.context` is
 returned but never injected — only `commit()` supersedes).
 
-### Patch list (v18.10.0 baseline)
+v18.10.0→v18.10.3 (2026-10-13) — three patch releases: 18.10.1 Tern UI polish (copy-led
+turn footer, one running counter, picker sheets), 18.10.2 structured task results now opt-in
+via `task.structured` (plain-text final message, no `yield`; background bash/eval cards
+stream to completion) + `CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS` + transparent-image fix,
+18.10.3 snapcompact frame sizing, official-endpoint image budgets (relay base URLs keep the
+old limits), `omp --restore`, `task.agentSoftRequestBudget`, `o200k` tokenizer. Synthetic
+`upstream/v18.10.3` parented on `bf5ccb976c` (`2816fe6d63`, 317 files, +28693−3145); trial
+merge `ae3543dee2`, fast-forwarded onto master via `upgrade/v18.10.3` (`847cae7f4e`).
+
+Only 5 conflicts: two generated artifacts (`rules.json`, `models.json`) plus three
+additive unions — `event-controller.ts` (imports: fork `resolveToolCallIntent` +
+upstream `asyncJobState/isSettledJobFrame/parksAsBackground/settleWithJobFrame`; the reset
+path keeps fork `#workUsage`/`#sessionUsage`/`syncSessionUsageFromBranch` and takes upstream's
+rename to `#backgroundCallIds` plus the new `#settledBeforeReturn`), `ui-helpers.ts` (same
+import union), and `prompts/tools/task.md` (fork's `completed:`/`resume=1` lines stay inside
+upstream's new `{{#if asyncEnabled}}{{#if structured}}` gate, with upstream's `{{/if}}{{/if}}`
+closer). All 39 auto-merged overlap files passed a line-presence audit with zero lines lost
+from either side, and `check:ts` is byte-identical to master's warning set with zero errors.
+
+Fork decisions: `models.json` keeps upstream's 18.10.3 bake, re-injects the 62 fork-only rows
+(`web/grok` seed verified in the KDL and in the recompiled rules.json — 1015 rules), and now
+re-derives the compat leaves of three stale fork-carried rows
+(`google-vertex/claude-sonnet-4-5@20250929`, `openai-codex/gpt-5.5`,
+`umans/umans-mimo-v2.6-pro-lab`) from the 18.10.3 engine so `compat-parity` reports 0 diffs —
+master carried 1 diff on the same family. Upstream dropped `meta/sam-3.1`; the fork accepts
+the removal rather than re-baking a retired row. Natives: `index.d.ts` byte-identical, but the
+binaries were refreshed from the official v18.10.3 Linux release (`~/.omp/natives/18.10.3/`)
+instead of restamping the 18.10.0 pair — they differ in content, so re-stamp after every copy.
+
+Verified: targeted suites all pass on the merged tree (task prompt-cache ×3, task restore ×2,
+agent-session-restore, context-fits-model, read-media-path, jobs-panel,
+snapcompact-shape-preview, anthropic-disable-experimental-betas, memory-tools,
+agent-session-message-pipeline, catalog request-size/tokenizer/image-tokenization); `packages/agent`
+has master's single pre-existing `warm-cache guard` failure; `packages/mnemopi`'s 7 failures
+are a subset of master's 15 (suite-order flakes); all 5 zh/[1210] driver cases pass; `gallery`
+renders; `--smoke-test: ok`; installed binary carries `text/uri-list`=5,
+`fuzzyMatchResumableSessions`, `boxRound`, `onActiveTerminalFocusChange`, `resume=1`, and the
+zh effort pattern — CJK is transpiled to **uppercase** `\uXXXX` escapes, so grep `u59CB`
+(the raw UTF-8 bytes are absent from the binary).
+
+### Patch list (v18.10.3 baseline)
 
 Index only. Full rationale, wire measurements, and verification recipes live in
 [`docs/fork-patches.md`](docs/fork-patches.md) — read it before rebasing, before

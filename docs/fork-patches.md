@@ -1283,3 +1283,58 @@ Verification: `bun run check:ts` green; real-session probe
 incl. `bash`) → `/inject bash` leaves `getActiveToolNames() === ["bash"]`,
 `/inject read,notatool` errors with no mutation, `/inject --all` restores the
 16 that materialize; `bun test test/slash-commands` 236 pass.
+
+## Patch 41: `fix(memory)` wiki `memory://` reads (caller runtime wired, compiled-first with raw fallback) (2026-10-14)
+
+`read memory://root` and `read memory://<id>` failed for every
+`memory.backend: wiki` session with "Wiki memory reads require the calling
+session's memory context." while `xd://recall` returned content from the same
+vault. Root cause: `sessionResolveContext` (`internal-urls/context.ts`) builds
+every tool's `ResolveContext` but never populated `ResolveContext.memory`, which
+is the only input `MemoryProtocolHandler.resolve` consults before the wiki throw
+at `memory-protocol.ts:446`. The wiki reader behind it was already implemented
+(`wiki/backend.ts:read` → `readVault` → `ExternalVault`), so this was a wiring
+gap, not a missing feature. A new `sessionMemoryRuntime` attaches
+`createMemoryRuntimeContext(session.getMemoryContext())` **only when the calling
+session's backend is `wiki`**: wiring it unconditionally would pull
+`mnemopi`/`hindsight` bare-id reads into the generic branch and replace their
+backend-specific errors, which `test/advisor-memory.test.ts` pins
+(`active backend: <backend>` must keep meaning "non-local callers see no
+file-backed root").
+
+Two vault-reader gaps made the requested priority order (compiled page first,
+raw evidence as backstop) impossible to express:
+
+- `ExternalVault.notes()` scanned `wiki/` and `raw/inbox/` only, but compile
+  MOVES a source into `raw/processed/` (vault `AGENTS.md` step 7). Every
+  compiled source's id — and every recall hit on it — therefore stopped
+  resolving the moment it was compiled, the exact inverse of the intended
+  priority. Both raw channels are now scanned and labelled
+  (`channel: page | inbox | processed`).
+- `memory://root` dumped every uncompiled inbox entry as its own line (394 on
+  this box). It is now bounded (25 page lines / 10 source lines, omissions
+  counted) and reports the pending count plus the last `wiki/_compile-log.md`
+  run, matching what `omp://memory.md` promises for this backend.
+
+`find()` returns a substantive compiled page for an id; a placeholder page
+(empty or title-only body, "No topics yet", missing `## Evidence`) yields to the
+raw source carrying the same id. `_`-prefixed index files (`_index.md`,
+`_master-index.md`) are exempt from the placeholder verdict — they are link
+lists by design, so `/wiki compile` output does not get labelled "rebuild me".
+The `memory://root/sources|pages/<id>.md` grammar widened to the `v-` ids
+`ExternalVault.append` actually mints, and the namespace guard now accepts
+`w-` under `pages` and `e-`/`v-` under `sources` instead of dropping the check.
+
+Verification: `bun test test/internal-urls/memory-protocol.test.ts test/wiki-vault.test.ts test/read-tool-group.test.ts`
+= 67 pass / 0 fail (the one `test/advisor-memory.test.ts` failure is
+pre-existing — reproduced with this patch stashed). Real vault through the real
+`ReadTool` + router: `memory://v-e064d64c-…` returns the stored source text,
+`memory://root` prints counts and maintenance health, an unknown id throws a
+scoped error naming both searched roots. Synthetic vault: substantive page wins
+over its source, a thin page sharing an id returns the source, a
+`raw/processed/` id resolves, and `memory://sources/<w-id>/rN.md` is still
+rejected. Release artifact from
+`RELEASE_TARGETS='linux-x64' bun run ci:release:build-binaries`: `--smoke-test`
+ok, the new literals are present in the binary and absent from the previously
+installed one, and a headless `-p --tools=read` session returned
+"Inbox backlog: 202 pending sources awaiting `/wiki compile`."

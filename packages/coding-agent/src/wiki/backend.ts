@@ -11,7 +11,7 @@ import {
 } from "../memory-backend/types";
 import vaultInstructions from "../prompts/wiki/vault-instructions.md" with { type: "text" };
 import type { AgentSession } from "../session/agent-session";
-import { EXTERNAL_WIKI_VAULT, ExternalVault, type VaultNote } from "./external-vault";
+import { EXTERNAL_WIKI_VAULT, ExternalVault, isThinPage, type VaultNote } from "./external-vault";
 import { cfgWikiIncludeGlobal } from "./settings";
 
 const vaults = new WeakMap<AgentSession, ExternalVault>();
@@ -26,7 +26,18 @@ function scopesFor(cwd: string, includeGlobal: boolean): string[] {
 }
 
 function noteText(note: VaultNote): string {
-	return `# ${note.title}\n\n${note.body}\n\nPath: ${note.path}`;
+	const label =
+		note.kind === "page"
+			? isThinPage(note)
+				? "**Derived wiki page (placeholder)** — compiled skeleton with no substantial body or `## Evidence` section. The original raw source (when it shares this id) answers reads first; rebuild this page with `/wiki compile`."
+				: "**Derived wiki page** — compiled from original sources; its `## Evidence` section names them. The raw sources, not this page, are the evidence of record."
+			: note.channel === "processed"
+				? "**Raw vault source (archived)** — original evidence; `/wiki compile` has consumed it, text preserved verbatim."
+				: "**Raw vault source (pending)** — original evidence awaiting `/wiki compile`; unchanged since capture.";
+	// The body of a vault note already starts with its `# title` heading; do
+	// not print the title twice.
+	const body = /^#\s/m.test(note.body) ? note.body : `# ${note.title}\n\n${note.body}`;
+	return `${label}\n\n${body}\n\nPath: ${note.path}`;
 }
 
 /**
@@ -52,34 +63,86 @@ function includeGlobalFor(session: AgentSession | undefined): boolean {
 	return session ? cfgWikiIncludeGlobal.get(session.settings) : true;
 }
 
+/** Caps for the `memory://root` listing: bounded, with the omission counted. */
+const ROOT_PAGE_LIST_CAP = 25;
+const ROOT_SOURCE_LIST_CAP = 10;
+
+function cappedList(notes: VaultNote[], cap: number, render: (note: VaultNote) => string): string[] {
+	const lines = notes.slice(0, cap).map(render);
+	const omitted = notes.length - lines.length;
+	if (omitted > 0) lines.push(`… and ${omitted} more not listed here; use \`recall\` to search the full vault.`);
+	return lines;
+}
+
 async function readVault(
 	vault: ExternalVault,
 	cwd: string,
 	includeGlobal: boolean,
 	id: string,
 ): Promise<MemoryBackendReadResult> {
+	const scopes = scopesFor(cwd, includeGlobal);
 	if (id === "root" || id === "index") {
-		const notes = await vault.notes(scopesFor(cwd, includeGlobal));
+		// `memory://root`: the derived-pages view plus pending-source count and
+		// maintenance health (omp://memory.md), bounded so a large inbox cannot
+		// flood the read result.
+		const notes = await vault.notes(scopes);
 		const pages = notes.filter(note => note.kind === "page");
-		const pending = notes.filter(note => note.kind === "source");
-		const pageLines = pages.map(note => `- [${note.title}](memory://${note.id}) — ${note.scope}`).join("\n");
-		const pendingLines = pending.map(note => `- [${note.id}](memory://${note.id}) — uncompiled inbox`).join("\n");
+		const pending = notes.filter(note => note.channel === "inbox");
+		const processed = notes.filter(note => note.channel === "processed");
+		const pageLines = cappedList(
+			pages,
+			ROOT_PAGE_LIST_CAP,
+			note => `- [${note.title}](memory://${note.id}) — ${note.scope}`,
+		);
+		const pendingLines = cappedList(
+			pending,
+			ROOT_SOURCE_LIST_CAP,
+			note => `- [${note.id}](memory://${note.id}) — ${note.scope}`,
+		);
+		const lastCompile = await vault.lastCompileRow();
+		const content = [
+			`Vault: ${vault.root}`,
+			`Scopes: ${scopes.join(", ")}`,
+			"",
+			`## Derived pages (${pages.length})`,
+			...(pageLines.length
+				? pageLines
+				: ["No derived pages yet — `/wiki compile` writes compiled notes into `wiki/`."]),
+			"",
+			`## Pending sources (${pending.length})`,
+			...(pendingLines.length ? pendingLines : ["No pending sources in `raw/inbox/`."]),
+			"",
+			`## Processed sources (${processed.length})`,
+			processed.length
+				? "Archived raw evidence under `raw/processed/` — compiled away, still readable verbatim via `memory://<id>`."
+				: "No archived sources yet (`raw/processed/` is empty).",
+			"",
+			"## Maintenance health",
+			`- Last compile: ${lastCompile ?? "none recorded in `wiki/_compile-log.md` yet"}.`,
+			`- Inbox backlog: ${pending.length} pending source${pending.length === 1 ? "" : "s"} awaiting \`/wiki compile\`.`,
+		].join("\n");
 		return {
 			backend: "wiki",
 			id,
 			status: "found",
-			content: `Vault: ${vault.root}\n\n## Compiled notes\n${pageLines || "No compiled notes yet."}\n\n## Uncompiled inbox\n${pendingLines || "No uncompiled inbox files."}`,
+			content,
 		};
 	}
-	const note = await vault.find(id, scopesFor(cwd, includeGlobal));
-	if (!note) return { backend: "wiki", id, status: "not_found" };
+	const note = await vault.find(id, scopes);
+	if (!note)
+		return {
+			backend: "wiki",
+			id,
+			status: "not_found",
+			message: `No wiki memory '${id}' in scope(s): ${scopes.join(", ")}. Searched compiled pages (wiki/) and raw sources (raw/inbox/, raw/processed/) under ${vault.root}. Use \`recall\` to list the ids this session can read, or widen the scope with wiki.includeGlobal.`,
+		};
 	return {
 		backend: "wiki",
 		id,
 		status: "found",
 		content: noteText(note),
 		source: note.path,
-		metadata: { scope: note.scope, kind: note.kind, status: note.status, path: note.path },
+		metadata: { scope: note.scope, kind: note.kind, channel: note.channel, status: note.status, path: note.path },
 	};
 }
 

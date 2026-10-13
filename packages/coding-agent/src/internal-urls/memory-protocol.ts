@@ -406,18 +406,22 @@ export class MemoryProtocolHandler implements ProtocolHandler {
 			if (namespace === MEMORY_NAMESPACE && rawPath && rawPath !== "/") {
 				if (rawPath === "/index.md") id = "root";
 				else {
-					const match = /^\/(?:pages|sources)\/([we]-[A-Za-z0-9_-]+)\.md$/.exec(rawPath);
+					// External-vault ids in the wild: compiled pages `w-`, compiled
+					// sources `e-`, and raw inbox ids `v-` as minted by
+					// ExternalVault.append and handed out by recall.
+					const match = /^\/(?:pages|sources)\/([wev]-[A-Za-z0-9_-]+)\.md$/.exec(rawPath);
 					if (!match) throw new Error("Use memory://root or a page/source ID returned by recall.");
 					id = match[1]!;
 				}
 			} else if (namespace === "pages" || namespace === "sources") {
-				const match = /^\/([we]-[A-Za-z0-9_-]+)\/r(0*[1-9]\d*)\.md$/.exec(rawPath);
-				if (
-					!match ||
-					(namespace === "pages" && !match[1]!.startsWith("w-")) ||
-					(namespace === "sources" && !match[1]!.startsWith("e-"))
-				)
+				const match = /^\/([wev]-[A-Za-z0-9_-]+)\/r(0*[1-9]\d*)\.md$/.exec(rawPath);
+				if (!match) throw new Error("Use memory://pages/<page-id>/rN.md or memory://sources/<source-id>/rN.md.");
+				if (namespace === "pages" && !match[1]!.startsWith("w-")) {
 					throw new Error("Use memory://pages/<page-id>/rN.md or memory://sources/<source-id>/rN.md.");
+				}
+				if (namespace === "sources" && !(match[1]!.startsWith("e-") || match[1]!.startsWith("v-"))) {
+					throw new Error("Use memory://pages/<page-id>/rN.md or memory://sources/<source-id>/rN.md.");
+				}
 				id = match[1]!;
 				const pathRevision = Number(match[2]);
 				if (!Number.isSafeInteger(pathRevision)) throw new Error("Wiki revision is too large.");

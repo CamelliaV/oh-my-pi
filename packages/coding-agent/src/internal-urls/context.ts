@@ -8,6 +8,8 @@ import { getExperimentalContextSession } from "../tools/context-notes";
 import type { LocalProtocolOptions } from "./local-protocol";
 import type { ResolveContext, WriteContext } from "./types";
 
+import { createMemoryRuntimeContext } from "../memory-backend/runtime";
+import { cfgMemoryBackend } from "../memory-backend/settings";
 import { cfgCompactionExperimentalContextManagement } from "../session/context-settings";
 
 /**
@@ -35,6 +37,22 @@ export function contextLocalProtocolOptions(session: ToolSession): LocalProtocol
 	return sessionLocalProtocolOptions(session);
 }
 
+/**
+ * Caller-owned memory runtime threaded into `memory://` resolution. Only the
+ * wiki backend resolves URLs through {@link ResolveContext.memory}; mnemopi,
+ * hindsight, local, and off keep their existing session-bank/namespace paths
+ * in MemoryProtocolHandler byte-identical, so the runtime is attached for
+ * wiki sessions alone. A wiki session without an owning agent context
+ * (embedded hosts, bare tool tests) leaves `memory` unset and keeps the
+ * legacy wiki-read error instead of crashing the builder.
+ */
+function sessionMemoryRuntime(session: ToolSession): ResolveContext["memory"] {
+	if (cfgMemoryBackend.get(session.settings) !== "wiki") return undefined;
+	const memoryContext = session.getMemoryContext?.();
+	if (!memoryContext?.session) return undefined;
+	return createMemoryRuntimeContext(memoryContext);
+}
+
 /** The single ResolveContext builder for a tool session; replaces per-tool literal assembly. */
 export function sessionResolveContext(
 	session: ToolSession,
@@ -50,6 +68,7 @@ export function sessionResolveContext(
 		sessionId: session.sessionManager?.getSessionId?.() ?? session.getSessionId?.() ?? undefined,
 		agentRegistry: session.agentRegistry,
 		localProtocolOptions: contextLocalProtocolOptions(session),
+		memory: sessionMemoryRuntime(session),
 		skills: session.skills,
 		rules: session.activeRules,
 		session,

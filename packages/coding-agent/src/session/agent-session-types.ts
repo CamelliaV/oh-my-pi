@@ -289,6 +289,10 @@ export interface AgentSessionConfig {
 	ensureGoalRegistered?: () => Promise<boolean>;
 	/** Re-resolves settings-gated tools against live settings; driven by `SessionTools.reconcileBuiltinTools`. */
 	reconcileSettingsGatedTools?: (isBuiltIn: (name: string) => boolean) => Promise<SettingsGatedToolDelta>;
+	/** Rewrites the SDK's runtime tool whitelist; `/inject` applies the widened list through `reconcileBuiltinTools`. */
+	setRuntimeToolWhitelist?: (names: string[] | undefined) => void;
+	/** Built-in names the session could still construct on demand; drives the `/inject` catalog. */
+	listInjectableBuiltinToolNames?: () => Promise<string[]>;
 	/** Current session pre-LLM message transform pipeline. */
 	transformContext?: (messages: AgentMessage[], signal?: AbortSignal) => AgentMessage[] | Promise<AgentMessage[]>;
 	/** Provider request transform applied after message conversion. */

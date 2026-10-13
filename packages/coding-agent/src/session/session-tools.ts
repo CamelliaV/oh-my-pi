@@ -121,6 +121,20 @@ interface SessionToolsOptions {
 	/** Registers the hidden `goal` tool when goal mode is enabled at runtime. */
 	ensureGoalRegistered?: () => Promise<boolean>;
 	/**
+	 * Rewrites the session's runtime tool whitelist (`/inject`). The SDK reads it
+	 * when re-planning built-ins, so widening it before
+	 * {@link SessionTools.reconcileBuiltinTools} is what lets a session created
+	 * with a narrow (or empty) whitelist — `--lightweight`, subagents — construct
+	 * a tool it never built at startup. `undefined` drops the list.
+	 */
+	setRuntimeToolWhitelist?: (names: string[] | undefined) => void;
+	/**
+	 * Built-in names this session could still construct on demand, honoring the
+	 * same settings gates as registration. Non-constructing: listing must not
+	 * build the tools it names.
+	 */
+	listInjectableBuiltinToolNames?: () => Promise<string[]>;
+	/**
 	 * Re-resolves settings-gated tools against live settings, mutating the shared
 	 * registry; `isBuiltIn` reports this session's built-in provenance.
 	 */
@@ -422,6 +436,8 @@ export class SessionTools {
 	 */
 	readonly #deviceOnlyWriteTransportAvailable: boolean;
 	#ensureGoalRegistered: SessionToolsOptions["ensureGoalRegistered"];
+	#setRuntimeToolWhitelist: SessionToolsOptions["setRuntimeToolWhitelist"];
+	#listInjectableBuiltinToolNames: SessionToolsOptions["listInjectableBuiltinToolNames"];
 	#reconcileSettingsGatedTools: SessionToolsOptions["reconcileSettingsGatedTools"];
 	#skills: Skill[];
 	#skillWarnings: SkillWarning[];
@@ -464,6 +480,8 @@ export class SessionTools {
 		this.#setDeviceOnlyWrite = options.setDeviceOnlyWrite;
 		this.#setPendingFullWriteDescription = options.setPendingFullWriteDescription;
 		this.#ensureGoalRegistered = options.ensureGoalRegistered;
+		this.#setRuntimeToolWhitelist = options.setRuntimeToolWhitelist;
+		this.#listInjectableBuiltinToolNames = options.listInjectableBuiltinToolNames;
 		this.#reconcileSettingsGatedTools = options.reconcileSettingsGatedTools;
 		this.#rebuildSystemPrompt = options.rebuildSystemPrompt;
 		this.#getMcpServerInstructions = options.getMcpServerInstructions;
@@ -2097,6 +2115,39 @@ export class SessionTools {
 			if (!refreshPrompt && !xdevChanged && delta.added.length === 0 && delta.removed.length === 0) return;
 			await this.#applyActiveToolsByName([...enabled], true);
 		});
+	}
+
+	/**
+	 * Names a runtime tool injection (`/inject`) can expose: everything
+	 * registered plus the built-ins this session could still construct. A
+	 * restricted session (`--lightweight`, subagents) builds its registry from
+	 * its whitelist alone, so the registry on its own under-reports the catalog
+	 * a wider whitelist would materialize.
+	 */
+	async getInjectableToolNames(): Promise<string[]> {
+		const names = new Set(this.getAllToolNames());
+		for (const name of (await this.#listInjectableBuiltinToolNames?.()) ?? []) names.add(name);
+		return [...names].sort();
+	}
+
+	/**
+	 * Runtime tool injection (`/inject`): installs the whitelist, materializes any
+	 * built-in the session never constructed, and selects exactly `names`.
+	 * Selecting alone (`setActiveToolsByName`) only reaches the registry, and a
+	 * session created with a narrow whitelist never constructed the tools outside
+	 * it — the built-in reconcile is what constructs a newly planned name, so the
+	 * widened list is applied through it first. Returns the names that landed: a
+	 * factory may decline (`createIf`, e.g. `ask` without interactive prompts) or
+	 * a settings gate may have closed between the catalog read and the injection.
+	 */
+	async injectToolsByName(names: string[]): Promise<string[]> {
+		if (this.#setRuntimeToolWhitelist) {
+			this.#setRuntimeToolWhitelist(names);
+			await this.reconcileBuiltinTools();
+		}
+		const applied = names.filter(name => this.#toolRegistry.has(name));
+		await this.setActiveToolsByName(applied);
+		return applied;
 	}
 
 	/**

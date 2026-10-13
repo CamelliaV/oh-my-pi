@@ -557,7 +557,11 @@ export const BUILTIN_LIFECYCLE_SLASH_COMMANDS: ReadonlyArray<SlashCommandSpec> =
 			const argsText = command.args.trim();
 			const session = runtime.ctx.session;
 			const showInfo = (msg: string): void => runtime.ctx.showStatus(msg, { toast: false });
-			const catalog = session.getEnabledToolNames().toSorted();
+			// The catalog is what the session can still *expose*, not what it happens
+			// to hold: a `--lightweight` session constructs no built-in at startup, so
+			// the enabled set alone would report every name as unknown and silently
+			// no-op the selection that follows.
+			const catalog = await session.getInjectableToolNames();
 			if (argsText === "list" || argsText === "--list") {
 				showInfo(
 					catalog.length ? `Available tools: ${catalog.join(", ")}` : "No tools discovered for this session.",
@@ -566,28 +570,36 @@ export const BUILTIN_LIFECYCLE_SLASH_COMMANDS: ReadonlyArray<SlashCommandSpec> =
 			}
 			const fullyRestore = argsText === "--all" || argsText === "all";
 			const requested = fullyRestore
-				? null
+				? catalog
 				: argsText
 						.split(/[,\s]+/)
 						.map(s => s.trim())
 						.filter(Boolean);
-			if (!fullyRestore && (!requested || requested.length === 0)) {
+			if (!fullyRestore && requested.length === 0) {
 				showInfo("Usage: /inject <tools>[,<tools>...] — pass `--all` to restore full catalog, `list` to inspect");
 				return;
 			}
+			// Deduplicate while validating so `/inject read,read` stays a no-drama case.
+			const targets = [...new Set(requested)];
 			const known = new Set(catalog);
-			const unknown = requested?.filter(name => !known.has(name)) ?? [];
+			const unknown = targets.filter(name => !known.has(name));
 			if (unknown.length > 0) {
 				runtime.ctx.showError(`Unknown tools: ${unknown.join(", ")}. See /inject list.`);
 				return;
 			}
-			const restored = fullyRestore ? catalog : (requested ?? []);
-			await session.setActiveToolsByName(restored);
+			const applied = await session.injectToolsByName(targets);
+			const unavailable = targets.filter(name => !applied.includes(name));
 			showInfo(
 				fullyRestore
-					? `Tool whitelist cleared — full catalog (${restored.length}) active`
-					: `Injected ${restored.length} tool(s): ${restored.join(", ")}`,
+					? `Tool whitelist cleared — full catalog (${applied.length}) active`
+					: `Injected ${applied.length} tool(s): ${applied.join(", ")}`,
 			);
+			// A catalog entry can still decline to materialize (a `createIf` factory,
+			// e.g. `ask` without interactive prompts). Say so instead of reporting a
+			// success the session cannot honor.
+			if (!fullyRestore && unavailable.length > 0) {
+				runtime.ctx.showError(`Not exposed by this session: ${unavailable.join(", ")}`);
+			}
 			await runtime.notifyConfigChanged?.();
 		},
 	},

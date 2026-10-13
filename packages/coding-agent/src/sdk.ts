@@ -3641,12 +3641,26 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 		// Built-ins re-run the shared `createTools` plan, so explicit lists, restricted
 		// sessions and task depth are honored exactly as at construction; a same-named
 		// extension tool keeps its registry slot and only its native backing changes.
+		//
+		// The plan reads a *mutable* whitelist: `/inject` widens it at runtime, and
+		// this reconcile is what then constructs the newly named built-ins. A
+		// `--lightweight` session starts with an empty list, so its registry holds
+		// no built-in at all and selecting a name (`setActiveToolsByName`) could
+		// only ever be a no-op — the whitelist has to reach the plan.
+		let runtimeToolNames = options.toolNames;
+		const listInjectableBuiltinToolNames = async (): Promise<string[]> => {
+			// Non-constructing: `plan.isAllowed` carries the same settings gates the
+			// registration loop below applies, so the list never advertises a tool
+			// this session would refuse to build.
+			const plan = await resolveBuiltinToolPlan(toolSession, runtimeToolNames);
+			return Object.keys(BUILTIN_TOOLS).filter(name => plan.isAllowed(name));
+		};
 		const reconcileSettingsGatedTools = async (
 			isBuiltIn: (name: string) => boolean,
 		): Promise<SettingsGatedToolDelta> => {
-			const plan = await resolveBuiltinToolPlan(toolSession, options.toolNames);
+			const plan = await resolveBuiltinToolPlan(toolSession, runtimeToolNames);
 			const planned = new Set(plan.names);
-			const explicitToolNames = options.toolNames ? new Set(normalizeToolNames(options.toolNames)) : undefined;
+			const explicitToolNames = runtimeToolNames ? new Set(normalizeToolNames(runtimeToolNames)) : undefined;
 			const added: { name: string; builtIn: boolean; activate: boolean }[] = [];
 			const removed: string[] = [];
 			for (const name of SETTINGS_GATED_BUILTIN_TOOL_NAMES) {
@@ -4726,6 +4740,10 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 				toolSession.pendingFullWriteDescription = enabled ? true : undefined;
 			},
 			ensureGoalRegistered,
+			setRuntimeToolWhitelist: names => {
+				runtimeToolNames = names;
+			},
+			listInjectableBuiltinToolNames,
 			reconcileSettingsGatedTools,
 			getMcpServerInstructions: mcpManager
 				? () => {

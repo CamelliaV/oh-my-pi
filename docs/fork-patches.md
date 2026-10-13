@@ -1243,3 +1243,43 @@ Verification: `bun run check:ts` green; fetch-capture probe (lightweight vs
 normal: system absent vs 8 segments, tools absent vs 16); live binary probe
 `omp --lightweight --no-session -p "9.11和9.9哪个大"` answers correctly with
 no tool/system context.
+
+## Patch 40: `feat(slash-commands)` `/inject` runtime tool whitelist (2026-10-13)
+
+`/inject read,bash` escalates a session at runtime — the supported way back out
+of patch 39's whitelist-scoped `--lightweight` session without restarting.
+`/inject list` prints the catalog, `/inject --all` restores it, unknown names
+error without touching the whitelist. `TuiSlashCommandRuntime.notifyConfigChanged`
+(optional) lets the TUI publish the same config-change event the ACP path does.
+
+**The whitelist has to reach the tool plan, not just the selection.** A
+restricted session (`--lightweight`, subagents) builds its registry from its
+whitelist alone: `resolveBuiltinToolPlan` (`tools/index.ts`) reduces
+`requestedTools` to `names`, `createTools` constructs only those, and the plan
+is re-read on every reconcile. So with `--lightweight` (whitelist `[]`) the
+registry holds *zero* built-ins, and the first version of this patch — which
+validated names against `getEnabledToolNames()` and finished with
+`setActiveToolsByName` — reported `Unknown tools: bash` for every name, and
+would have been a silent no-op even without the check, because
+`setActiveToolsByName` is contractually "select from the registry, ignore
+unknown names".
+
+Design: `sdk.ts` keeps the creation-time `options.toolNames` in a mutable
+`runtimeToolNames` that `reconcileSettingsGatedTools` reads; `/inject` sets it,
+then runs the built-in reconcile, which walks every built-in, constructs the
+newly planned ones and activates them. `SessionTools.injectToolsByName`
+sequences that (whitelist → reconcile → select) and returns the names that
+actually landed; `SessionTools.getInjectableToolNames` is the non-constructing
+catalog it validates against (registry ∪ `Object.keys(BUILTIN_TOOLS).filter(plan.isAllowed)`,
+so listing never builds the tools it names and never advertises one a settings
+gate would refuse). Hidden tools (`think`/`yield`/`goal`) stay out of it —
+their owners register them. `createIf` factories can still decline late
+(`ask` without interactive prompts), which is why the handler reports
+`Not exposed by this session: …` rather than claiming a success the session
+cannot honor.
+
+Verification: `bun run check:ts` green; real-session probe
+(`createAgentSession({lightweight: true})` → registry `[]`, catalog 21 entries
+incl. `bash`) → `/inject bash` leaves `getActiveToolNames() === ["bash"]`,
+`/inject read,notatool` errors with no mutation, `/inject --all` restores the
+16 that materialize; `bun test test/slash-commands` 236 pass.

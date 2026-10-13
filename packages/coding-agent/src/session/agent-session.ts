@@ -2083,6 +2083,8 @@ export class AgentSession implements SettingsScope {
 			setDeviceOnlyWrite: config.setDeviceOnlyWrite,
 			setPendingFullWriteDescription: config.setPendingFullWriteDescription,
 			ensureGoalRegistered: config.ensureGoalRegistered,
+			setRuntimeToolWhitelist: config.setRuntimeToolWhitelist,
+			listInjectableBuiltinToolNames: config.listInjectableBuiltinToolNames,
 			reconcileSettingsGatedTools: config.reconcileSettingsGatedTools,
 			rebuildSystemPrompt: config.rebuildSystemPrompt,
 			getMcpServerInstructions: config.getMcpServerInstructions,
@@ -6340,6 +6342,23 @@ export class AgentSession implements SettingsScope {
 	/** Names of every registered tool. */
 	getAllToolNames(): string[] {
 		return this.#tools.getAllToolNames();
+	}
+
+	/**
+	 * Catalog a runtime tool injection (`/inject`) can expose: registered tools
+	 * plus the built-ins this session could still construct on demand.
+	 */
+	getInjectableToolNames(): Promise<string[]> {
+		return this.#tools.getInjectableToolNames();
+	}
+
+	/**
+	 * Runtime tool injection (`/inject`): installs the whitelist, materializes the
+	 * built-ins the session never constructed at startup (`--lightweight`,
+	 * subagents), and selects exactly `names`. Returns the names that landed.
+	 */
+	injectToolsByName(names: string[]): Promise<string[]> {
+		return this.#tools.injectToolsByName(names);
 	}
 
 	/** Full metadata for every registered tool, including source provenance (backs `getAllTools()`). */

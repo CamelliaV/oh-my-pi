@@ -37,7 +37,15 @@ function noteText(note: VaultNote): string {
 	// The body of a vault note already starts with its `# title` heading; do
 	// not print the title twice.
 	const body = /^#\s/m.test(note.body) ? note.body : `# ${note.title}\n\n${note.body}`;
-	return `${label}\n\n${body}\n\nPath: ${note.path}`;
+	const metadata = [
+		`Created: ${note.created || "unknown"}`,
+		`Scope: ${note.scope || "unknown"}`,
+		`Type: ${note.type || "unknown"}`,
+		`Status: ${note.status || "unknown"}`,
+		`Channel: ${note.channel}`,
+		`Path: ${note.path}`,
+	].join("\n");
+	return `${label}\n\n${metadata}\n\n${body}`;
 }
 
 /**
@@ -97,7 +105,7 @@ async function readVault(
 		const pendingLines = cappedList(
 			pending,
 			ROOT_SOURCE_LIST_CAP,
-			note => `- [${note.id}](memory://${note.id}) — ${note.scope}`,
+			note => `- [${note.id}](memory://${note.id}) — ${note.scope}${note.created ? ` · ${note.created.slice(0, 10)}` : ""}`,
 		);
 		const lastCompile = await vault.lastCompileRow();
 		const content = [
@@ -142,7 +150,16 @@ async function readVault(
 		status: "found",
 		content: noteText(note),
 		source: note.path,
-		metadata: { scope: note.scope, kind: note.kind, channel: note.channel, status: note.status, path: note.path },
+		timestamp: note.created || undefined,
+		metadata: {
+			scope: note.scope,
+			kind: note.kind,
+			channel: note.channel,
+			status: note.status,
+			type: note.type,
+			created: note.created,
+			path: note.path,
+		},
 	};
 }
 
@@ -153,14 +170,39 @@ async function searchVault(
 	query: string,
 	limit = 8,
 ): Promise<MemoryBackendSearchResult> {
-	const notes = vault.search(query, await vault.notes(scopesFor(cwd, includeGlobal)), limit);
-	const items = notes.map(note => ({
+	// `limit` is a cap on the gate passers, never a fill target (ExternalVault
+	// guards with its coverage gate); recall/reflect pass no limit, so 8.
+	const hits = vault.searchRanked(query, await vault.notes(scopesFor(cwd, includeGlobal)), limit);
+	const items = hits.map(({ note, score, matched }) => ({
 		id: note.id,
 		content: note.body,
-		metadata: { title: note.title, kind: note.kind, scope: note.scope, path: note.path },
+		score,
+		timestamp: note.created || undefined,
+		metadata: {
+			title: note.title,
+			kind: note.kind,
+			scope: note.scope,
+			channel: note.channel,
+			status: note.status,
+			type: note.type,
+			created: note.created,
+			path: note.path,
+			matched,
+		},
 	}));
+	// Each line ends `[captured-at · scope · channel/status] (memory://id)`,
+	// so one recall shows when each hit was captured and which channel holds it.
 	const text = items.length
-		? items.map(item => `- ${item.content} (memory://${item.id})`).join("\n\n")
+		? hits
+				.map(({ note }) => {
+					const stamp = note.created.length > 16 ? `${note.created.slice(0, 16)}Z` : note.created || "unknown-time";
+					// Channel and status coincide for pending inbox evidence
+					// ("inbox"); print the pair only when it says something new.
+					const channel =
+						!note.status || note.status === note.channel ? note.channel : `${note.channel}/${note.status}`;
+					return `- ${note.body} [${stamp} · ${note.scope} · ${channel}] (memory://${note.id})`;
+				})
+				.join("\n\n")
 		: "No matching vault notes.";
 	return { backend: "wiki", query, count: items.length, items, text };
 }

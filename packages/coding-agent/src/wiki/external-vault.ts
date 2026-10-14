@@ -18,6 +18,13 @@ export interface VaultNote {
 	 */
 	channel: "page" | "inbox" | "processed";
 	status: string;
+	/** Frontmatter `type` (fact/procedure/decision/…), "" when absent. */
+	type: string;
+	/**
+	 * ISO-8601 capture time: frontmatter `created`, else the
+	 * `YYYYMMDDTHHMMSSZ` filename stamp `append` mints, else the file mtime.
+	 */
+	created: string;
 }
 
 export interface VaultWrite {
@@ -29,6 +36,18 @@ export interface VaultWrite {
 }
 
 const FRONTMATTER = /^---\n([\s\S]*?)\n---\n?/;
+
+/** Leading timestamp stamp `append` mints into inbox filenames: `YYYYMMDDTHHMMSSZ-slug.md`. */
+const FILENAME_STAMP = /^(\d{4})(\d{2})(\d{2})T(\d{2})(\d{2})(\d{2})Z-/;
+
+/** ISO-8601 capture time recovered from the filename stamp, "" when absent/invalid. */
+function createdFromFilename(filePath: string): string {
+	const match = FILENAME_STAMP.exec(path.basename(filePath));
+	if (!match) return "";
+	const [, year, month, day, hour, minute, second] = match;
+	const iso = `${year}-${month}-${day}T${hour}:${minute}:${second}Z`;
+	return Number.isNaN(Date.parse(iso)) ? "" : iso;
+}
 
 function parse(filePath: string, text: string, fallbackScope: string): VaultNote | undefined {
 	const match = FRONTMATTER.exec(text);
@@ -59,6 +78,10 @@ function parse(filePath: string, text: string, fallbackScope: string): VaultNote
 		kind,
 		channel,
 		status: value("status"),
+		type: value("type"),
+		// frontmatter wins; the filename stamp backstops; notes() fills any
+		// remaining gap with the file mtime.
+		created: value("created") || createdFromFilename(filePath),
 	};
 }
 
@@ -153,6 +176,7 @@ export class ExternalVault {
 				const text = await fs.readFile(filePath, "utf8");
 				const note = parse(filePath, text, scope);
 				if (!note || (note.scope && !allowed.has(note.scope))) continue;
+				if (!note.created) note.created = (await fs.stat(filePath)).mtime.toISOString();
 				notes.push(note);
 			}
 		}
@@ -205,18 +229,86 @@ export class ExternalVault {
 	}
 
 	search(query: string, notes: readonly VaultNote[], limit: number): VaultNote[] {
+		return this.searchRanked(query, notes, limit).map(hit => hit.note);
+	}
+
+	/**
+	 * Scored recall over the vault with a coverage gate, so `limit` is only a
+	 * maximum: below-limit results are returned as-is, and a gate-failing note
+	 * never pads the list.
+	 *
+	 * Term matching: a query splits into terms of length > 1. Terms with a
+	 * non-ASCII-alnum letter (CJK etc., where word boundaries are unreliable)
+	 * or length ≥ 5 match as raw substrings. Short ASCII-alnum terms must
+	 * stand alone as a whole alphanumeric run (optional plural `s` allowed:
+	 * `pdf` matches `pdf-js` and `PDFs`, but `mem` never matches `remember`
+	 * or `keepmem`).
+	 *
+	 * Weighting and coverage: terms are IDF-weighted against the searched note
+	 * set, idf = ln(1 + N/df) over df = notes containing the term, so a term
+	 * matching 1 of N notes dominates one matching 12. A hit in title/body
+	 * adds idf; a hit only in the note's id / scope / created date / filename
+	 * adds 0.25·idf (so identifier-, path-, or date-shaped queries resolve
+	 * without outranking content hits). A note is returned only when its
+	 * matched-term count reaches ceil(usableTerms / 2), OR when it matches at
+	 * least one distinctive term (df ≤ max(2, 2% of N)) — generic one-term
+	 * coincidences drop out, while a hit on a genuinely discriminative term
+	 * survives even when the rest of the query is absent. Zero usable terms
+	 * match nothing; a 1-term query has gate 1.
+	 *
+	 * Ranking: score desc, then id asc for stable output.
+	 */
+	searchRanked(
+		query: string,
+		notes: readonly VaultNote[],
+		limit: number,
+	): { note: VaultNote; score: number; matched: number }[] {
 		const terms = query
 			.toLowerCase()
 			.split(/[^\p{L}\p{N}]+/u)
 			.filter(term => term.length > 1);
-		const ranked = notes
-			.map(note => {
-				const haystack = `${note.title}\n${note.body}`.toLowerCase();
-				const score = terms.reduce((total, term) => total + (haystack.includes(term) ? 1 : 0), 0);
-				return { note, score };
+		if (!terms.length) return [];
+		const matchers = terms.map(term => ({
+			term,
+			whole: /^[a-z0-9]+$/.test(term) && term.length < 5 ? new RegExp(`(?<![a-z0-9])${term}s?(?![a-z0-9])`) : undefined,
+		}));
+		// Single matching pass over the notes; document frequencies fall out of
+		// it so each term can be IDF-weighted and rare terms recognised.
+		const perNote: { note: VaultNote; hits: number[]; metaOnly: number[] }[] = [];
+		const df = matchers.map(() => 0);
+		for (const note of notes) {
+			const text = `${note.title}\n${note.body}`.toLowerCase();
+			const meta = `${note.id} ${note.scope} ${note.created} ${path.basename(note.path)}`.toLowerCase();
+			const hits: number[] = [];
+			const metaOnly: number[] = [];
+			for (const [index, { term, whole }] of matchers.entries()) {
+				if (whole ? whole.test(text) : text.includes(term)) {
+					hits.push(index);
+					df[index]!++;
+				} else if (whole ? whole.test(meta) : meta.includes(term)) {
+					metaOnly.push(index);
+					df[index]!++;
+				}
+			}
+			if (hits.length || metaOnly.length) perNote.push({ note, hits, metaOnly });
+		}
+		const idf = df.map(count => Math.log(1 + (count ? notes.length / count : 0)));
+		const required = Math.max(1, Math.ceil(matchers.length / 2));
+		// A term matching ≤2 notes (or ≤2% of a large vault) is discriminative
+		// enough to carry a note on its own.
+		const distinctiveCap = Math.max(2, Math.floor(notes.length * 0.02));
+		const ranked = perNote
+			.map(({ note, hits, metaOnly }) => {
+				let score = 0;
+				for (const index of hits) score += idf[index]!;
+				for (const index of metaOnly) score += 0.25 * idf[index]!;
+				const matched = hits.length + metaOnly.length;
+				const distinctive =
+					hits.some(index => df[index]! <= distinctiveCap) || metaOnly.some(index => df[index]! <= distinctiveCap);
+				return { note, score, matched, distinctive };
 			})
-			.filter(item => item.score > 0)
+			.filter(hit => hit.matched >= required || hit.distinctive)
 			.sort((left, right) => right.score - left.score || left.note.id.localeCompare(right.note.id));
-		return ranked.slice(0, limit).map(item => item.note);
+		return ranked.slice(0, Math.max(0, limit));
 	}
 }

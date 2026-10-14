@@ -1338,3 +1338,76 @@ rejected. Release artifact from
 ok, the new literals are present in the binary and absent from the previously
 installed one, and a headless `-p --tools=read` session returned
 "Inbox backlog: 202 pending sources awaiting `/wiki compile`."
+
+## Patch 42: `fix(memory)` wiki recall precision (IDF gate, whole-word short terms) + capture metadata on hits and reads (2026-10-14)
+
+`ExternalVault.search()` treated the query as a bag of substrings: every term
+of length > 1 counted `+1` when found ANYWHERE in `title\nbody`, any
+`score > 0` note passed, and the result was padded up to `limit` with ties on
+id. Measured live before this patch (209 readable notes: this project's inbox
++ global): `ZXQ-MEM-20261014-GAMMA` returned 8 entries — the 4 real markers
+plus 4 noise notes where `mem` matched inside "re**mem**ber" / "keep**mem**"
+(document frequency of the terms then: zxq 4, mem 4, 20261014 6 — filename
+stamps — gamma 1). `rosereader pdf page turn stutter` returned 8 generic
+notes on `pdf`/`page` coincidences across unrelated topics, while the two
+real rosereader notes live in the rosereader project scope and are correctly
+unreadable here.
+
+Shipped rule (`ExternalVault.searchRanked`; `search()` keeps its
+`(query, notes, limit): VaultNote[]` signature and delegates):
+
+- Term matching: query splits on non-letter/digit into terms length > 1.
+  Terms ≥ 5 chars, or containing any non-ASCII-alnum letter (CJK has no
+  reliable word boundary), match as raw substrings — CJK neighbor characters
+  therefore never block a latin term either (`打开PDF文件` still matches
+  `pdf`). Short ASCII-alnum terms must match a whole alphanumeric run, with
+  an optional trailing plural `s`: `mem` never matches `remember`, `pdf`
+  still matches `pdf-js` and `PDFs`.
+- Weighting: per term, df = notes containing it (text or metadata); idf =
+  ln(1 + N/df). A title/body hit scores idf; a hit only in the note's
+  id / scope / created date / filename slug scores 0.25·idf, so id-, path-,
+  or date-shaped queries ("v-bc22803d", "2026-10-14", a slug word) resolve
+  without outranking content hits. Ranking: score desc, then id asc.
+- Gate: a note is returned only when its matched-term count reaches
+  ceil(usableTerms / 2) — a 4-term query never surfaces a 1-term generic
+  coincidence — OR when it matches at least one DISTINCTIVE term (df ≤
+  max(2, ⌊2% of N⌋)), because a discriminative term must decide the result
+  on its own. `limit` is then a pure cap: fewer qualifying notes return
+  fewer entries (never padded), zero returns the existing
+  "No matching vault notes." text. Live after this patch, same probes:
+  `ZXQ-MEM-20261014-GAMMA` → exactly the 4 marker ids (the
+  memory_edit-invalidate note v-07d6f8d0 no longer matches: its only `mem`
+  occurrence is inside "memory://…"); `rosereader pdf page turn stutter` →
+  exactly 2: the note quoting the query (v-62637b02, 5/5) and the Zen stutter
+  note (v-cf48d13b) carried by `stutter` (df 2), while the pdf+page /
+  pdf+turn coincidences (df 10–15 terms) stay out. A naive ≥2-term gate
+  still returns 6 of those coincidences, which is why the gate counts
+  coverage UP TO half the terms and lets only rare terms bypass it.
+
+Metadata travels with the hit: `parse()` now reads frontmatter `created`
+and `type` (`status` was already kept); `created` falls back to the
+`YYYYMMDDTHHMMSSZ-slug.md` inbox filename stamp, then the file mtime, always
+surfacing as ISO-8601 on `VaultNote.created`. `searchVault()` items populate
+`timestamp`, `score`, and `metadata` {title, kind, scope, channel, status,
+type, created, path, matched}; each rendered recall line ends
+`[captured-at · scope · channel/status] (memory://<id>)` (created truncated
+to minutes; `channel/status` collapses to the channel alone when the two
+agree, e.g. pending inbox evidence prints `inbox`), so one recall shows when
+each hit was captured and which channel answers it. `readVault()`'s note branch renders a metadata block
+(Created/Scope/Type/Status/Channel/Path) between the label and the body,
+and its result carries `timestamp` plus `metadata.created`/`type`.
+`memory://root` keeps its bounded caps (25 page / 10 source lines) and now
+tags each pending source with its capture date. The developer-instructions
+prompt (`vault-instructions.md`) and the recall tool description state the
+shipped gate.
+
+Tests: `test/wiki-vault.test.ts` grew boundary / coverage-gate /
+distinctive-bypass / cap-is-max / created-fallback cases (4 new, 3
+pre-existing). `test/wiki-vault-metadata.test.ts` (new) spawns a child bun
+driver (`test/wiki-vault-backend.driver.ts`) so the real `wikiBackend`
+search/read run under a scratch HOME + `PI_CODING_AGENT_DIR`
+(`os.homedir()` is frozen at process start, so the vault root relocates
+only via spawn-time env); it asserts the item metadata, the rendered
+suffix line, the read metadata block, and the filename-stamp fallback.
+`bun test test/wiki-vault.test.ts test/wiki-vault-metadata.test.ts` = 8
+pass / 0 fail.

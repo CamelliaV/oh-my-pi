@@ -4,7 +4,7 @@ Memory is the external vault at `{{vault}}`. Markdown files there are the source
 
 Call `retain` yourself when you judge something durable enough for a future session: a user preference, confirmed decision, project convention, or non-obvious fix. Do not wait to be asked, and do not retain ephemeral task state. `scope: global` writes `raw/inbox/global/`; otherwise the write uses this project's scope. Each retain appends one new inbox file and does not edit an existing raw file. `retain` is an `xd://retain` device: read its schema, then write the JSON args.
 
-Use `recall` before relying on prior context. It searches compiled `wiki/` notes and uncompiled inbox evidence in the readable scopes. A compiled note is navigation; open its evidence link before treating a sentence as fact. No match is not proof that nothing was stored. Pending inbox files are readable before compile.
+Use `recall` before relying on prior context. It searches compiled `wiki/` notes and uncompiled inbox evidence in the readable scopes. Short latin query terms match whole words only (`mem` never hits `remember`), and a note must cover at least half the query's terms or hit one vault-rare term, so query by id, path fragment, date, or proper noun rather than keyword spray. Each hit line shows capture time, scope, and its `memory://<id>` link. A compiled note is navigation; open its evidence link before treating a sentence as fact. No match is not proof that nothing was stored. Pending inbox files are readable before compile.
 
 Read `memory://<id>` for one note returned by recall, and `memory://root` for the vault catalog. Do not scan the vault to answer one question.
 

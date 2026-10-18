@@ -178,6 +178,7 @@ export const stateDefs = {
 		"details?": "unknown",
 		"preserveData?": JSON_OBJECT,
 		"requestUsage?": "CompactionRequestUsage",
+		"providerReplayThroughEntryId?": "string",
 	},
 	ModelCycleResult: { model: "ModelInfo", "thinkingLevel?": "ThinkingLevel", isScoped: "boolean" },
 	ThinkingLevelCycleResult: { level: "Effort" },

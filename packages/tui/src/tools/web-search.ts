@@ -22,6 +22,7 @@ import {
 	replaceTabs,
 	TRUNCATE_LENGTHS,
 	truncateToWidth,
+	clipCollapsed,
 } from "../render/render-utils";
 import { renderStatusLine, renderTreeList, urlHyperlink } from "../render";
 import { framedToolCard } from "../render/tool-card";
@@ -72,7 +73,7 @@ function formatFailureRecord(failure: SearchRenderFailure): string {
 function renderFallbackText(contentText: string, expanded: boolean, theme: Theme): Component {
 	const lines = contentText.split("\n").filter(line => line.trim());
 	const maxLines = expanded ? lines.length : 6;
-	const displayLines = lines.slice(0, maxLines).map(line => truncateToWidth(line.trim(), 110));
+	const displayLines = lines.slice(0, maxLines).map(line => clipCollapsed(line.trim(), 110, expanded));
 	const remaining = lines.length - displayLines.length;
 
 	const headerIcon = formatStatusIcon("warning", theme);

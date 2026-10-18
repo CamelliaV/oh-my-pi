@@ -17,6 +17,16 @@ function validateMaxContextWindow(
 	return true;
 }
 
+function validateImageCountBudget(value: { imageCountBudget?: number }, ctx: NarrowContext): boolean {
+	if (
+		value.imageCountBudget !== undefined &&
+		(!Number.isSafeInteger(value.imageCountBudget) || value.imageCountBudget <= 0)
+	) {
+		return ctx.mustBe("imageCountBudget a positive integer");
+	}
+	return true;
+}
+
 export const getModelsConfigSchemaBundle = once(() => {
 	const OpenRouterRoutingSchema = type({
 		"only?": "string[]",
@@ -212,6 +222,7 @@ export const getModelsConfigSchemaBundle = once(() => {
 		"thinking?": ModelThinkingSchema,
 		"input?": '("text" | "image")[]',
 		"imageInputDecoder?": '"stb"',
+		"imageCountBudget?": "number",
 		"tokenizer?": ModelTokenizerSchema,
 		"supportsTools?": "boolean",
 		"cost?": {
@@ -260,7 +271,7 @@ export const getModelsConfigSchemaBundle = once(() => {
 		) {
 			return ctx.mustBe("compactionModel a non-empty string");
 		}
-		return validateMaxContextWindow(value, ctx);
+		return validateImageCountBudget(value, ctx) && validateMaxContextWindow(value, ctx);
 	});
 
 	const ModelOverrideSchema = type({
@@ -271,6 +282,7 @@ export const getModelsConfigSchemaBundle = once(() => {
 		"thinking?": ModelThinkingSchema,
 		"input?": '("text" | "image")[]',
 		"imageInputDecoder?": '"stb"',
+		"imageCountBudget?": "number",
 		"tokenizer?": ModelTokenizerSchema,
 		"supportsTools?": "boolean",
 		"cost?": {
@@ -312,7 +324,7 @@ export const getModelsConfigSchemaBundle = once(() => {
 		) {
 			return ctx.mustBe("compactionModel a non-empty string");
 		}
-		return validateMaxContextWindow(value, ctx);
+		return validateImageCountBudget(value, ctx) && validateMaxContextWindow(value, ctx);
 	});
 
 	const ProviderDiscoverySchema = type({

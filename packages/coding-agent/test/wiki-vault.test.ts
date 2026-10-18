@@ -62,7 +62,12 @@ describe("external wiki vault search precision", () => {
 	it("does not match a short term inside a longer alphanumeric run", async () => {
 		await using temp = TempDir.createSync("external-vault-boundary-");
 		const vault = new ExternalVault(temp.join("."));
-		await fixture(temp, "20260101T000000Z-remember.md", { id: "w-remember" }, "Please remember to keepmem levels across restarts.");
+		await fixture(
+			temp,
+			"20260101T000000Z-remember.md",
+			{ id: "w-remember" },
+			"Please remember to keepmem levels across restarts.",
+		);
 		await fixture(temp, "20260101T000001Z-marker.md", { id: "w-marker" }, "ZXQ-MEM-20261014-GAMMA probe entry.");
 		await fixture(temp, "20260101T000002Z-pdf.md", { id: "w-pdf" }, "The pdf-js renderer handles PDFs well.");
 		const notes = await vault.notes(["project-a"]);
@@ -78,7 +83,12 @@ describe("external wiki vault search precision", () => {
 		await using temp = TempDir.createSync("external-vault-gate-");
 		const vault = new ExternalVault(temp.join("."));
 		await fixture(temp, "20260101T000000Z-gamma.md", { id: "w-gamma" }, "ZXQ-MEM-20261014-GAMMA probe entry.");
-		await fixture(temp, "20260101T000001Z-alpha.md", { id: "w-alpha" }, "ZXQ-MEM-20261014-ALPHA probe entry on gamma decay.");
+		await fixture(
+			temp,
+			"20260101T000001Z-alpha.md",
+			{ id: "w-alpha" },
+			"ZXQ-MEM-20261014-ALPHA probe entry on gamma decay.",
+		);
 		// `gamma` now has df 3 of 4, above the distinctive cap (2), so the
 		// 1-of-4-term note below clears neither the coverage gate nor the
 		// distinctive-term bypass.

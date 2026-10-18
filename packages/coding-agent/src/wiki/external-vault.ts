@@ -270,7 +270,8 @@ export class ExternalVault {
 		if (!terms.length) return [];
 		const matchers = terms.map(term => ({
 			term,
-			whole: /^[a-z0-9]+$/.test(term) && term.length < 5 ? new RegExp(`(?<![a-z0-9])${term}s?(?![a-z0-9])`) : undefined,
+			whole:
+				/^[a-z0-9]+$/.test(term) && term.length < 5 ? new RegExp(`(?<![a-z0-9])${term}s?(?![a-z0-9])`) : undefined,
 		}));
 		// Single matching pass over the notes; document frequencies fall out of
 		// it so each term can be IDF-weighted and rare terms recognised.

@@ -180,7 +180,13 @@ describe("cfg:// approval prompt wiring", () => {
 	}, 60_000);
 
 	it("runs the cfg://, auto-QA and MCP sign-in prompts as waits for the user", async () => {
-		const manager = new MCPManager(tmp, null, async () => ({ configs: {}, sources: {}, exaApiKeys: [] }));
+		const manager = new MCPManager(tmp, null, async () => ({
+			configs: {},
+			sources: {},
+			exaApiKeys: [],
+			lazyConfigs: {},
+			lazySources: {},
+		}));
 		const setAuthHandler = spyOn(manager, "setAuthHandler");
 		await startMode(undefined, manager);
 		const authHandler: MCPAuthHandler | undefined = setAuthHandler.mock.calls[0]?.[0];

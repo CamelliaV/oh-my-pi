@@ -579,7 +579,13 @@ describe("createAgentSession MCP server instructions (deferred UI)", () => {
 	it("renders server instructions in name order regardless of connection order", async () => {
 		const config: MCPStdioServerConfig = { type: "stdio", command: process.execPath, args: [FIXTURE_PATH] };
 		const renderSection = async (connectOrder: string[]): Promise<string> => {
-			const manager = new MCPManager(tempDir, null, async () => ({ configs: {}, sources: {}, exaApiKeys: [] }));
+			const manager = new MCPManager(tempDir, null, async () => ({
+				configs: {},
+				sources: {},
+				exaApiKeys: [],
+				lazyConfigs: {},
+				lazySources: {},
+			}));
 			try {
 				for (const name of connectOrder) await manager.connectServers({ [name]: config }, {}, undefined, 0);
 				const { session } = await createAgentSession({

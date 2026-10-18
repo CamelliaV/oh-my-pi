@@ -1974,7 +1974,7 @@ export async function compact(
 						return true;
 					},
 				);
-			usedRemoteCompaction = true;
+				usedRemoteCompaction = true;
 			} catch (err) {
 				// A user/session abort is a cancellation, not a remote failure —
 				// swallowing it here would downgrade Esc into "fall back to local

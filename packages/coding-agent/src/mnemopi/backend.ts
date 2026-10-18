@@ -325,17 +325,11 @@ export const mnemopiBackend: MemoryBackend = {
 					scope: "bank",
 					extract: true,
 					extractEntities: true,
-					veracity: input.tool ? "tool" : "user",
+					veracity: "stated",
 					memoryType: "fact",
 				},
-				scope: "bank",
-				extract: true,
-				extractEntities: true,
-				veracity: "stated",
-				memoryType: "fact",
-			},
-			target,
-		);
+				target,
+			);
 		} catch (error) {
 			const reason = error instanceof Error ? error.message : String(error);
 			return { backend: "mnemopi", stored: 0, ids: [], message: `Mnemopi did not store the memory: ${reason}` };

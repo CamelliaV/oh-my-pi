@@ -105,7 +105,8 @@ async function readVault(
 		const pendingLines = cappedList(
 			pending,
 			ROOT_SOURCE_LIST_CAP,
-			note => `- [${note.id}](memory://${note.id}) — ${note.scope}${note.created ? ` · ${note.created.slice(0, 10)}` : ""}`,
+			note =>
+				`- [${note.id}](memory://${note.id}) — ${note.scope}${note.created ? ` · ${note.created.slice(0, 10)}` : ""}`,
 		);
 		const lastCompile = await vault.lastCompileRow();
 		const content = [
@@ -195,7 +196,8 @@ async function searchVault(
 	const text = items.length
 		? hits
 				.map(({ note }) => {
-					const stamp = note.created.length > 16 ? `${note.created.slice(0, 16)}Z` : note.created || "unknown-time";
+					const stamp =
+						note.created.length > 16 ? `${note.created.slice(0, 16)}Z` : note.created || "unknown-time";
 					// Channel and status coincide for pending inbox evidence
 					// ("inbox"); print the pair only when it says something new.
 					const channel =
@@ -216,7 +218,7 @@ export const wikiBackend: MemoryBackend = {
 	async dispose({ session }) {
 		if (session) vaults.delete(session);
 	},
-	async buildDeveloperInstructions(_agentDir, _settings, session) {
+	async buildDeveloperInstructions(_agentDir, _cwd, _settings, session) {
 		const vault = vaultFor(session);
 		if (!vault) return undefined;
 		return prompt.render(vaultInstructions, { vault: vault.root });

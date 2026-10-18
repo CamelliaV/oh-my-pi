@@ -21,8 +21,8 @@ import {
 	skillChipStyle,
 } from "../prompt/composer-attachments";
 import { MODEL_MENTION_TAG_RE } from "../prompt/model-mention-syntax";
-import { expandKeyHint, fileLinkSpan } from "../render";
-import { imageLinksEnabled } from "../prompt/image-references";
+import { expandKeyHint, fileHyperlink, fileLinkSpan } from "../render";
+import { imageLinksEnabled, imageReferenceHyperlink } from "../prompt/image-references";
 import { highlightMagicKeywords } from "../prompt/magic-keywords";
 import type { ReactionTarget } from "./reaction";
 import { card, md, node, row, span, text } from "../native/describe";

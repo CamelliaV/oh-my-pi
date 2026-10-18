@@ -465,6 +465,9 @@ behavior {
 		model "deepinfra/black-forest-labs/FLUX-2-pro"
 	}
 	role-defaults "web" {
+		// Fork: keep the declarable Grok relay channel (web.kdl seed) first in the
+		// default web chain; upstream's chain follows once the channel is absent.
+		model "web/grok"
 		model "web/parallel"
 		model "web/hosted"
 		model "web/exa"

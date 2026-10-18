@@ -5,11 +5,11 @@
 import type { ThinkingLevel } from "@oh-my-pi/pi-agent-core";
 import type { Api, Model } from "@oh-my-pi/pi-ai";
 import { completeSimple, retryTransientCompletion } from "@oh-my-pi/pi-ai";
+import { roleDefaultModels } from "@oh-my-pi/pi-catalog/compat/behavior";
 import { logger, prompt } from "@oh-my-pi/pi-utils";
 
 import type { ModelRegistry } from "../config/model-registry";
 import type { Settings } from "../config/settings";
-import MODEL_PRIO from "../priority.json" with { type: "json" };
 import commitSystemPrompt from "../prompts/system/commit-message-system.md" with { type: "text" };
 import { concreteThinkingLevel, toReasoningEffort } from "@oh-my-pi/pi-tui/thinking";
 import { collectOnlineTinyCandidates } from "../tiny/online-candidates";
@@ -59,7 +59,7 @@ function getSmolModelCandidates(
 		addCandidate(candidate.model);
 	}
 
-	for (const pattern of MODEL_PRIO.smol) {
+	for (const pattern of roleDefaultModels().smol) {
 		const needle = pattern.toLowerCase();
 		addCandidate(availableModels.find(m => m.id.toLowerCase() === needle));
 		addCandidate(availableModels.find(m => m.id.toLowerCase().includes(needle)));

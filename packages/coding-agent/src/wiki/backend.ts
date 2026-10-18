@@ -218,7 +218,7 @@ export const wikiBackend: MemoryBackend = {
 	async dispose({ session }) {
 		if (session) vaults.delete(session);
 	},
-	async buildDeveloperInstructions(_agentDir, _settings, session) {
+	async buildDeveloperInstructions(_agentDir, _cwd, _settings, session) {
 		const vault = vaultFor(session);
 		if (!vault) return undefined;
 		return prompt.render(vaultInstructions, { vault: vault.root });

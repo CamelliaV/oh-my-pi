@@ -146,7 +146,11 @@ export class CredentialSelector {
 	/**
 	 * Selects a credential of the specified type for a provider.
 	 * Returns both the credential and its index in the original array (for updates/removal).
-	 * Uses deterministic hashing for session stickiness and skips blocked credentials when possible.
+	 * With `sessionId` the scan starts at the session's hashed index; without one it starts at the
+	 * first stored credential and never advances round-robin. Model discovery peeks through this,
+	 * and credential-scoped catalogs (e.g. GitHub Copilot) key their cache rows on the credential
+	 * picked, so a rotating pick would read another account's cache namespace on every pass.
+	 * Blocked credentials are skipped when possible.
 	 */
 	selectByType<T extends AuthCredential["type"]>(
 		provider: string,

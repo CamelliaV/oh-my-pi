@@ -520,7 +520,76 @@ renders; `--smoke-test: ok`; installed binary carries `text/uri-list`=5,
 zh effort pattern — CJK is transpiled to **uppercase** `\uXXXX` escapes, so grep `u59CB`
 (the raw UTF-8 bytes are absent from the binary).
 
-### Patch list (v18.10.3 baseline)
+
+v18.10.3→v18.12.1 (2026-10-18) — seven upstream releases: 18.10.4 (approval prompts take
+over the composer, Ctrl+Enter approves, Ctrl+O expands; plan-review extension hooks;
+`omp gc --compress`; **Codex Code Mode removed**), 18.11.0 (Tern mic button + local Nemotron
+streaming dictation; composer stays usable during approvals — sending denies+steers; agent
+frontmatter `structured: true`; session entries record the writing build), 18.11.1
+(`judge()`/`judge_batch()` image attachments; `/jobs` job tree; `ctx.ui.getEditorComponent()`;
+directory `read` marks `[unreadable: …]`), 18.11.2 (`lsp.requestTimeout`;
+`auth-gateway serve --clients=<file>`; todo updates piggyback on the next tool call, saving a
+model turn; `memory.save` stored as `stated`; grep searches whole directly-named files), 18.11.3
+(**`imageCountBudget`** in models.yml/modelOverrides; status line shows profile; `prewalk.auto`;
+`/seance` + the `seance` agent to consult saved sessions read-only; approval prompt three-row
+Approve/Approve-session/Deny; **`rs-parking-lot` rule removed**), 18.12.0 (models.yml explicit
+`contextWindow`/`maxTokens` now beat catalog limit rules; API connection prewarm covers every
+built-in provider, never probes gateways; snapcompact keeps imaged-read indentation as
+`[»2]`/`[·4]` count brackets; Opus 5.5 mid-tool replies leave the Thought block), 18.12.1
+(**eval `display()` removed** — print/console.log covers it; `advisor.continueSeverity`;
+DataFrames print as tables, figures attach to results). Synthetic `upstream/v18.12.1` parented
+on `2816fe6d63` (`acdb9016ca`, 1259 files, +73375−15599, matches the trees API exactly); trial
+merge `540ccc5580` + two fix commits, merged to master as `2ce9b18643`.
+
+30 conflicts across 30 files, all adjudicated: `compaction.ts` (6) — upstream refactored remote
+V2 compaction into `sendV2`/`sendRemoteCompaction` with `providerReplayThroughEntryId`
+(compacting before the kept tail when the whole history overflows); fork's `requestUsage`
+billing survived by re-injecting the capture INTO upstream's `sendV2` where `remote` is in
+scope (type + `normalizeCompactionV2Usage` kept). `session-maintenance.ts` (5) + RPC wire
+(`state.ts`, `schema.json`, `generated.ts`, `_wire.py`, `wire.go`, `wire.rs`) — additive
+unions: fork `requestUsage` ⊕ upstream `providerReplayThroughEntryId`; `gen:rpc` not re-run
+(conformance passes with hand-union). `lsp.ts` (2) — fork's per-type card labels kept with
+upstream's expanded-rail `contentLines` wrapping + `clipped` expand-hint heuristic.
+`model-registry.ts` (2) — fork `#configPoolSync` await kept, upstream `AuthPeekOptions`
+threaded through `keys.peek`. `openai-http.ts` — upstream's try/catch `networkFailureError`
+wrapper + per-call `maxAttempts` override, fork's `[1210]` `retryNonRetryableResponse` inside.
+`select.ts` — fork `startAt` wins; upstream's no-session identity order subsumed by fork's
+4-arg `#getCredentialOrder` (needs follow-up: upstream's peek-doesn't-consume-round-robin
+semantics for no-session calls is NOT in the fork path). `learn.ts`/`mnemopi/backend.ts` —
+fork's unified `createToolMemoryRuntimeContext().save()` kept over upstream's legacy direct
+mnemopi/local/hindsight writes; upstream's `veracity: "stated"` adopted inside the options.
+`task.md` — upstream's `{{#ifAny structured hasStructuredAgents}}` + `{{asyncGuidance}}`
+shape taken; fork's `resume=1`/`completed:` wording lives on in `task-async-contract.md`.
+`web-search-codex.test.ts` — fork's stub-auth affinity suite kept, upstream's sqlite/TempDir
+suite body merged around it (TempDir import restored). `selector-controller.ts` — upstream's
+seance consult-picker conditional ⊕ fork's `onRename`. `persisted-agents.ts`,
+`event-controller.ts`, `interactive-mode.ts`, `main.ts`, `lsp/tool.ts`, `priority.json`
+**deleted upstream** (KDL role-defaults replaced it), `docs/memory.md`, `docs/tools/web_search.md`
+— additive unions or upstream takes.
+
+Fork decision that mattered: master's `web/grok`-first chain lived in `priority.json`, which
+upstream DELETED in this series (role chains now come from KDL `role-defaults`). The seed row
+in `web.kdl` survived the merge, but the chain test caught the loss
+(`rolePriorityDefaults("web")[0]` was `web/parallel`). Fix: `model "web/grok"` added as the
+first entry of `role-defaults "web"` in `runtime/behavior.kdl` + `gen:compat` (1077 rules).
+models.json: upstream 18.12.1 bake + 64 re-injected fork-only rows. Natives: ABI **grew**
+(`holdDisplayUntilReleased`/`releaseDisplayAwake`, `parseCodeStatus`,
+`WorkspaceDirectoryError`, `reportDirectoryErrors`, sixel `backgroundRgb` param) — refreshed
+from the official v18.12.1 binary (only a `modern` variant ships; it was copied to both
+baseline+modern slots and stamped).
+
+Verified: `check:ts` = master's 10 pre-existing `wiki-vault-backend.driver.ts` errors
+(patch #42 debt: optional `search`/`read` on `MemoryBackend`), zero new. `packages/agent`
+1 fail = master's `warm-cache guard` (identical). `anthropic-*` 9 fails byte-identical to
+master. mnemopi 7 trial fails are a SUBSET of master's 15, all suite-order flakes (isolated
+runs pass). TUI 10 fails identical to master. Web-search: grok-chain test green after the
+KDL fix; xAI-routing fail pre-exists on master. zh [1210] driver: all 5 pass. `--smoke-test:
+ok`; print-mode probe (`-p` with muyuan relay) completes a real turn; live `web_search`
+probe returns results through the new chain. Binary markers: `text/uri-list`=5,
+`fuzzyMatchResumableSessions`=4, `wasmGrammarFor`=4, `resume=1`=1, `u59CB`=14,
+`holdDisplayUntilReleased`=4, `providerReplayThroughEntryId`=32.
+
+### Patch list (v18.12.1 baseline)
 
 Index only. Full rationale, wire measurements, and verification recipes live in
 [`docs/fork-patches.md`](docs/fork-patches.md) — read it before rebasing, before

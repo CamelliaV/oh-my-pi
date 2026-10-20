@@ -589,7 +589,50 @@ probe returns results through the new chain. Binary markers: `text/uri-list`=5,
 `fuzzyMatchResumableSessions`=4, `wasmGrammarFor`=4, `resume=1`=1, `u59CB`=14,
 `holdDisplayUntilReleased`=4, `providerReplayThroughEntryId`=32.
 
-### Patch list (v18.12.1 baseline)
+v18.12.1→v18.12.3 (2026-10-20) — two upstream releases: 18.12.2 (computer-use
+background input + takeover fallback, `el.type/press` targeted input, macOS menu
+single-call selection, Escape stops takeover for the turn, `UserIntervened`
+guard, DeepSeek web search engine, bash persistent shell under auto-background,
+`tui.completeScrollback`, verbose tool-call intents, idle compaction aligned to
+1h prompt-cache expiry ~54min in, judge → TypeSafe Jev 1.14 default, browser
+relay background-tab ownership) and 18.12.3 (**Ask and remember** approval mode
+`always-ask-cached` + `/forget-approvals` + `approvalCacheTargets`, job widgets
+via new `widget` model role with local-only rule computation, `proc://<id>/streams`
+pipe tapping, focused-subagent `/model`+`/effort` session-only switching,
+hashline block-edit over-unseen-line rejection, post-restart column-cap edit
+forcing `:raw` re-read, `history.db` corruption quarantine, unknown slash
+command Enter passthrough fix, cancelled-subagent transcript revive). Synthetic
+`upstream/v18.12.3` parented on `acdb9016ca` (`426a540237`, 530 files, +50326
+−4810); trial `trial/v18.12.3`, master merge `7db0821d5c`.
+
+Only 5 conflicts: `rules.json` (took upstream, recompiled — 1079 rules, web/grok
+seed + chain verified), `models.json` (upstream 18.12.3 bake + 70 fork-only rows
+re-injected in upstream insertion order; 1239 stale fork-carried rows re-baked
+from upstream), `task/executor.ts` (3 hunks: upstream `assistantStreaming`/
+`sawAssistantMessage` flags union with fork `updateExecution` transition calls in
+`message_start`/`message_end`; fork `initialExecution` read kept with upstream's
+rewritten owner-routed-job comment), `web/search/utils.ts` (fork `RequestPacer` +
+abort helpers kept, upstream `recencyAfterDate` added alongside), `tui/tools/task.ts`
+(single gate hunk).
+
+Fork decision on the task card: the patch #30 `expanded && view.active` gate —
+mechanically translated to `expanded && (running||pending)` by 9cc8eca5d6 when the
+execution-view card lines were dropped — is residue, not policy (the execution
+state's user surface now lives in agent-hub `presentSubagentExecution` only). Took
+upstream shape: collapsed cards show the stage line and current tool again, and
+upstream's richer post-tool retry detail replaces the fork's pre-route retry line.
+This turned master's 4 chronic `task-progress-render` failures green; upstream's
+`⟦done⟧` statusText ordering adopted too. Trial-only TUI failures: 0 (6 remaining
+all pre-exist on master). mnemopi: 13 trial fails all suite-order flakes (isolated
+runs pass; upstream touched only package.json version). Web-search 4 fails and
+`anthropic-*` 9 fails byte-identical to master. zh [1210] driver: 5/5 pass.
+Natives ABI grew (`escapeStops`, `setRunDeadline`, `axSelectText`, `axType`,
+`LineMatcher`, `PipeStreams`, `closeDesktopEventTaps`, `hiddenContent`,
+`normalizePtyDimensions`) — refreshed from official v18.12.3 binary (modern only,
+copied to both slots + stamped). New binary markers: `escapeStops`=3, `PipeStreams`=4,
+`LineMatcher`=4, `always-ask-cached`=15; all legacy markers intact.
+
+### Patch list (v18.12.3 baseline)
 
 Index only. Full rationale, wire measurements, and verification recipes live in
 [`docs/fork-patches.md`](docs/fork-patches.md) — read it before rebasing, before

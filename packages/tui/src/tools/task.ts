@@ -787,23 +787,13 @@ function renderAgentProgress(
 	if (fullDescription && !row.descriptionShown) {
 		lines.push(...renderDescriptionLines(fullDescription, continuePrefix, maxWidth, theme));
 	}
-	if (progress.retryState) {
-		const remaining = Math.max(0, progress.retryState.startedAtMs + progress.retryState.delayMs - nowMs);
-		lines.push(
-			`${continuePrefix}${theme.tree.hook} ${theme.fg("warning", `retry ${progress.retryState.attempt}/${progress.retryState.maxAttempts} in ${formatDuration(remaining)}`)}`,
-		);
-	} else if (progress.retryFailure) {
-		lines.push(
-			`${continuePrefix}${theme.tree.hook} ${theme.fg("error", previewLine(sanitizeText(progress.retryFailure.errorMessage), 180))}`,
-		);
-	}
 	lines.push(...renderRouteLine(progress.resolvedModelRoute, continuePrefix, maxWidth, theme));
 
 	lines.push(...renderTaskSection(progress.assignment ?? progress.task, continuePrefix, expanded, theme));
 
 	// Current tool (if running) or most recent completed tool
-	if (expanded && (progress.status === "running" || progress.status === "pending")) {
-		if (progress.status === "running" && progress.stage) {
+	if (progress.status === "running") {
+		if (progress.stage) {
 			lines.push(
 				truncateTaskRow(
 					`${continuePrefix}${theme.fg("muted", replaceTabs(sanitizeText(progress.stage)))}`,
@@ -1083,14 +1073,14 @@ function renderAgentResult(
 				? theme.styledSymbol("status.done", "text")
 				: theme.status.error;
 	const iconColor = needsWarning ? "warning" : success ? "success" : mergeFailed ? "warning" : "error";
-	const statusText = needsWarning
-		? "completed · warning"
-		: mergeFailed
-			? "merge failed"
-			: aborted
-				? "aborted"
-				: success
-					? "completed"
+	const statusText = aborted
+		? "aborted"
+		: needsWarning
+			? "warning"
+			: success
+				? "done"
+				: mergeFailed
+					? "merge failed"
 					: "failed";
 
 	// Reserve the name and required badges before optional model metadata and details.

@@ -787,22 +787,21 @@ function renderAgentProgress(
 	if (fullDescription && !row.descriptionShown) {
 		lines.push(...renderDescriptionLines(fullDescription, continuePrefix, maxWidth, theme));
 	}
-	if (progress.retryState) {
-		const remaining = Math.max(0, progress.retryState.startedAtMs + progress.retryState.delayMs - nowMs);
-		lines.push(
-			`${continuePrefix}${theme.tree.hook} ${theme.fg("warning", `retry ${progress.retryState.attempt}/${progress.retryState.maxAttempts} in ${formatDuration(remaining)}`)}`,
-		);
-	} else if (progress.retryFailure) {
-		lines.push(
-			`${continuePrefix}${theme.tree.hook} ${theme.fg("error", previewLine(sanitizeText(progress.retryFailure.errorMessage), 180))}`,
-		);
-	}
 	lines.push(...renderRouteLine(progress.resolvedModelRoute, continuePrefix, maxWidth, theme));
 
 	lines.push(...renderTaskSection(progress.assignment ?? progress.task, continuePrefix, expanded, theme));
 
 	// Current tool (if running) or most recent completed tool
-	if (expanded && (progress.status === "running" || progress.status === "pending")) {
+	if (progress.status === "running") {
+		if (progress.stage) {
+			lines.push(
+				truncateTaskRow(
+					`${continuePrefix}${theme.fg("muted", replaceTabs(sanitizeText(progress.stage)))}`,
+					maxWidth,
+					"",
+				),
+			);
+		}
 		if (progress.currentTool) {
 			let toolLine = `${continuePrefix}${theme.tree.hook} ${theme.fg("muted", sanitizeText(progress.currentTool))}`;
 			const toolDetail = toolCallDetail(
@@ -1074,14 +1073,14 @@ function renderAgentResult(
 				? theme.styledSymbol("status.done", "text")
 				: theme.status.error;
 	const iconColor = needsWarning ? "warning" : success ? "success" : mergeFailed ? "warning" : "error";
-	const statusText = needsWarning
-		? "completed · warning"
-		: mergeFailed
-			? "merge failed"
-			: aborted
-				? "aborted"
-				: success
-					? "completed"
+	const statusText = aborted
+		? "aborted"
+		: needsWarning
+			? "warning"
+			: success
+				? "done"
+				: mergeFailed
+					? "merge failed"
 					: "failed";
 
 	// Reserve the name and required badges before optional model metadata and details.
@@ -1911,6 +1910,9 @@ function describeProgressAgent(progress: AgentProgress, state: AgentDescribeStat
 					age: progress.currentToolStartMs ? Math.max(0, nowMs - progress.currentToolStartMs) : undefined,
 				}
 			: null;
+	const summary = taskSummary(progress.description || progress.assignment || progress.task);
+	// The agent's own stage line (from its completion probe) rides beside the task while it runs.
+	const stage = running && progress.stage ? plainText(progress.stage) : "";
 	const retry =
 		running && progress.retryState
 			? {
@@ -1925,7 +1927,7 @@ function describeProgressAgent(progress: AgentProgress, state: AgentDescribeStat
 		{
 			name: formatTaskId(progress.id),
 			agent: progress.agent || undefined,
-			task: taskSummary(progress.description || progress.assignment || progress.task) || undefined,
+			task: stage ? (summary ? [span(summary), span(` · ${stage}`, "muted")] : stage) : summary || undefined,
 			status,
 			model: progress.resolvedModelIdentity ?? progress.resolvedModel,
 			thinking: thinkingToken(progress.resolvedThinkingLevel),
@@ -2421,6 +2423,18 @@ export interface AgentProgress {
 	advisor?: boolean;
 	/** The agent's latest self-estimate of task completion (0–100), from the periodic `task.completionProbe` side request. */
 	completionPercent?: number;
+	/**
+	 * The agent's current step in its own words (one line, ≤ 80 chars), from the
+	 * same probe reply as {@link completionPercent}. Running rows prefer it over
+	 * `lastIntent`; the job widget uses it as its stage line.
+	 */
+	stage?: string;
+	/**
+	 * What the agent says shows its progress live (one line, ≤ 200 chars), e.g.
+	 * "BENCH lines in bg_2 pipe:1, tok_s higher is better, target 70% of roofline";
+	 * from the probe reply. Feeds the job widget author's brief; never rendered.
+	 */
+	watch?: string;
 	/** Data extracted by registered subprocess tool handlers (keyed by tool name) */
 	extractedToolData?: Record<string, unknown[]>;
 	/** Optional host execution snapshot. The tui reads only phase, run, and updatedAt. */

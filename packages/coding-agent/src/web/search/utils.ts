@@ -84,3 +84,15 @@ export class RequestPacer {
 		this.#queues.clear();
 	}
 }
+
+const RECENCY_DAYS: Record<"day" | "week" | "month" | "year", number> = {
+	day: 1,
+	week: 7,
+	month: 30,
+	year: 365,
+};
+
+/** UTC `YYYY-MM-DD` lower bound for a relative recency window, for engines that only accept absolute `after` dates. */
+export function recencyAfterDate(recency: "day" | "week" | "month" | "year"): string {
+	return new Date(Date.now() - RECENCY_DAYS[recency] * 86_400_000).toISOString().slice(0, 10);
+}

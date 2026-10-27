@@ -202,13 +202,15 @@ type SessionPicker = (
 ) => Promise<SessionInfo | null>;
 
 /** Resume/import-only graph boundary; ordinary launches never construct a picker. */
-async function loadSessionPicker(): Promise<SessionPicker> {
-	const [{ selectSession }, { HistoryStorage }, { loadPinnedSessionIds }, { FileSessionStorage }] = await Promise.all([
-		import("@oh-my-pi/pi-tui/apps/session-picker"),
-		import("./session/history-storage"),
-		import("./session/session-pins"),
-		import("./session/session-storage"),
-	]);
+async function loadSessionPicker(sessionDir?: string): Promise<SessionPicker> {
+	const [{ selectSession }, { HistoryStorage }, { loadPinnedSessionIds }, hides, { FileSessionStorage }] =
+		await Promise.all([
+			import("@oh-my-pi/pi-tui/apps/session-picker"),
+			import("./session/history-storage"),
+			import("./session/session-pins"),
+			import("./session/session-hides"),
+			import("./session/session-storage"),
+		]);
 	return (sessions, options) => {
 		const storage = new FileSessionStorage();
 		return selectSession(sessions, options, {
@@ -221,6 +223,14 @@ async function loadSessionPicker(): Promise<SessionPicker> {
 				await storage.deleteSessionWithArtifacts(session.path);
 				return true;
 			},
+			hideSession: async session => {
+				await hides.hideSession(session.id);
+				return true;
+			},
+			unhideSession: async session => {
+				await hides.unhideSession(session.id);
+				return true;
+			},
 			renameSession: async (session, title) => {
 				await storage.updateSessionTitle(session.path, {
 					title,
@@ -230,6 +240,7 @@ async function loadSessionPicker(): Promise<SessionPicker> {
 				return true;
 			},
 			loadAllSessions: () => SessionManager.listAllForPicker(storage),
+			loadHiddenSessions: () => SessionManager.listHiddenForPicker(sessionDir, storage),
 		});
 	};
 }
@@ -1334,7 +1345,7 @@ export async function createSessionManager(
 		if (fuzzyMatches.length > 1) {
 			pauseStartupWatchdog();
 			const candidates = fuzzyMatches.map(m => m.session);
-			const selectSession = await loadSessionPicker();
+			const selectSession = await loadSessionPicker(parsed.sessionDir);
 			const selected = await selectSession(candidates, {
 				initialQuery: sessionArg,
 				title: `Resume Session — "${sessionArg}" (${candidates.length} matches)`,
@@ -2223,7 +2234,7 @@ export async function runRootCommand(
 				}
 			}
 			pauseStartupWatchdog();
-			const selectSessionImpl = deps.selectSession ?? (await loadSessionPicker());
+			const selectSessionImpl = deps.selectSession ?? (await loadSessionPicker(parsedArgs.sessionDir));
 			const selected = await logger.time("selectSession", selectSessionImpl, folderSessions, {
 				allSessions: preloadedAllSessions,
 			});

@@ -70,7 +70,10 @@ describe("session selector picker", () => {
 					return true;
 				},
 				loadAllSessions: async () => [today, todayToo, others, old],
+				loadHiddenSessions: async () => [old, others],
 				currentSessionPath: todayToo.path,
+				onHide: async () => true,
+				onUnhide: async s => s.id !== "never",
 				standalone: opts.standalone,
 			},
 		);
@@ -149,7 +152,7 @@ describe("session selector picker", () => {
 
 		const loaded = renderedWhen(
 			selector,
-			p => p.state === "ready" && p.actions?.find(a => a.id === "scope")?.label === "This folder",
+			p => p.state === "ready" && p.actions?.find(a => a.id === "scope")?.label === "Hidden sessions",
 		);
 		selector.handleNativeEvent({ type: "action", key: "", act: "scope", mods: [] });
 		expect(props(selector.describe(withPicker)).state).toBe("loading");
@@ -160,6 +163,18 @@ describe("session selector picker", () => {
 			{ t: "/work/", s: "path dim" },
 			{ t: "other", s: "path" },
 		]);
+
+		// Tab again cycles into the hidden scope, which re-lists its rows.
+		const hiddenLoaded = renderedWhen(
+			selector,
+			p => p.state === "ready" && p.actions?.find(a => a.id === "hide")?.label === "Unhide",
+		);
+		selector.handleNativeEvent({ type: "action", key: "", act: "scope", mods: [] });
+		expect(props(selector.describe(withPicker)).state).toBe("loading");
+		await hiddenLoaded;
+		const hiddenScope = props(selector.describe(withPicker));
+		expect(hiddenScope.placeholder).toBe("Search hidden sessions…");
+		expect(hiddenScope.items?.find(item => item.id === old.path)).toBeTruthy();
 	});
 });
 

@@ -14,6 +14,7 @@ import { COMPACT_MODES, parseCompactArgs } from "../session/compact-modes";
 import { USER_INTERRUPT_LABEL } from "../session/messages";
 import { resolveResumableSession } from "../session/session-listing";
 import { toggleSessionPin } from "../session/session-pins";
+import { hideSession, loadHiddenSessionIds, unhideSession } from "../session/session-hides";
 import {
 	cleanSourceCheckoutIfConfigured,
 	createSessionWorktree,
@@ -446,6 +447,108 @@ export const BUILTIN_LIFECYCLE_SLASH_COMMANDS: ReadonlyArray<SlashCommandSpec> =
 			}
 			const pinned = await toggleSessionPin(sessionId);
 			await runtime.output(pinned ? "Session pinned to the top of the resume list." : "Session unpinned.");
+			return commandConsumed();
+		},
+	},
+	{
+		name: "hide",
+		icon: "eye",
+		description: "Hide a session from the resume list (file and stats are kept)",
+		inlineHint: "[session id]",
+		allowArgs: true,
+		handle: async (command, runtime) => {
+			const sessionArg = command.args.trim();
+			let sessionId: string | undefined;
+			if (sessionArg) {
+				const match = await resolveResumableSession(
+					sessionArg,
+					runtime.cwd,
+					runtime.sessionManager.getSessionDir(),
+					{ allowGlobalFallback: true },
+				);
+				if (!match) {
+					return usage(`Session "${sessionArg}" not found.`, runtime);
+				}
+				sessionId = match.session.id;
+			} else {
+				sessionId = runtime.sessionManager.getSessionId();
+				if (!sessionId) {
+					return usage("No active session to hide.", runtime);
+				}
+			}
+			await hideSession(sessionId);
+			await runtime.output("Session hidden from the resume list. Use /unhide to restore it.");
+			return commandConsumed();
+		},
+	},
+	{
+		name: "unhide",
+		icon: "eye",
+		description: "Restore a hidden session to the resume list",
+		inlineHint: "[session id]",
+		allowArgs: true,
+		handle: async (command, runtime) => {
+			const sessionArg = command.args.trim();
+			const hidden = await loadHiddenSessionIds();
+			if (hidden.size === 0) {
+				return usage("No hidden sessions.", runtime);
+			}
+			let sessionId: string | undefined;
+			if (sessionArg) {
+				const match = await resolveResumableSession(
+					sessionArg,
+					runtime.cwd,
+					runtime.sessionManager.getSessionDir(),
+					{ allowGlobalFallback: true },
+				);
+				if (!match || !hidden.has(match.session.id)) {
+					const candidates = [...hidden];
+					const byPrefix = candidates.filter(id => id.toLowerCase().startsWith(sessionArg.toLowerCase()));
+					if (byPrefix.length === 1) {
+						sessionId = byPrefix[0];
+					} else {
+						const lines = candidates.map(id => `  ${id}`).join("\n");
+						return usage(`Hidden session "${sessionArg}" not found. Hidden:\n${lines}`, runtime);
+					}
+				} else {
+					sessionId = match.session.id;
+				}
+			} else {
+				const lines = [...hidden].map(id => `  ${id}`).join("\n");
+				return usage(`Hidden sessions (unhide by id prefix):\n${lines}`, runtime);
+			}
+			await unhideSession(sessionId);
+			await runtime.output("Session restored to the resume list.");
+			return commandConsumed();
+		},
+		// In the TUI, a bare /unhide opens the resume picker on its hidden scope
+		// where Ctrl+H restores the selected row; an explicit arg keeps the
+		// direct path above.
+		handleTui: async (command, runtime) => {
+			if (command.args.trim()) return undefined;
+			clearSubmittedText(runtime);
+			runtime.ctx.showSessionSelector(undefined, undefined, { initialScope: "hidden" });
+			return commandConsumed();
+		},
+	},
+	{
+		name: "hidden",
+		icon: "eye",
+		description: "Browse hidden sessions in the resume picker",
+		handle: async (_command, runtime) => {
+			const hidden = await loadHiddenSessionIds();
+			if (hidden.size === 0) {
+				await runtime.output("No hidden sessions.");
+			} else {
+				const lines = [...hidden].map(id => `  ${id}`).join("\n");
+				await runtime.output(`Hidden sessions:\n${lines}`);
+			}
+			return commandConsumed();
+		},
+		// TUI opens the picker directly on the hidden scope instead of a text dump.
+		handleTui: async (_command, runtime) => {
+			clearSubmittedText(runtime);
+			runtime.ctx.showSessionSelector(undefined, undefined, { initialScope: "hidden" });
 			return commandConsumed();
 		},
 	},

@@ -81,6 +81,7 @@ import {
 } from "./session-entries";
 import { currentRuntimeIdentity, type RuntimeIdentity } from "./runtime-identity";
 import {
+	filterOutHiddenSessions,
 	filterSessionsForPicker,
 	findMostRecentNonEmptySession,
 	isEmptySession,
@@ -110,6 +111,7 @@ import {
 } from "./session-paths";
 import { forgetExternalizedImages, prepareEntryForPersistence } from "./session-persistence";
 import { loadPinnedSessionIds, sortPinnedFirst } from "./session-pins";
+import { loadHiddenSessionIds } from "./session-hides";
 import {
 	FileSessionStorage,
 	MemorySessionStorage,
@@ -4460,9 +4462,10 @@ export class SessionManager {
 
 	/**
 	 * Picker-facing project list: pinned sessions first, untitled empties
-	 * dropped. Titled empties stay — a title is user intent worth resuming.
-	 * Includes the same folder in the repository's other git worktrees, so a
-	 * session `/wt` moved stays reachable from the checkout it left.
+	 * dropped, hidden sessions excluded. Titled empties stay — a title is user
+	 * intent worth resuming. Includes the same folder in the repository's other
+	 * git worktrees, so a session `/wt` moved stays reachable from the checkout
+	 * it left.
 	 */
 	static async listForPicker(
 		cwd: string,
@@ -4470,14 +4473,44 @@ export class SessionManager {
 		storage: SessionStorage = new FileSessionStorage(),
 	): Promise<SessionInfo[]> {
 		const dir = sessionDir ?? SessionManager.getDefaultSessionDir(cwd, undefined, storage);
-		const [pinned, siblingDirs] = await Promise.all([loadPinnedSessionIds(), worktreeSessionDirs(cwd, dir)]);
-		return sortPinnedFirst(filterSessionsForPicker(await listSessions(dir, storage, siblingDirs), pinned), pinned);
+		const [pinned, hidden, siblingDirs] = await Promise.all([
+			loadPinnedSessionIds(),
+			loadHiddenSessionIds(),
+			worktreeSessionDirs(cwd, dir),
+		]);
+		const visible = filterOutHiddenSessions(await listSessions(dir, storage, siblingDirs), hidden);
+		return sortPinnedFirst(filterSessionsForPicker(visible, pinned), pinned);
 	}
 
 	/** Picker-facing cross-project list, same empty-session rule as {@link listForPicker}. */
 	static async listAllForPicker(storage: SessionStorage = new FileSessionStorage()): Promise<SessionInfo[]> {
-		const pinned = await loadPinnedSessionIds();
-		return sortPinnedFirst(filterSessionsForPicker(await listAllSessions(storage), pinned), pinned);
+		const [pinned, hidden] = await Promise.all([loadPinnedSessionIds(), loadHiddenSessionIds()]);
+		const visible = filterOutHiddenSessions(await listAllSessions(storage), hidden);
+		return sortPinnedFirst(filterSessionsForPicker(visible, pinned), pinned);
+	}
+
+	/**
+	 * Hidden-sessions list for the picker's hidden scope, newest first. Keeps
+	 * only the hidden ids across the global scan plus the active session
+	 * directory (a custom `--session-dir` never appears in the global buckets);
+	 * files deleted out from under a stale hide simply never match.
+	 */
+	static async listHiddenForPicker(
+		sessionDir?: string,
+		storage: SessionStorage = new FileSessionStorage(),
+	): Promise<SessionInfo[]> {
+		const hidden = await loadHiddenSessionIds();
+		if (hidden.size === 0) return [];
+		const global = await listAllSessions(storage);
+		const local = sessionDir ? await listSessions(sessionDir, storage) : [];
+		const seen = new Set<string>();
+		const sessions: SessionInfo[] = [];
+		for (const session of [...global, ...local]) {
+			if (seen.has(session.path)) continue;
+			seen.add(session.path);
+			if (hidden.has(session.id)) sessions.push(session);
+		}
+		return sessions;
 	}
 }
 

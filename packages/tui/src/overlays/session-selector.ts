@@ -259,10 +259,40 @@ interface SessionPickerMessage {
 	text: string;
 }
 
-const SCOPE_TABS: readonly { id: "folder" | "all"; label: string }[] = [
+/** Scope order the Tab key cycles through; `hidden` lists only hidden sessions. */
+export type SessionSelectorScope = "folder" | "all" | "hidden";
+
+const SCOPE_TABS: readonly { id: SessionSelectorScope; label: string }[] = [
 	{ id: "folder", label: "Current folder" },
 	{ id: "all", label: "All projects" },
+	{ id: "hidden", label: "Hidden" },
 ];
+
+/** The scope Tab switches to next from `scope`, wrapping around. */
+function nextScope(scope: SessionSelectorScope): SessionSelectorScope {
+	if (scope === "folder") return "all";
+	if (scope === "all") return "hidden";
+	return "folder";
+}
+
+/** Scope label for the picker header (lowercase, as the old inline string). */
+function scopeTitleLabel(scope: SessionSelectorScope): string {
+	if (scope === "all") return "all projects";
+	if (scope === "hidden") return "hidden sessions";
+	return "current folder";
+}
+
+/** Tab key hint label: the scope Tab switches to, capitalized like the tabs. */
+function scopeTabLabel(scope: SessionSelectorScope): string {
+	if (scope === "all") return "All projects";
+	if (scope === "hidden") return "Hidden sessions";
+	return "Current folder";
+}
+
+/** What the Tab hint names: the scope Tab switches to (footer, lowercase). */
+function nextScopeHint(scope: SessionSelectorScope): string {
+	return scopeTitleLabel(nextScope(scope));
+}
 
 /** Returns the IDs of sessions whose recorded prompts match a query, best first. */
 export type SessionHistoryMatcher = (query: string) => string[];
@@ -519,6 +549,7 @@ class SessionList<T extends SessionSelectorEntry> implements Component {
 	readonly #getTerminalRows: () => number;
 
 	onDeleteRequest?: (session: T) => void;
+	onHideRequest?: (session: T) => void;
 	onRenameRequest?: (session: T) => void;
 
 	#allSessions: T[];
@@ -1295,7 +1326,14 @@ class SessionList<T extends SessionSelectorEntry> implements Component {
 			if (selected && this.onRenameRequest) this.onRenameRequest(selected);
 			return;
 		}
-		// Up arrow
+		// Ctrl+H — hide the selected session from the list. On terminals that
+		// deliver raw \x08 for Ctrl+H the byte classifies as backspace above, so
+		// legacy Backspace keeps meaning "delete" (the pre-existing binding).
+		if (matchesKey(keyData, "ctrl+h")) {
+			const selected = this.#menu.selectedItem;
+			if (selected && this.onHideRequest) this.onHideRequest(selected);
+			return;
+		}
 		if (matchesSelectUp(keyData)) {
 			this.#selectionMoved = true;
 			this.#menu.move(-1, false);
@@ -1349,6 +1387,10 @@ class SessionList<T extends SessionSelectorEntry> implements Component {
 
 export interface SessionSelectorOptions<T extends SessionSelectorEntry = SessionSelectorEntry> {
 	onDelete?: (session: T) => Promise<boolean>;
+	/** Hide the session from the resume list (file kept on disk). */
+	onHide?: (session: T) => Promise<boolean>;
+	/** Restore a hidden session to the resume list (hidden scope's Ctrl+H). */
+	onUnhide?: (session: T) => Promise<boolean>;
 	/** Persist a new display title for a session picked in the list. */
 	onRename?: (session: T, title: string) => Promise<boolean>;
 	/** Prefill the search query (fuzzy --resume disambiguation). */
@@ -1356,8 +1398,12 @@ export interface SessionSelectorOptions<T extends SessionSelectorEntry = Session
 	historyMatcher?: SessionHistoryMatcher;
 	/** Loads sessions across all projects for the all-projects scope toggle (Tab). */
 	loadAllSessions?: () => Promise<T[]>;
+	/** Loads hidden sessions for the hidden scope (Tab); refreshed on entry. */
+	loadHiddenSessions?: () => Promise<T[]>;
 	/** Preloaded all-projects list; cached so the first Tab toggle is instant. */
 	allSessions?: T[];
+	/** Open the picker on this scope instead of the current folder. */
+	initialScope?: SessionSelectorScope;
 	/** Picker heading; defaults to "Resume Session". */
 	title?: string;
 	/** Primary action label; defaults to "Resume" (ANSI footer defaults to "select"). */
@@ -1409,14 +1455,18 @@ export class SessionSelectorComponent<T extends SessionSelectorEntry = SessionSe
 	#contentSlot: Container;
 	#messageContainer: Container;
 	#onDelete?: (session: T) => Promise<boolean>;
+	#onHide?: (session: T) => Promise<boolean>;
+	#onUnhide?: (session: T) => Promise<boolean>;
 	#onRename?: (session: T, title: string) => Promise<boolean>;
 	#renameDialog: HookInputComponent | null = null;
 	#onRequestRender?: () => void;
 	readonly #loadAllSessions?: () => Promise<T[]>;
+	readonly #loadHiddenSessions?: () => Promise<T[]>;
 	#folderSessions: T[];
 	readonly #folderShowCwd: boolean;
 	#globalSessions: T[] | null = null;
-	#scope: "folder" | "all" = "folder";
+	#hiddenSessions: T[] | null = null;
+	#scope: SessionSelectorScope;
 	#toggling = false;
 	#inputLocked = false;
 	// 0-based line where the session list begins within this component's own
@@ -1451,7 +1501,7 @@ export class SessionSelectorComponent<T extends SessionSelectorEntry = SessionSe
 		| {
 				view: SessionPickerView;
 				preview: readonly NativeChild[];
-				scope: "folder" | "all";
+				scope: SessionSelectorScope;
 				message: SessionPickerMessage | undefined;
 				errorOpen: boolean;
 				choice: DeleteChoice<T> | null;
@@ -1461,7 +1511,7 @@ export class SessionSelectorComponent<T extends SessionSelectorEntry = SessionSe
 	#nativeMemo:
 		| {
 				title: string;
-				scope: "folder" | "all";
+				scope: SessionSelectorScope;
 				message: SessionPickerMessage | undefined;
 				dialog: HookSelectorComponent | null;
 				list: NativeNode;
@@ -1480,8 +1530,11 @@ export class SessionSelectorComponent<T extends SessionSelectorEntry = SessionSe
 
 		this.#messageContainer = new Container();
 		this.#onDelete = options.onDelete;
+		this.#onHide = options.onHide;
+		this.#onUnhide = options.onUnhide;
 		this.#onRename = options.onRename;
 		this.#loadAllSessions = options.loadAllSessions;
+		this.#loadHiddenSessions = options.loadHiddenSessions;
 		this.#folderSessions = sessions;
 		// Storage directory, not recorded cwd: one folder's sessions may record
 		// symlink aliases of the same path, which must not turn the column on.
@@ -1494,6 +1547,10 @@ export class SessionSelectorComponent<T extends SessionSelectorEntry = SessionSe
 		this.#pickerTitle = options.title;
 		this.#standalone = options.standalone ?? false;
 		this.#scopeLabel = options.scopeLabel;
+		// A hidden initial scope needs its loader and restorer; otherwise the
+		// picker opens on the folder list the caller handed in.
+		this.#scope =
+			options.initialScope === "hidden" && options.loadHiddenSessions && options.onUnhide ? "hidden" : "folder";
 		this.title = this.#headerLabel();
 		// One spacer of breathing room; OverlayPanel supplies the two outer
 		// border rows and the horizontal inset.
@@ -1534,7 +1591,12 @@ export class SessionSelectorComponent<T extends SessionSelectorEntry = SessionSe
 				this.#showDeleteConfirmation(session);
 			};
 		}
-		if (this.#loadAllSessions || this.#globalSessions) {
+		if (this.#onHide) {
+			this.#sessionList.onHideRequest = (session: T) => {
+				void this.#hideOrUnhide(session);
+			};
+		}
+		if (this.#loadAllSessions || this.#globalSessions || this.#loadHiddenSessions) {
 			this.#sessionList.onToggleScope = () => {
 				void this.#toggleScope();
 			};
@@ -1546,18 +1608,18 @@ export class SessionSelectorComponent<T extends SessionSelectorEntry = SessionSe
 
 	#headerLabel(): string {
 		if (this.#scopeLabel === false) return this.#title;
-		const scopeLabel = this.#scopeLabel ?? (this.#scope === "all" ? "all projects" : "current folder");
-		return `${this.#title} (${scopeLabel})`;
+		return `${this.#title} (${scopeTitleLabel(this.#scope)})`;
 	}
 
 	/**
-	 * Toggle between current-folder and all-projects scope. The global list is
-	 * loaded lazily on first switch and cached, so the common folder-scope path
-	 * never pays for the cross-project scan.
+	 * Cycle the scope: current folder → all projects → hidden → folder. The
+	 * global list loads lazily once and is cached; the hidden list refreshes on
+	 * every entry so unhides made elsewhere show up immediately.
 	 */
 	async #toggleScope(): Promise<void> {
 		if (this.#toggling || this.#confirmationDialog) return;
-		if (this.#scope === "folder") {
+		const target = nextScope(this.#scope);
+		if (target === "all") {
 			let global = this.#globalSessions;
 			if (!global) {
 				if (!this.#loadAllSessions) return;
@@ -1581,6 +1643,26 @@ export class SessionSelectorComponent<T extends SessionSelectorEntry = SessionSe
 			}
 			this.#scope = "all";
 			this.#sessionList.setSessions(global, true);
+		} else if (target === "hidden") {
+			if (!this.#loadHiddenSessions || !this.#onUnhide) return;
+			this.#toggling = true;
+			this.#messageContainer.clear();
+			this.#messageContainer.addChild(new Text(theme.fg("muted", "Loading hidden sessions…"), 0, 0));
+			this.#message = { kind: "loading", text: "Loading hidden sessions…" };
+			this.#onRequestRender?.();
+			try {
+				this.#hiddenSessions = await this.#loadHiddenSessions();
+			} catch (err) {
+				this.#showError(err instanceof Error ? err.message : String(err));
+				this.#toggling = false;
+				this.#onRequestRender?.();
+				return;
+			}
+			this.#messageContainer.clear();
+			this.#message = undefined;
+			this.#toggling = false;
+			this.#scope = "hidden";
+			this.#sessionList.setSessions(this.#hiddenSessions, true);
 		} else {
 			this.#scope = "folder";
 			this.#sessionList.setSessions(this.#folderSessions, this.#folderShowCwd);
@@ -1680,6 +1762,43 @@ export class SessionSelectorComponent<T extends SessionSelectorEntry = SessionSe
 		this.#onRequestRender?.();
 	}
 
+	/**
+	 * Ctrl+H on the selected session, without a confirmation dialog: in the
+	 * folder/all scopes it hides the session (row leaves at once); in the hidden
+	 * scope the same key restores it. Round-tripping is one Tab away, so asking
+	 * again would only slow the flip.
+	 */
+	async #hideOrUnhide(session: T): Promise<void> {
+		if (!this.#onHide || (this.#scope === "hidden" && !this.#onUnhide)) return;
+		this.#clearError();
+		try {
+			if (this.#scope === "hidden") {
+				const unhidden = await this.#onUnhide!(session);
+				if (!unhidden) return;
+				this.#sessionList.removeSession(session.path);
+				// Back into the visible caches, so the next Tab lands it in scope.
+				if (!this.#folderSessions.some(s => s.path === session.path)) {
+					this.#folderSessions = [...this.#folderSessions, session].sort(compareSessionRecency);
+				}
+				if (this.#globalSessions && !this.#globalSessions.some(s => s.path === session.path)) {
+					this.#globalSessions = [...this.#globalSessions, session].sort(compareSessionRecency);
+				}
+			} else {
+				const hidden = await this.#onHide(session);
+				if (!hidden) return;
+				this.#sessionList.removeSession(session.path);
+				this.#folderSessions = this.#folderSessions.filter(s => s.path !== session.path);
+				if (this.#globalSessions) {
+					this.#globalSessions = this.#globalSessions.filter(s => s.path !== session.path);
+				}
+				// The hidden scope re-lists from the store on entry, so no cache add.
+			}
+		} catch (err) {
+			this.#showError(err instanceof Error ? err.message : String(err));
+		}
+		this.#onRequestRender?.();
+	}
+
 	#showRenameDialog(session: T): void {
 		if (this.#confirmationDialog) return;
 		const displayName = session.title || session.firstMessage.slice(0, 40) || session.id;
@@ -1739,12 +1858,12 @@ export class SessionSelectorComponent<T extends SessionSelectorEntry = SessionSe
 
 	/** Blank · keybinding hint · bottom border. Rendered by {@link render}. */
 	#footerLines(width: number): string[] {
-		const scopeHint = this.#scope === "all" ? "current folder" : "all projects";
+		const scopeHint = nextScopeHint(this.#scope);
 		// Keys mirror SessionList#handleInput; cancel is `app.interrupt` (raw Escape when unbound).
 		const cancel = interruptKey();
 		const hint = theme.fg(
 			"muted",
-			`[${this.#onDelete ? `${formatKeyHints(["delete", "backspace"])} delete · ` : ""}${formatKeyHint("ctrl+r")} rename · ${formatKeyHint("enter")} select · ${formatKeyHint("tab")} ${scopeHint} · ${cancel} cancel]`,
+			`[${this.#onDelete ? `${formatKeyHints(["delete", "backspace"])} delete · ` : ""}${this.#onHide ? `${formatKeyHint("ctrl+h")} ${this.#scope === "hidden" ? "unhide" : "hide"} · ` : ""}${formatKeyHint("ctrl+r")} rename · ${formatKeyHint("enter")} select · ${formatKeyHint("tab")} ${scopeHint} · ${cancel} cancel]`,
 		);
 		return [row("", width), row(hint, width), row("", width), bottomBorder(width)];
 	}
@@ -1794,9 +1913,10 @@ export class SessionSelectorComponent<T extends SessionSelectorEntry = SessionSe
 		}
 		const hints: (NativeHint | undefined)[] = [];
 		if (this.#onDelete) hints.push({ keys: ["delete", "backspace"], label: "delete" });
+		if (this.#onHide) hints.push({ keys: ["ctrl+h"], label: this.#scope === "hidden" ? "unhide" : "hide" });
 		hints.push({ keys: ["enter"], label: "select" });
 		if (this.#sessionList.onToggleScope) {
-			hints.push({ keys: ["tab"], label: this.#scope === "all" ? "current folder" : "all projects" });
+			hints.push({ keys: ["tab"], label: nextScopeHint(this.#scope) });
 		}
 		hints.push({ keys: [boundKeys("app.interrupt", ["escape"])[0] ?? "escape"], label: "cancel" });
 		const result = overlayCard("omp.overlay.sessions", tabs ? this.#title : this.title, [
@@ -1842,9 +1962,13 @@ export class SessionSelectorComponent<T extends SessionSelectorEntry = SessionSe
 		const loading = message?.kind === "loading";
 		const toggle = list.onToggleScope !== undefined;
 		const actions = [pickerAction("resume", this.#actionLabel, "enter", { primary: true })];
+		if (this.#onHide) {
+			actions.push(pickerAction("hide", this.#scope === "hidden" ? "Unhide" : "Hide", "ctrl+h"));
+		}
 		if (this.#onDelete) actions.push(pickerAction("delete", "Delete", "backspace"));
 		if (toggle) {
-			actions.push(pickerAction("scope", this.#scope === "all" ? "This folder" : "All projects", "tab"));
+			const target = nextScope(this.#scope);
+			actions.push(pickerAction("scope", scopeTabLabel(target), "tab"));
 		}
 		actions.push(
 			pickerAction("close", "Close", boundKeys("app.interrupt", ["escape"])[0] ?? "escape", { end: true }),
@@ -1854,9 +1978,11 @@ export class SessionSelectorComponent<T extends SessionSelectorEntry = SessionSe
 		const placeholder =
 			loading || this.#scope === "all"
 				? "Search all sessions…"
-				: folder && !title
-					? `Search sessions in ${folder}…`
-					: "Search sessions…";
+				: this.#scope === "hidden"
+					? "Search hidden sessions…"
+					: folder && !title
+						? `Search sessions in ${folder}…`
+						: "Search sessions…";
 		const result = picker(
 			{
 				...(title ? { title, ...(folder ? { subtitle: folder } : {}) } : {}),
@@ -1882,7 +2008,12 @@ export class SessionSelectorComponent<T extends SessionSelectorEntry = SessionSe
 				actions,
 				state: loading ? "loading" : errorOpen ? "error" : "ready",
 				...(loading || errorOpen ? { message: message!.text } : {}),
-				empty: this.#scope === "all" || !toggle ? "No sessions yet" : "No sessions in this folder yet",
+				empty:
+					this.#scope === "hidden"
+						? "No hidden sessions — Ctrl+H in the resume list hides one"
+						: this.#scope === "all" || !toggle
+							? "No sessions yet"
+							: "No sessions in this folder yet",
 				confirm: choice
 					? {
 							text: `Delete “${sessionLabel(choice.session)}”? This removes the session file.`,
@@ -1949,7 +2080,10 @@ export class SessionSelectorComponent<T extends SessionSelectorEntry = SessionSe
 			else list.onCancel?.();
 		} else if (choice) return;
 		else if (ev.act === "resume") list.resumeSelected();
-		else if (ev.act === "delete") list.requestDelete();
+		else if (ev.act === "hide") {
+			const selected = list.selectedSession;
+			if (selected) list.onHideRequest?.(selected);
+		} else if (ev.act === "delete") list.requestDelete();
 		else if (ev.act === "scope") {
 			list.onToggleScope?.();
 		} else if (ev.act === "clear") list.clearSearch();

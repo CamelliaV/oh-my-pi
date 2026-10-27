@@ -8,9 +8,10 @@ import * as logger from "@oh-my-pi/pi-utils/logger";
 import { LRUCache } from "@oh-my-pi/pi-utils/lru";
 import { parseJsonlLenient } from "@oh-my-pi/pi-utils/stream";
 import { toError } from "@oh-my-pi/pi-utils/type-guards";
+import { loadHiddenSessionIds } from "./session-hides";
 import { computeDefaultSessionDir } from "./session-paths";
-import { FileSessionStorage, type SessionStorage, type SessionStorageStat } from "./session-storage";
 import { lookupSessionTitle, recordSessionTitle } from "./session-index";
+import { FileSessionStorage, type SessionStorage, type SessionStorageStat } from "./session-storage";
 
 /**
  * Coarse lifecycle status of a session, derived from its last persisted message.
@@ -693,7 +694,17 @@ export function filterSessionsForPicker(sessions: SessionInfo[], pinnedIds: Read
 	return sessions.filter(session => pinnedIds.has(session.id) || !isEmptySession(session));
 }
 
-/** Most recent session with resumable content, skipping 0-turn empties. Exported for testing. */
+/**
+ * Drop hidden sessions from a listing. Hidden ids with no matching row are a
+ * no-op so stale hides for deleted sessions never disturb a listing; the
+ * session files stay on disk, so stats/token accounting is unaffected.
+ */
+export function filterOutHiddenSessions(sessions: SessionInfo[], hiddenIds: ReadonlySet<string>): SessionInfo[] {
+	if (hiddenIds.size === 0) return sessions;
+	return sessions.filter(session => !hiddenIds.has(session.id));
+}
+
+/** Most recent session with resumable content, skipping 0-turn empties and hidden sessions. Exported for testing. */
 export async function findMostRecentNonEmptySession(
 	sessionDir: string,
 	storage: SessionStorage = new FileSessionStorage(),
@@ -702,7 +713,8 @@ export async function findMostRecentNonEmptySession(
 	// prefix, so a transcript whose first assistant record starts past the
 	// prefix is never skipped.
 	const sessions = await scanSessionDir(sessionDir, storage, true);
-	return sessions.find(session => !isEmptySession(session))?.path ?? null;
+	const visible = filterOutHiddenSessions(sessions, await loadHiddenSessionIds());
+	return visible.find(session => !isEmptySession(session))?.path ?? null;
 }
 
 /** Exported for testing */
@@ -958,10 +970,12 @@ export async function getRecentSessions(
 	// The index is keyed by real session ids; in-memory test storages must not
 	// touch the process-wide history.db.
 	const useIndex = storage instanceof FileSessionStorage;
+	const hiddenIds = await loadHiddenSessionIds();
 	const recent: RecentSessionInfo[] = [];
 	for (const { file, stat } of await newestSessionFiles(sessionDir, "*.jsonl", storage)) {
 		if (recent.length >= limit) break;
 		const id = useIndex ? sessionIdFromSessionPath(file) : undefined;
+		if (id && hiddenIds.has(id)) continue;
 		const indexed = id ? lookupSessionTitle(id) : undefined;
 		if (indexed) {
 			recent.push({ path: file, name: indexed, timeAgo: formatTimeAgo(stat.mtime) });
@@ -1044,13 +1058,15 @@ export async function fuzzyMatchResumableSessions(
 		}
 	};
 	const localSessionDir = sessionDir ?? computeDefaultSessionDir(cwd, storage);
-	visit(await listSessions(localSessionDir, storage), "local");
+	const hiddenIds = await loadHiddenSessionIds();
+	visit(filterOutHiddenSessions(await listSessions(localSessionDir, storage), hiddenIds), "local");
 	// listAllSessions includes the local directory too; skip sessions already
 	// matched so one session never appears as two candidates.
 	const seenPaths = new Set(matches.map(m => m.session.path));
-	const globalSessions = await listAllSessions(storage);
 	visit(
-		globalSessions.filter(session => !seenPaths.has(session.path)),
+		filterOutHiddenSessions(await listAllSessions(storage), hiddenIds).filter(
+			session => !seenPaths.has(session.path),
+		),
 		"global",
 	);
 	matches.sort((a, b) => a.score - b.score || b.session.modified.getTime() - a.session.modified.getTime());

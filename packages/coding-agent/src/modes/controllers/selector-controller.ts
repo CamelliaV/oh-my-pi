@@ -75,6 +75,7 @@ import type { SessionEntry, SessionTreeNode } from "../../session/session-entrie
 import { readSessionInfo, type SessionInfo } from "../../session/session-listing";
 import { SessionManager } from "../../session/session-manager";
 import { loadPinnedSessionIds } from "../../session/session-pins";
+import { hideSession, unhideSession } from "../../session/session-hides";
 import { FileSessionStorage } from "../../session/session-storage";
 import { createCommandHistorySource } from "../../session/shell-history";
 import { listLogoutAccounts, logoutCredential } from "../../slash-commands/helpers/logout";
@@ -1817,11 +1818,14 @@ export class SelectorController {
 		return result;
 	}
 
-	async showSessionSelector(source?: ForeignSessionSource, onSelect?: SessionPickHandler): Promise<void> {
+	async showSessionSelector(
+		source?: ForeignSessionSource,
+		onSelect?: SessionPickHandler,
+		options?: { initialScope?: "hidden" },
+	): Promise<void> {
 		let sessions: SessionInfo[];
 		let onSelectSession: (session: SessionInfo) => Promise<boolean>;
 		let selectorOptions: SessionSelectorOptions<SessionInfo>;
-
 		if (source) {
 			const sourceName = foreignSessionSourceName(source);
 			const store = createForeignSessionStore(source);
@@ -1894,6 +1898,14 @@ export class SelectorController {
 									);
 								}
 							},
+							onHide: async (session: SessionInfo) => {
+								await hideSession(session.id);
+								return true;
+							},
+							onUnhide: async (session: SessionInfo) => {
+								await unhideSession(session.id);
+								return true;
+							},
 						}
 					: {
 							title: "Select a Session to Consult",
@@ -1919,6 +1931,7 @@ export class SelectorController {
 				},
 				historyMatcher,
 				loadAllSessions: () => SessionManager.listAllForPicker(),
+				loadHiddenSessions: () => SessionManager.listHiddenForPicker(this.ctx.sessionManager.getSessionDir()),
 				pinnedIds,
 				// Live getter so detach/newSession stays accurate; tolerant of partial
 				// contexts and in-memory sessions (undefined file means no marker).
@@ -1971,6 +1984,7 @@ export class SelectorController {
 			},
 			{
 				...selectorOptions,
+				...(options?.initialScope ? { initialScope: options.initialScope } : {}),
 				getTerminalRows: () => this.ctx.ui.terminal.rows,
 				fillHeight: true,
 			},

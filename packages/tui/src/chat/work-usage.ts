@@ -42,6 +42,17 @@ export interface WorkUsageSnapshot {
 	/** Raw weighted-cache numerator and denominator for higher-level aggregation. */
 	cacheReadTokens: number;
 	cachePromptTokens: number;
+	/** Last request's prompt size: input + cacheRead + cacheWrite. */
+	contextTokens: number;
+	/** Last request's cached prefix (cacheRead), paired with {@link contextTokens}. */
+	contextCacheRead: number;
+	/** Last request's new prompt tokens: input + cacheWrite. */
+	contextNewInput: number;
+	/** Last request's cache hit rate; null when its read telemetry was not reported. */
+	contextCacheRate: number | null;
+	/** Largest prompt seen in this work, paired with {@link peakCacheRead}. */
+	peakContextTokens: number;
+	peakCacheRead: number;
 	actualCost: number;
 	actualCostRequests: number;
 	estimatedCost: number;
@@ -105,9 +116,6 @@ function addUsage(aggregate: Usage, usage: Usage): void {
 	aggregate.cost.cacheRead += usage.cost.cacheRead;
 	aggregate.cost.cacheWrite += usage.cost.cacheWrite;
 	aggregate.cost.total += usage.cost.total;
-	if (usage.contextTokens !== undefined) {
-		aggregate.contextTokens = Math.max(aggregate.contextTokens ?? 0, usage.contextTokens);
-	}
 	if (usage.reasoningTokens !== undefined) {
 		aggregate.reasoningTokens = (aggregate.reasoningTokens ?? 0) + usage.reasoningTokens;
 	}
@@ -173,6 +181,12 @@ export class WorkUsageAccumulator {
 	#cachePromptTokens = 0;
 	#cacheReportedRequests = 0;
 	#cacheEligibleRequests = 0;
+	#contextTokens = 0;
+	#contextCacheRead = 0;
+	#contextNewInput = 0;
+	#contextCacheRate: number | null = null;
+	#peakContextTokens = 0;
+	#peakCacheRead = 0;
 	#actualCost = 0;
 	#actualCostRequests = 0;
 	#estimatedCost = 0;
@@ -222,17 +236,29 @@ export class WorkUsageAccumulator {
 		appendInterval(this.#modelIntervals, requestStart, requestEnd);
 
 		const promptTokens = usage.input + usage.cacheRead + usage.cacheWrite;
+		// Cache-write telemetry must not gate the read rate: Anthropic-wire
+		// endpoints that omit cache_creation_input_tokens (implicit prefix
+		// caching — new-api relays serving GLM) still report every read
+		// token, so input+cacheRead is the whole prompt there. Absent
+		// telemetry plus a nonzero cacheRead also proves the read bucket
+		// was reported, covering messages persisted before the annotation
+		// existed; an explicit "unavailable" stays excluded.
+		const cacheReadReported =
+			usage.cacheTelemetry?.read === "reported" || (usage.cacheTelemetry === undefined && usage.cacheRead > 0);
 		if (promptTokens > 0) {
+			// Stock, not flow: a request's cache read is the whole cached prefix,
+			// so the work keeps the last request's prompt (current context) and the
+			// largest prompt seen. Summing these across requests would report the
+			// re-read volume (N × context), not how much context is in use.
+			this.#contextTokens = promptTokens;
+			this.#contextCacheRead = usage.cacheRead;
+			this.#contextNewInput = usage.input + usage.cacheWrite;
+			this.#contextCacheRate = cacheReadReported ? usage.cacheRead / promptTokens : null;
+			if (promptTokens >= this.#peakContextTokens) {
+				this.#peakContextTokens = promptTokens;
+				this.#peakCacheRead = usage.cacheRead;
+			}
 			this.#cacheEligibleRequests++;
-			// Cache-write telemetry must not gate the read rate: Anthropic-wire
-			// endpoints that omit cache_creation_input_tokens (implicit prefix
-			// caching — new-api relays serving GLM) still report every read
-			// token, so input+cacheRead is the whole prompt there. Absent
-			// telemetry plus a nonzero cacheRead also proves the read bucket
-			// was reported, covering messages persisted before the annotation
-			// existed; an explicit "unavailable" stays excluded.
-			const cacheReadReported =
-				usage.cacheTelemetry?.read === "reported" || (usage.cacheTelemetry === undefined && usage.cacheRead > 0);
 			if (cacheReadReported) {
 				this.#cacheReportedRequests++;
 				this.#cacheReadTokens += usage.cacheRead;
@@ -307,6 +333,12 @@ export class WorkUsageAccumulator {
 			cacheEligibleRequests: this.#cacheEligibleRequests,
 			cacheReadTokens: this.#cacheReadTokens,
 			cachePromptTokens: this.#cachePromptTokens,
+			contextTokens: this.#contextTokens,
+			contextCacheRead: this.#contextCacheRead,
+			contextNewInput: this.#contextNewInput,
+			contextCacheRate: this.#contextCacheRate,
+			peakContextTokens: this.#peakContextTokens,
+			peakCacheRead: this.#peakCacheRead,
 			actualCost: this.#actualCost,
 			actualCostRequests: this.#actualCostRequests,
 			estimatedCost: this.#estimatedCost,
@@ -324,6 +356,12 @@ export class WorkUsageAccumulator {
 		this.#cachePromptTokens = 0;
 		this.#cacheReportedRequests = 0;
 		this.#cacheEligibleRequests = 0;
+		this.#contextTokens = 0;
+		this.#contextCacheRead = 0;
+		this.#contextNewInput = 0;
+		this.#contextCacheRate = null;
+		this.#peakContextTokens = 0;
+		this.#peakCacheRead = 0;
 		this.#actualCost = 0;
 		this.#actualCostRequests = 0;
 		this.#estimatedCost = 0;
@@ -352,6 +390,17 @@ export class SessionUsageAccumulator {
 		addUsage(usage, work.usage);
 		const cacheReadTokens = (previous?.cacheReadTokens ?? 0) + work.cacheReadTokens;
 		const cachePromptTokens = (previous?.cachePromptTokens ?? 0) + work.cachePromptTokens;
+		// Current context is the last request of the last work that had a prompt;
+		// the peak is the largest prompt seen anywhere in the branch.
+		const hasContext = work.contextTokens > 0;
+		const contextTokens = hasContext ? work.contextTokens : (previous?.contextTokens ?? 0);
+		const contextCacheRead = hasContext ? work.contextCacheRead : (previous?.contextCacheRead ?? 0);
+		const contextNewInput = hasContext ? work.contextNewInput : (previous?.contextNewInput ?? 0);
+		const contextCacheRate = hasContext ? work.contextCacheRate : (previous?.contextCacheRate ?? null);
+		const previousPeak = previous?.peakContextTokens ?? 0;
+		const peakContextTokens = Math.max(previousPeak, work.peakContextTokens);
+		const peakCacheRead =
+			work.peakContextTokens >= previousPeak ? work.peakCacheRead : (previous?.peakCacheRead ?? 0);
 		const snapshot: SessionUsageSnapshot = {
 			usage,
 			works: (previous?.works ?? 0) + 1,
@@ -367,6 +416,12 @@ export class SessionUsageAccumulator {
 			cacheEligibleRequests: (previous?.cacheEligibleRequests ?? 0) + work.cacheEligibleRequests,
 			cacheReadTokens,
 			cachePromptTokens,
+			contextTokens,
+			contextCacheRead,
+			contextNewInput,
+			contextCacheRate,
+			peakContextTokens,
+			peakCacheRead,
 			actualCost: (previous?.actualCost ?? 0) + work.actualCost,
 			actualCostRequests: (previous?.actualCostRequests ?? 0) + work.actualCostRequests,
 			estimatedCost: (previous?.estimatedCost ?? 0) + work.estimatedCost,
@@ -461,10 +516,14 @@ function formatUsageAggregateRow(snapshot: WorkUsageSnapshot, label: "WORK" | "S
 		`tool ${formatDuration(snapshot.toolMs)}`,
 		`wait ${formatDuration(snapshot.waitMs)}`,
 	].join("  ");
+	const input = usage.input + usage.cacheWrite;
+	const reasoning = usage.reasoningTokens ?? 0;
+	const visibleOutput = Math.max(0, usage.output - reasoning);
 	const tokens = [
-		`${theme.icon.input} ${formatNumber(usage.input)}`,
-		`${theme.icon.output} ${formatNumber(usage.output)}`,
-		`${theme.icon.cache} R${formatNumber(usage.cacheRead)}/W${formatNumber(usage.cacheWrite)}`,
+		`${theme.icon.input} in Σ${formatNumber(input)}`,
+		reasoning > 0
+			? `${theme.icon.output} out Σ${formatNumber(usage.output)} = vis ${formatNumber(visibleOutput)} + reason ${formatNumber(reasoning)}`
+			: `${theme.icon.output} out Σ${formatNumber(usage.output)}`,
 	].join("  ");
 	const headerParts = [
 		theme.fg("accent", theme.bold(`${theme.icon.time} ${label}`)),
@@ -472,9 +531,6 @@ function formatUsageAggregateRow(snapshot: WorkUsageSnapshot, label: "WORK" | "S
 		theme.fg("accent", `${snapshot.requests} req`),
 	];
 	const detailParts = [theme.fg("userMessageText", tokens)];
-	if (usage.reasoningTokens !== undefined) {
-		detailParts.push(theme.fg("muted", `reason ${formatNumber(usage.reasoningTokens)}`));
-	}
 	if (usage.orchestration) {
 		detailParts.push(
 			theme.fg(
@@ -483,11 +539,28 @@ function formatUsageAggregateRow(snapshot: WorkUsageSnapshot, label: "WORK" | "S
 			),
 		);
 	}
-	const cacheRate = snapshot.cacheRate === null ? "N/A" : `${(snapshot.cacheRate * 100).toFixed(1)}%`;
-	const cacheColor = snapshot.cacheRate === null ? "muted" : snapshot.cacheRate > 0 ? "success" : "warning";
-	detailParts.push(
-		theme.fg(cacheColor, `cache ${cacheRate} (${snapshot.cacheReportedRequests}/${snapshot.cacheEligibleRequests})`),
-	);
+	const coverage = `${snapshot.cacheReportedRequests}/${snapshot.cacheEligibleRequests}`;
+	const currentRate = snapshot.contextCacheRate;
+	const averageRate = snapshot.cacheRate;
+	const currentText = currentRate === null ? "N/A" : `${(currentRate * 100).toFixed(1)}%`;
+	const averageText = averageRate === null ? "N/A" : `${(averageRate * 100).toFixed(1)}%`;
+	const currentMatchesAverage =
+		currentRate !== null && (averageRate === null || Math.abs(averageRate - currentRate) < 0.00005);
+	const cacheColor = currentRate === null ? "muted" : currentRate > 0 ? "success" : "warning";
+	const peakSuffix =
+		snapshot.contextTokens > 0 && snapshot.peakContextTokens > snapshot.contextTokens
+			? ` peak ${formatNumber(snapshot.peakContextTokens)}`
+			: "";
+	let cacheText: string;
+	if (snapshot.contextTokens > 0) {
+		cacheText = `ctx ${formatNumber(snapshot.contextTokens)}${peakSuffix} = in ${formatNumber(snapshot.contextNewInput)} + cache ${formatNumber(snapshot.contextCacheRead)}`;
+		cacheText += currentMatchesAverage
+			? ` (${currentText}, ${coverage})`
+			: ` (cur ${currentText})  avg ${averageText} (${coverage})`;
+	} else {
+		cacheText = `cache N/A (${coverage})`;
+	}
+	detailParts.push(theme.fg(cacheColor, cacheText));
 	if (snapshot.actualCostRequests > 0) {
 		detailParts.push(theme.fg("success", `${formatCost(snapshot.actualCost)} actual`));
 	}
@@ -505,9 +578,9 @@ export function formatWorkUsageRow(snapshot: WorkUsageSnapshot): string {
 	return formatUsageAggregateRow(snapshot, "WORK");
 }
 
-/** Format cumulative branch totals as one compact line for the user-input card. */
+/** Format cumulative branch totals as two lines (header + detail) for the user-input card. */
 export function formatSessionUsageRow(snapshot: SessionUsageSnapshot): string {
-	return formatUsageAggregateRow(snapshot, "SESSION").replace("\n", "  ");
+	return formatUsageAggregateRow(snapshot, "SESSION");
 }
 
 /** Render the completed work total with prompt-style accent chrome. */

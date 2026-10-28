@@ -948,6 +948,14 @@ const timeSpentSegment: StatusLineSegment = {
  * first billed request; a resumed session shows its full prior totals and
  * keeps accumulating — the counters belong to the session, not the machine.
  */
+function formatSessionUsageRateLabel(currentRate: number | null, avgRate: number | null): string {
+	if (currentRate !== null && avgRate !== null && Math.abs(avgRate - currentRate) >= 0.005) {
+		return `cur ${(currentRate * 100).toFixed(1)}%, avg ${(avgRate * 100).toFixed(1)}%`;
+	}
+	const primary = currentRate ?? avgRate;
+	return primary !== null ? `${(primary * 100).toFixed(1)}%` : "";
+}
+
 const sessionUsageSegment: StatusLineSegment = {
 	id: "session_usage",
 	render(ctx) {
@@ -962,31 +970,38 @@ const sessionUsageSegment: StatusLineSegment = {
 		if (opts.time !== false && activeMs > 0) {
 			parts.push(withIcon(theme.icon.time, statusValue(ctx, formatDuration(activeMs))));
 		}
+		const inputTokens = snapshot.usage.input + snapshot.usage.cacheWrite;
 		if (opts.tokens !== false) {
-			if (snapshot.usage.input > 0) {
+			if (inputTokens > 0) {
 				parts.push(
 					theme.fg(
 						"statusLineSpend",
-						withIcon(theme.icon.input, statusValue(ctx, formatNumber(snapshot.usage.input))),
+						withIcon(theme.icon.input, statusValue(ctx, `in Σ${formatNumber(inputTokens)}`)),
 					),
 				);
 			}
 			if (snapshot.usage.output > 0) {
+				const reasoning = snapshot.usage.reasoningTokens ?? 0;
+				const visibleOutput = Math.max(0, snapshot.usage.output - reasoning);
+				const outputText =
+					reasoning > 0
+						? `out Σ${formatNumber(snapshot.usage.output)} = vis ${formatNumber(visibleOutput)} + reason ${formatNumber(reasoning)}`
+						: `out Σ${formatNumber(snapshot.usage.output)}`;
+				parts.push(theme.fg("statusLineOutput", withIcon(theme.icon.output, statusValue(ctx, outputText))));
+			}
+			if (snapshot.contextTokens > 0) {
+				const rateLabel = formatSessionUsageRateLabel(snapshot.contextCacheRate, snapshot.cacheRate);
+				const cachePart =
+					opts.cache !== false && rateLabel.length > 0
+						? ` = in ${formatNumber(snapshot.contextNewInput)} + cache ${formatNumber(snapshot.contextCacheRead)} (${rateLabel})`
+						: "";
 				parts.push(
 					theme.fg(
-						"statusLineOutput",
-						withIcon(theme.icon.output, statusValue(ctx, formatNumber(snapshot.usage.output))),
+						"statusLineContext",
+						statusValue(ctx, `ctx ${formatNumber(snapshot.contextTokens)}${cachePart}`),
 					),
 				);
 			}
-		}
-		if (opts.cache !== false && snapshot.cacheRate !== null) {
-			parts.push(
-				theme.fg(
-					"statusLineSpend",
-					withIcon(theme.icon.cache, statusValue(ctx, `${(snapshot.cacheRate * 100).toFixed(1)}%`)),
-				),
-			);
 		}
 		// Null-not-zero: tokens without a measured duration must not imply a
 		// zero throughput; the rate stays hidden instead.
@@ -1013,12 +1028,26 @@ const sessionUsageSegment: StatusLineSegment = {
 		const spans: TspSpan[] = [];
 		const activeMs = snapshot.modelMs + snapshot.toolMs;
 		if (opts.time !== false && activeMs > 0) spans.push(span(formatDuration(activeMs), "dim"));
+		const inputTokens = snapshot.usage.input + snapshot.usage.cacheWrite;
 		if (opts.tokens !== false) {
-			if (snapshot.usage.input > 0) spans.push(span(formatNumber(snapshot.usage.input), "statusLineSpend"));
-			if (snapshot.usage.output > 0) spans.push(span(formatNumber(snapshot.usage.output), "statusLineOutput"));
-		}
-		if (opts.cache !== false && snapshot.cacheRate !== null) {
-			spans.push(span(`${(snapshot.cacheRate * 100).toFixed(1)}%`, "statusLineSpend"));
+			if (inputTokens > 0) spans.push(span(`in Σ${formatNumber(inputTokens)}`, "statusLineSpend"));
+			if (snapshot.usage.output > 0) {
+				const reasoning = snapshot.usage.reasoningTokens ?? 0;
+				const visibleOutput = Math.max(0, snapshot.usage.output - reasoning);
+				const outputText =
+					reasoning > 0
+						? `out Σ${formatNumber(snapshot.usage.output)} = vis ${formatNumber(visibleOutput)} + reason ${formatNumber(reasoning)}`
+						: `out Σ${formatNumber(snapshot.usage.output)}`;
+				spans.push(span(outputText, "statusLineOutput"));
+			}
+			if (snapshot.contextTokens > 0) {
+				const rateLabel = formatSessionUsageRateLabel(snapshot.contextCacheRate, snapshot.cacheRate);
+				const cachePart =
+					opts.cache !== false && rateLabel.length > 0
+						? ` = in ${formatNumber(snapshot.contextNewInput)} + cache ${formatNumber(snapshot.contextCacheRead)} (${rateLabel})`
+						: "";
+				spans.push(span(`ctx ${formatNumber(snapshot.contextTokens)}${cachePart}`, "statusLineContext"));
+			}
 		}
 		// Null-not-zero, same as render: no measured duration ⇒ no rate span.
 		const tokensPerSecond =

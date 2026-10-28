@@ -1426,19 +1426,28 @@ export class Editor implements Component, Focusable {
 		// on the borderless shapes (`band`, `borderless`, `rule`, …). The prompt
 		// gutter is blanked rather than repeated: its cue (`╰─ `) belongs to the
 		// input line, but its cells still belong to the content budget.
-		if (this.#leadingRowsProvider) {
-			const leadingRows = this.#leadingRowsProvider(width, contentAreaWidth);
+		const detailRow = topBorder?.detail;
+		if (detailRow !== undefined || this.#leadingRowsProvider) {
+			const leadingRows = [
+				...(detailRow !== undefined ? [detailRow] : []),
+				...(this.#leadingRowsProvider?.(width, contentAreaWidth) ?? []),
+			];
 			const gutterPad = padding(this.#getPromptGutterWidth(width, paddingX));
-			for (const row of leadingRows) {
+			for (const [rowIndex, row] of leadingRows.entries()) {
 				const rowWidth = visibleWidth(row);
 				const overflows = rowWidth > contentAreaWidth;
 				const text = overflows ? truncateToWidth(row, contentAreaWidth) : row;
 				const textWidth = overflows ? visibleWidth(text) : rowWidth;
+				// The status detail row sits at the input's right edge; attachment
+				// rows (draft images) keep their normal left alignment.
+				const isStatusDetail = detailRow !== undefined && rowIndex === 0;
+				const leftPad = isStatusDetail ? Math.max(0, contentAreaWidth - textWidth) : 0;
+				const rowText = leftPad > 0 ? padding(leftPad) + text : text;
 				result.push(
 					...style.renderRow({
 						...chromeCtx,
-						text,
-						pad: padding(Math.max(0, contentAreaWidth - textWidth)),
+						text: rowText,
+						pad: isStatusDetail ? "" : padding(Math.max(0, contentAreaWidth - textWidth)),
 						gutter: gutterPad,
 						isLastRow: false,
 						cursorOverflow: 0,

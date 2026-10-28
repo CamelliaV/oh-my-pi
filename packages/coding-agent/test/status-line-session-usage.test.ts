@@ -57,6 +57,12 @@ const SESSION: SessionUsageSnapshot = {
 	cacheEligibleRequests: 23_042,
 	cacheReadTokens: 2_129_196_703,
 	cachePromptTokens: 2_322_258_445,
+	contextTokens: 900_000,
+	contextCacheRead: 824_400,
+	contextNewInput: 75_600,
+	contextCacheRate: 0.916,
+	peakContextTokens: 900_000,
+	peakCacheRead: 824_400,
 	actualCost: 0,
 	actualCostRequests: 0,
 	estimatedCost: 0,
@@ -113,12 +119,27 @@ describe("session_usage status-line segment", () => {
 		expect(result.visible).toBe(true);
 		// Model + tool time: 589,862,917 + 41,000,000 ms = 7d7h.
 		expect(text).toContain("7d7h");
-		expect(text).toContain("269M");
-		expect(text).toContain("9.5M");
-		expect(text).toContain("91.6%");
+		expect(text).toContain("in Σ271M");
+		expect(text).toContain("out Σ9.5M");
+		expect(text).toContain("ctx 900K = in 76K + cache 824K (91.6%)");
+
 		expect(text).toContain("16.2 tok/s");
 		// Requests are off by default — the segment is meant to be compact.
 		expect(text).not.toContain("23K");
+	});
+
+	it("shows cur and avg rates when current request diverges from session average", () => {
+		const text = plain(
+			renderSegment(
+				"session_usage",
+				ctxWith({
+					...SESSION,
+					cacheRate: 0.567,
+					contextCacheRate: 0.936,
+				}),
+			).content,
+		);
+		expect(text).toContain("cur 93.6%, avg 56.7%");
 	});
 
 	it("drops individual parts through segment options", () => {
@@ -141,7 +162,9 @@ describe("session_usage status-line segment", () => {
 	});
 
 	it("omits the cache rate when no provider ever reported the read bucket", () => {
-		const text = plain(renderSegment("session_usage", ctxWith({ ...SESSION, cacheRate: null })).content);
+		const text = plain(
+			renderSegment("session_usage", ctxWith({ ...SESSION, cacheRate: null, contextCacheRate: null })).content,
+		);
 		expect(text).not.toContain("%");
 		expect(text).toContain("16.2 tok/s");
 	});
@@ -154,10 +177,11 @@ describe("session_usage status-line segment", () => {
 				"session_usage",
 				ctxWith({
 					...SESSION,
-					usage: { ...SESSION.usage, input: 500, output: 100 },
+					usage: { ...SESSION.usage, input: 500, output: 100, cacheWrite: 0 },
 					modelMs: 0,
 					toolMs: 0,
 					cacheRate: null,
+					contextCacheRate: null,
 				}),
 			).content,
 		);

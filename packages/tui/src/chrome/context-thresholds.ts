@@ -76,7 +76,8 @@ export function getContextMeterThresholds(contextWindow: number): { warn: number
 }
 
 /**
- * Format context usage as `<percent>%/<window>` when the model window is known.
+ * Format context usage as `<percent>% · <used>/<window>` when the model window
+ * is known, so the absolute context size is visible next to the gauge.
  * Unknown windows render as `<tokens>/?`, because `0.0%/0` suggests a real
  * empty context instead of missing provider metadata.
  */
@@ -89,7 +90,8 @@ export function formatContextUsage(
 		return `${formatNumber(usedTokens ?? 0)}/?`;
 	}
 	const pct = contextPercent === null || contextPercent === undefined ? "?" : `${contextPercent.toFixed(1)}%`;
-	return `${pct}/${formatNumber(contextWindow)}`;
+	const windowText = formatNumber(contextWindow);
+	return usedTokens === undefined ? `${pct}/${windowText}` : `${pct} · ${formatNumber(usedTokens)}/${windowText}`;
 }
 
 /** Chrome tone for a context-usage level; undefined while usage is normal. */

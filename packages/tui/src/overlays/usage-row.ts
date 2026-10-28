@@ -114,7 +114,13 @@ function usageThroughput(usage: Usage, durationMs: number | undefined): number |
 }
 
 /** Every metric except throughput, which the native row declares as a `rate`. */
-function usageRowBaseSpecs(usage: Usage, ttftMs?: number, timestamp?: number, turnElapsedMs?: number): MetricSpec[] {
+function usageRowBaseSpecs(
+	usage: Usage,
+	durationMs?: number,
+	ttftMs?: number,
+	timestamp?: number,
+	turnElapsedMs?: number,
+): MetricSpec[] {
 	const totalInput = usage.input + usage.cacheWrite;
 	const specs: MetricSpec[] = [];
 	// Lead with the turn's local wall-clock time (down to the second), log-line style.
@@ -134,7 +140,12 @@ function usageRowBaseSpecs(usage: Usage, ttftMs?: number, timestamp?: number, tu
 	if (usage.cacheRead > 0) {
 		specs.push({ leading: theme.icon.cache, value: formatNumber(usage.cacheRead) });
 	}
-	if (ttftMs && ttftMs > 0) {
+	// The clock reports the whole request duration, the same denominator as
+	// throughput; TTFT stays in the native tooltip. Showing TTFT next to a
+	// throughput computed over the full duration made output/time look wrong.
+	if (durationMs && durationMs > 0) {
+		specs.push({ leading: theme.icon.time, value: `${(durationMs / 1000).toFixed(1)}s` });
+	} else if (ttftMs && ttftMs > 0) {
 		specs.push({ leading: theme.icon.time, value: `${(ttftMs / 1000).toFixed(1)}s` });
 	}
 	return specs;
@@ -147,7 +158,7 @@ function usageRowSpecs(
 	timestamp?: number,
 	turnElapsedMs?: number,
 ): MetricSpec[] {
-	const specs = usageRowBaseSpecs(usage, ttftMs, timestamp, turnElapsedMs);
+	const specs = usageRowBaseSpecs(usage, durationMs, ttftMs, timestamp, turnElapsedMs);
 	const tokPerSec = usageThroughput(usage, durationMs);
 	if (tokPerSec !== undefined) {
 		specs.push({ leading: theme.icon.throughput, value: `${tokPerSec.toFixed(1)}/s` });

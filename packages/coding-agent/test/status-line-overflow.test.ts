@@ -347,3 +347,59 @@ describe("overflow: path survives before model", () => {
 		expect(rendered).not.toContain("MODEL_SHOULD_DROP");
 	});
 });
+
+describe("overflow: session usage moves to the second status row", () => {
+	it("keeps the metrics off the crowded top row", () => {
+		const branch = [
+			{
+				type: "message",
+				message: { role: "user", content: [{ type: "text", text: "hi" }], timestamp: 1_000, attribution: "user" },
+			},
+			{
+				type: "message",
+				message: {
+					role: "assistant",
+					content: [{ type: "text", text: "ok" }],
+					timestamp: 1_100,
+					duration: 100,
+					usage: {
+						input: 1_000,
+						output: 5_000,
+						cacheRead: 50_000,
+						cacheWrite: 0,
+						totalTokens: 56_000,
+						reasoningTokens: 0,
+						cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+						costTelemetry: { source: "catalog", estimatedTotal: 0 },
+						cacheTelemetry: { read: "reported", write: "not-applicable" },
+					},
+				},
+			},
+		];
+		const session = createStatusLineSession("A deliberately long session title that cannot fit", "MODEL");
+		const manager = (session as unknown as { sessionManager: Record<string, unknown> }).sessionManager;
+		manager.getSessionId = () => "overflow-session";
+		manager.getBranch = () => branch;
+
+		const component = statusLines.track(new StatusLineComponent(session, statusLineHost));
+		component.updateSettings({
+			preset: "custom",
+			leftSegments: ["pi", "model", "path"],
+			rightSegments: ["session_name", "session_usage", "context_pct"],
+			separator: "powerline-thin",
+			sessionAccent: false,
+			transparent: true,
+			contextLine: "embedded",
+			segmentOptions: { model: { showThinkingLevel: false } },
+		});
+
+		// The box top border keeps model/path/gauge chrome; session usage is its
+		// own full-width row, so it never competes with the gauge for cells.
+		const border = component.getTopBorder(100);
+		expect(stripAnsi(border.content)).not.toContain("in Σ1K");
+		const detail = stripAnsi(border.detail ?? "");
+		expect(detail).toContain("in Σ1K");
+		expect(detail).toContain("out Σ5K");
+		expect(detail).toContain("ctx 51K = in 1K + cache 50K (98.0%)");
+	});
+});

@@ -10,6 +10,7 @@ import type { CompactionRequestUsage } from "@oh-my-pi/pi-agent-core/compaction"
 import { resetSettingsForTest, Settings, settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import { ChatTranscriptBuilder } from "@oh-my-pi/pi-tui/chat/chat-transcript-builder";
 import { ReadToolGroupComponent } from "@oh-my-pi/pi-tui/chat/read-tool-group";
+import { isUsageRowBlock } from "@oh-my-pi/pi-tui/overlays/usage-row";
 import { initTheme } from "@oh-my-pi/pi-tui/theme";
 import type { InteractiveModeContext } from "@oh-my-pi/pi-coding-agent/modes/types";
 import { UiHelpers } from "@oh-my-pi/pi-coding-agent/modes/utils/ui-helpers";
@@ -379,7 +380,9 @@ describe("ChatTranscriptBuilder token-usage row timestamp", () => {
 		expect(rendered).toContain(USAGE_TS_LABEL);
 		expect(rendered).toContain(SECOND_USAGE_TS_LABEL);
 		expect(
-			builder.container.children.filter(component => component.render(120).join("\n").includes(USAGE_LABEL)),
+			builder.container.children.filter(
+				component => !isUsageRowBlock(component) && component.render(120).join("\n").includes(USAGE_LABEL),
+			),
 		).toEqual([groups[0]!]);
 	});
 });
@@ -462,9 +465,53 @@ describe("work usage accounting", () => {
 		expect(snapshot.actualCost).toBeCloseTo(0.2, 8);
 		expect(snapshot.estimatedCost).toBeCloseTo(0.3, 8);
 		const row = formatWorkUsageRow(snapshot);
-		expect(row).toContain("cache 80.0% (1/2)");
+		expect(row).toContain("ctx 1K = in 1K + cache 0 (cur N/A)  avg 80.0% (1/2)");
 		expect(row).toContain("$0.20 actual");
 		expect(row).toContain("~$0.30 catalog");
+	});
+
+	it("keeps context and cache as the last request's stock while input/output stay cumulative", () => {
+		const usage = new WorkUsageAccumulator();
+		usage.begin(1_000);
+		usage.add(
+			workAssistant({
+				timestamp: 1_100,
+				duration: 100,
+				input: 50,
+				cacheRead: 50,
+				cacheWrite: 0,
+				cacheTelemetry: { read: "reported", write: "not-applicable" },
+				cost: 0.1,
+			}),
+		);
+		usage.add(
+			workAssistant({
+				timestamp: 1_300,
+				duration: 100,
+				input: 100,
+				cacheRead: 200,
+				cacheWrite: 0,
+				cacheTelemetry: { read: "reported", write: "not-applicable" },
+				cost: 0.2,
+			}),
+		);
+
+		const snapshot = usage.flush()!;
+		// Flows stay cumulative.
+		expect(snapshot.usage.input).toBe(150);
+		expect(snapshot.usage.cacheRead).toBe(250);
+		// Context and cache reads are the last request's stock, not the sum.
+		expect(snapshot.contextTokens).toBe(300);
+		expect(snapshot.contextCacheRead).toBe(200);
+		expect(snapshot.contextCacheRate).toBeCloseTo(200 / 300, 8);
+		expect(snapshot.peakContextTokens).toBe(300);
+		expect(snapshot.cacheRate).toBeCloseTo(250 / 400, 8);
+
+		const row = formatWorkUsageRow(snapshot);
+		expect(row).toContain("in Σ150");
+		expect(row).toContain("out Σ20");
+		expect(row).toContain("ctx 300 = in 100 + cache 200 (cur 66.7%)  avg 62.5% (2/2)");
+		expect(row).not.toContain("cache 250");
 	});
 
 	it("shows unavailable cache and cost telemetry instead of measured zero", () => {
@@ -485,7 +532,7 @@ describe("work usage accounting", () => {
 		expect(snapshot.cacheReportedRequests).toBe(0);
 		expect(snapshot.cacheEligibleRequests).toBe(1);
 		expect(snapshot.unknownCostRequests).toBe(1);
-		expect(formatWorkUsageRow(snapshot)).toContain("cache N/A (0/1)");
+		expect(formatWorkUsageRow(snapshot)).toContain("ctx 100 = in 100 + cache 0 (cur N/A)  avg N/A (0/1)");
 		expect(formatWorkUsageRow(snapshot)).toContain("cost N/A (1)");
 	});
 
@@ -507,7 +554,7 @@ describe("work usage accounting", () => {
 		const snapshot = usage.flush()!;
 		expect(snapshot.cacheRate).toBe(41_024 / (4_547 + 41_024));
 		expect(snapshot.cacheReportedRequests).toBe(1);
-		expect(formatWorkUsageRow(snapshot)).toContain("cache 90.0% (1/1)");
+		expect(formatWorkUsageRow(snapshot)).toContain("ctx 46K = in 4.5K + cache 41K (90.0%, 1/1)");
 	});
 
 	it("counts persisted pre-telemetry requests with nonzero cache reads", () => {
@@ -668,9 +715,10 @@ describe("work usage accounting", () => {
 			.render(160)
 			.join("\n");
 		const lines = Bun.stripANSI(rendered).split("\n");
-		expect(lines.findIndex(line => line.includes("next request"))).toBeLessThan(
-			lines.findIndex(line => line.includes("SESSION")),
-		);
+		const sessionLine = lines.findIndex(line => line.includes("SESSION"));
+		expect(lines.findIndex(line => line.includes("next request"))).toBeLessThan(sessionLine);
+		// The SESSION row keeps its detail on a second line instead of one crowded row.
+		expect(lines[sessionLine + 1]).toContain("in Σ");
 		const restored = restoreLiveSessionUsage(entries);
 		expect(restored.sessionUsage.current()?.requests).toBe(2);
 		expect(restored.workUsage.flush()?.requests).toBe(1);

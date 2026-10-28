@@ -37,6 +37,8 @@ export interface EditorTopBorder {
 	width: number;
 	/** Optional logical revision that changes independently of available width. */
 	revision?: number;
+	/** Optional second status row rendered under the top border (box composer). */
+	detail?: string;
 }
 
 /** Inputs shared by every chrome row. */

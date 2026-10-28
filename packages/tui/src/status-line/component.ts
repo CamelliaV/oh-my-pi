@@ -459,6 +459,8 @@ class StatusLineExternalInputs {
 interface CachedStatusLine {
 	content: string;
 	dimmedContent: string;
+	/** Second status row (session usage) for the box composer's top border. */
+	detail?: string;
 	width: number;
 	availableWidth: number;
 	renderRevision: number;
@@ -2977,10 +2979,12 @@ export class StatusLineComponent<TSession extends StatusLineSession = StatusLine
 
 		// The probe now belongs to the new cache entry; later probes need their own buffer.
 		this.#externalInputsProbe = new StatusLineExternalInputs();
-		const content = this.#renderStatusLine(width, layout, previewTitle, nowMs);
+		const rendered = this.#renderStatusLine(width, layout, previewTitle, nowMs);
+		const content = rendered.content;
 		const result = {
 			content,
 			dimmedContent: this.#dimWhileFocusProxied(content),
+			detail: rendered.detail !== undefined ? this.#dimWhileFocusProxied(rendered.detail) : undefined,
 			width: visibleWidth(content),
 			availableWidth: width,
 			renderRevision: this.#renderRevision,
@@ -3034,7 +3038,12 @@ export class StatusLineComponent<TSession extends StatusLineSession = StatusLine
 	 * `previewTitle` is a stand-in session title for composer previews; the
 	 * `session_name` segment renders it when the session is unnamed.
 	 */
-	#renderStatusLine(width: number, layout: StatusLineLayout, previewTitle: string | undefined, nowMs: number): string {
+	#renderStatusLine(
+		width: number,
+		layout: StatusLineLayout,
+		previewTitle: string | undefined,
+		nowMs: number,
+	): { content: string; detail?: string } {
 		const effectiveSettings = this.#resolveSettings();
 		this.#syncPricingTimer();
 		const plain = layout !== "box" && layout !== "band";
@@ -3074,7 +3083,11 @@ export class StatusLineComponent<TSession extends StatusLineSession = StatusLine
 		const sepAnsi = theme.getFgAnsi("statusLineSep");
 		const subagentBadge = this.#subagentBadgeText();
 
-		// Collect visible segment contents
+		// Collect visible segment contents. The box composer's top border gets a
+		// second row for session usage so the metrics keep full width instead of
+		// being squeezed by the context gauge.
+		const splitSessionUsage = layout === "box";
+		let detail: string | undefined;
 		const leftParts: string[] = [];
 		const leftSegIds: StatusLineSegmentId[] = [];
 		const leftSegmentIds = layout === "plain-right" ? [] : effectiveSettings.leftSegments;
@@ -3084,6 +3097,10 @@ export class StatusLineComponent<TSession extends StatusLineSession = StatusLine
 			if (layout === "band" && segId === "session_name") continue;
 			const rendered = renderSegment(segId, ctx);
 			if (rendered.visible && rendered.content) {
+				if (splitSessionUsage && segId === "session_usage") {
+					detail ??= rendered.content;
+					continue;
+				}
 				leftParts.push(rendered.content);
 				leftSegIds.push(segId);
 			}
@@ -3097,6 +3114,10 @@ export class StatusLineComponent<TSession extends StatusLineSession = StatusLine
 			if (layout === "band" && segId === "session_name") continue;
 			const rendered = renderSegment(segId, ctx);
 			if (rendered.visible && rendered.content) {
+				if (splitSessionUsage && segId === "session_usage") {
+					detail ??= rendered.content;
+					continue;
+				}
 				rightParts.push(rendered.content);
 				rightSegIds.push(segId);
 			}
@@ -3159,8 +3180,12 @@ export class StatusLineComponent<TSession extends StatusLineSession = StatusLine
 		const embeddedContextWidth = embedContext
 			? embeddedContextGaugeMinWidth(ctx.contextPercent, ctx.contextWindow)
 			: 0;
+		let collapseGaugeForSessionUsage = false;
 		const minimumGapWidth = (): number => {
 			if (!embeddedContextWidth) return left.length > 0 && right.length > 0 ? 1 : 0;
+			// Session usage (in/out/ctx/cache/rate) outranks the gauge labels:
+			// collapse the gauge to its one-cell bar before dropping the metrics.
+			if (collapseGaugeForSessionUsage) return 1;
 			// If the labels cannot coexist with the last surviving segment, fall
 			// back to the original one-cell gauge instead of dropping the entire
 			// status line. At this width the labels cannot render either way.
@@ -3190,11 +3215,40 @@ export class StatusLineComponent<TSession extends StatusLineSession = StatusLine
 					rightWidths[nameIdx] = nameWidth;
 				}
 			}
-			while (totalWidth() > topFillWidth && right.length > 0) {
-				const removedWidth = rightWidths[right.length - 1];
-				right.pop();
-				rightWidths.pop();
+			const extraRightParts = (): number => right.length - rightSegIds.length;
+			const rightPartId = (index: number): StatusLineSegmentId | undefined => {
+				const idIndex = index - extraRightParts();
+				return idIndex >= 0 ? rightSegIds[idIndex] : undefined;
+			};
+			const rightOverflowDropIndex = (): number => {
+				// Keep the session usage segment visible as long as possible: drop
+				// the elastic session title and lower-priority right segments first.
+				for (let i = right.length - 1; i >= 0; i--) {
+					if (rightPartId(i) !== "session_usage") return i;
+				}
+				return right.length - 1;
+			};
+			const dropRightPart = (): void => {
+				const dropIdx = rightOverflowDropIndex();
+				const idIndex = dropIdx - extraRightParts();
+				const removedWidth = rightWidths[dropIdx] ?? 0;
+				right.splice(dropIdx, 1);
+				rightWidths.splice(dropIdx, 1);
+				if (idIndex >= 0) rightSegIds.splice(idIndex, 1);
 				rightWidth = right.length > 0 ? rightWidth - removedWidth - rightSepWidth - 2 : 0;
+			};
+			while (totalWidth() > topFillWidth && right.length > 0) {
+				if (right.length === 1 && rightPartId(0) === "session_usage") {
+					// Session usage outranks the gauge labels and every left segment:
+					// collapse the gauge once, then let the left overflow loop shed
+					// model/cost/path before sacrificing the metrics.
+					if (!collapseGaugeForSessionUsage && embeddedContextWidth > 1) {
+						collapseGaugeForSessionUsage = true;
+						continue;
+					}
+					break;
+				}
+				dropRightPart();
 			}
 			// Shrink path before dropping left segments — path is the only elastic segment
 			const pathIdx = leftSegIds.indexOf("path");
@@ -3251,6 +3305,8 @@ export class StatusLineComponent<TSession extends StatusLineSession = StatusLine
 				leftSegIds.splice(dropIdx, 1);
 				leftWidth = left.length > 0 ? leftWidth - removedWidth - leftSepWidth - 2 : 0;
 			}
+			// Only when even the left group is gone does session usage yield.
+			while (totalWidth() > topFillWidth && right.length > 0) dropRightPart();
 		}
 
 		const renderGroup = (parts: string[], direction: "left" | "right"): string => {
@@ -3279,22 +3335,25 @@ export class StatusLineComponent<TSession extends StatusLineSession = StatusLine
 
 		const leftGroup = renderGroup(left, "left");
 		const rightGroup = renderGroup(right, "right");
-		if (!leftGroup && !rightGroup) return "";
+		if (!leftGroup && !rightGroup) return { content: "", detail };
 
 		if (topFillWidth === 0 || (plain && (left.length === 0 || right.length === 0))) {
-			return leftGroup + (leftGroup && rightGroup ? " " : "") + rightGroup;
+			return { content: leftGroup + (leftGroup && rightGroup ? " " : "") + rightGroup, detail };
 		}
 
 		const gapWidth = Math.max(1, topFillWidth - leftWidth - rightWidth);
 		if (plain) {
 			// Standalone composers: no gauge line between the groups, just air.
-			return leftGroup + padding(gapWidth) + rightGroup;
+			return { content: leftGroup + padding(gapWidth) + rightGroup, detail };
 		}
 		// Box layout: with one group absent (an unnamed session hides
 		// `session_name`, emptying the default preset's right group) the gauge
 		// runs to the border edge instead of disappearing, so embedded context
 		// labels don't fall back to a context chip until the session is titled.
-		return leftGroup + this.#buildContextGaugeFill(gapWidth, ctx, effectiveSettings, embedContext) + rightGroup;
+		return {
+			content: leftGroup + this.#buildContextGaugeFill(gapWidth, ctx, effectiveSettings, embedContext) + rightGroup,
+			detail,
+		};
 	}
 
 	/**
@@ -3525,12 +3584,16 @@ export class StatusLineComponent<TSession extends StatusLineSession = StatusLine
 		this.setComposerStyle(style);
 	}
 
-	getTopBorder(width: number, previewTitle?: string): { content: string; width: number; revision: number } {
+	getTopBorder(
+		width: number,
+		previewTitle?: string,
+	): { content: string; width: number; revision: number; detail?: string } {
 		const statusLine = this.#buildStatusLine(width, "box", previewTitle);
 		return {
 			content: statusLine.dimmedContent,
 			width: statusLine.width,
 			revision: this.#renderRevision,
+			detail: statusLine.detail,
 		};
 	}
 
@@ -3605,6 +3668,7 @@ export class StatusLineComponent<TSession extends StatusLineSession = StatusLine
 		if (attachment === "top-border") {
 			const border = this.getTopBorder(width);
 			if (border.content) lines.push(border.content);
+			if (border.detail) lines.push(border.detail);
 		} else if (attachment === "top-band") {
 			const band = this.getBandTopBorder(width);
 			if (band.content) lines.push(band.content);

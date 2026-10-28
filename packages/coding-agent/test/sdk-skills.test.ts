@@ -275,7 +275,7 @@ This skill is added after session creation.
 		expect(session.systemPrompt.join("\n")).toContain("live-custom-skill");
 	});
 
-	it("manage_skill hot-registers managed skills in the active session", async () => {
+	it("manage_skill persists managed skills for future sessions without invalidating active session prompt", async () => {
 		const originalAgentDir = getAgentDir();
 		const managedAgentDir = path.join(tempHomeDir, ".omp", "agent");
 		setAgentDir(managedAgentDir);
@@ -300,31 +300,40 @@ This skill is added after session creation.
 				action: "create",
 				name: "runtime-managed-skill",
 				description: "Created by manage_skill during the session.",
-				body: "# Runtime Managed Skill\n\nUse this immediately.",
+				body: "# Runtime Managed Skill\n\nSurfaces in future sessions.",
 			});
 
-			expect(session.skills.some(skill => skill.name === "runtime-managed-skill")).toBe(true);
-			expect(commandMetadataChanges).toBe(1);
-			expect(getActiveSkills().some(skill => skill.name === "runtime-managed-skill")).toBe(true);
-			expect(session.agent.state.systemPrompt.join("\n")).toContain("runtime-managed-skill");
-			const readSkill = session.getToolByName("read");
-			expect(readSkill).toBeDefined();
-			const readResult = await readSkill!.execute("read-managed-skill", { path: "skill://runtime-managed-skill" });
-			expect(
-				readResult.content.some(part => part.type === "text" && part.text.includes("# Runtime Managed Skill")),
-			).toBe(true);
+			// Live session prompt and active skills must NOT be mutated, preserving prefix prompt cache.
+			expect(session.skills.some(skill => skill.name === "runtime-managed-skill")).toBe(false);
+			expect(commandMetadataChanges).toBe(0);
+			expect(session.agent.state.systemPrompt.join("\n")).not.toContain("runtime-managed-skill");
 
+			// The file is written to disk under managed-skills.
+			const skillFile = path.join(managedAgentDir, "managed-skills", "runtime-managed-skill", "SKILL.md");
+			expect(await Bun.file(skillFile).exists()).toBe(true);
+
+			// A subsequent session discovers and surfaces the managed skill.
+			const nextSession = await createAgentSession({
+				cwd: tempDir,
+				agentDir: managedAgentDir,
+				sessionManager: SessionManager.inMemory(tempDir),
+				modelRegistry: sharedModelRegistry,
+				settings: createIsolatedSkillsSettings(),
+			});
+			try {
+				expect(nextSession.session.skills.some(skill => skill.name === "runtime-managed-skill")).toBe(true);
+				expect(nextSession.session.agent.state.systemPrompt.join("\n")).toContain("runtime-managed-skill");
+			} finally {
+				await nextSession.session.dispose();
+			}
+
+			// Deleting removes the on-disk file without mutating active session.
 			await manageSkill!.execute("manage-skill-delete", {
 				action: "delete",
 				name: "runtime-managed-skill",
 			});
-			expect(session.skills.some(skill => skill.name === "runtime-managed-skill")).toBe(false);
-			expect(getActiveSkills().some(skill => skill.name === "runtime-managed-skill")).toBe(false);
-			expect(session.agent.state.systemPrompt.join("\n")).not.toContain("runtime-managed-skill");
-			expect(commandMetadataChanges).toBe(2);
-			await expect(
-				readSkill!.execute("read-deleted-managed-skill", { path: "skill://runtime-managed-skill" }),
-			).rejects.toThrow(/Unknown skill/);
+			expect(await Bun.file(skillFile).exists()).toBe(false);
+			expect(commandMetadataChanges).toBe(0);
 		} finally {
 			await session.dispose();
 			unsubscribeCommandMetadata();

@@ -1411,3 +1411,26 @@ only via spawn-time env); it asserts the item metadata, the rendered
 suffix line, the read metadata block, and the filename-stamp fallback.
 `bun test test/wiki-vault.test.ts test/wiki-vault-metadata.test.ts` = 8
 pass / 0 fail.
+
+## Patch 43: `feat(prompt)` tool intent label follows the reply language (2026-10-28)
+
+The `i` intent is model-written text surfaced by tool cards, the working
+message, and job widgets. Its only model-facing language cue was one system
+prompt line prescribing "capitalized 2–6-word present-participle intent",
+which forced English regardless of the conversation language. The injected
+intent schema property carries just the description `concise intent`, and
+`renderToolExamples` uses the `…` placeholder, so no other cue biases the
+language.
+
+Fix is prompt-only: the line now asks for "a short action label in the SAME
+language as your reply to the user (2–6 words; Chinese 4–12 字)", with one
+English and one Chinese example (`"Reading model role settings"` /
+「读取模型角色设置」). No code changed; the field name, injection order, and
+`resolveToolCallIntent` resolution are untouched.
+
+Verified: `buildSystemPrompt({ intentField: "i" })` renders the new line.
+Live probes with `aistudio/gemini-3.8-flash` through both the source CLI and
+the installed `omp-patched` binary emitted Chinese intents
+(`"i":"读取 README 前五行"`, `"i":"读取 README 开头 30 行"`); the installed
+binary carries the marker (12 matches) and `--smoke-test: ok`. Applies to new
+sessions only — persisted transcripts keep the labels they recorded.

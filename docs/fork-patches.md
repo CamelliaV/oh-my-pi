@@ -1285,6 +1285,44 @@ incl. `bash`) → `/inject bash` leaves `getActiveToolNames() === ["bash"]`,
 `/inject read,notatool` errors with no mutation, `/inject --all` restores the
 16 that materialize; `bun test test/slash-commands` 236 pass.
 
+**2026-10-30 revision — additive injection, cache-safe after the first message.**
+Two defects in the original shape:
+
+1. *Replacement instead of augmentation.* `injectToolsByName` passed the
+   requested names straight to the whitelist and to `setActiveToolsByName`, so
+   `/inject read` then `/inject write` ended with `write` only. Injection is now
+   `InjectToolsMode` (`add` | `only` | `remove`): `add` unions with
+   `getEnabledToolNames()` and with the live whitelist; `only` keeps the old
+   replace semantics (`/inject --only a,b`), `remove` deselects
+   (`/inject --remove a`). The whitelist setter takes a
+   `RuntimeToolWhitelistUpdate` — a list, `undefined`, or a function of the live
+   list — so the union cannot race a concurrent reconcile and an unrestricted
+   session (`toolNames` undefined) is never narrowed by `/inject`.
+2. *Prompt rebuild broke the prompt cache.* The reconcile always forced a base
+   prompt rebuild (`#applyActiveToolsByName(..., true)`), so `/inject` after a
+   turn rewrote the cached system prompt (its `# Tool Inventory` section).
+   `reconcileBuiltinTools({ freezePrompt })` and
+   `setActiveToolsByName(names, { freezePrompt })` now thread an explicit
+   freeze into `#applyActiveToolsByName`, which skips the rebuild and takes the
+   frozen branch (`frozenSignature`, then `#notifyToolRosterDelta`). The
+   tool still reaches the model through the wire schema plus the hidden roster
+   notice (`prompts/system/tool-roster-notice.md`, delivered with the next user
+   prompt, "Your current tool schema is authoritative"), never through a prompt
+   rewrite. `injectToolsByName` sets `freezePrompt = agent.state.messages.length > 0`:
+   before the first message the prompt may absorb the roster for free; after it,
+   the committed prompt stays byte-identical.
+
+Verified offline in `test/session/inject-tools.test.ts` (real `createAgentSession`,
+whitelist `[]`): additive add, `only`, `remove`; the base prompt *changes* when
+the roster is injected before any message and is **byte-identical** when a
+message exists, while `getActiveToolNames()` still gains the tool. Verified on
+the installed binary: `--lightweight` → `/inject read` then `/inject bash`
+reports `read, bash`; a resumed session with history → `/inject goal` reports
+`25 tool(s) [add]`, `/prompt` shows the frozen `# Tool Inventory` without `goal`
+while `System tools` lists `goal 243 tok`; `/inject --remove goal` →
+`Removed 1 tool(s): 24 active`; `/inject --only read,bash` → `System tools 972`.
+`bun test test/slash-commands test/session` 604+ pass.
+
 ## Patch 41: `fix(memory)` wiki `memory://` reads (caller runtime wired, compiled-first with raw fallback) (2026-10-14)
 
 `read memory://root` and `read memory://<id>` failed for every

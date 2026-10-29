@@ -95,6 +95,22 @@ export interface SessionToolsHost {
 	waitForUser<T>(dialog: () => Promise<T>): Promise<T>;
 }
 
+/**
+ * Runtime tool whitelist update for `setRuntimeToolWhitelist`: a replacement
+ * list (or `undefined` to clear), or a function applied to the live list so an
+ * additive `/inject` cannot race a concurrent reconcile.
+ */
+export type RuntimeToolWhitelistUpdate =
+	| string[]
+	| undefined
+	| ((current: string[] | undefined) => string[] | undefined);
+
+/**
+ * `/inject` set operation: `add` unions with the enabled tools, `only` replaces
+ * them, `remove` deselects just the named ones.
+ */
+export type InjectToolsMode = "add" | "only" | "remove";
+
 /** Registry delta applied by the SDK's settings-gated tool reconcile. */
 export interface SettingsGatedToolDelta {
 	/** Newly registered names: `builtIn` marks built-in factory provenance, `activate` joins the enabled set. */
@@ -126,9 +142,11 @@ interface SessionToolsOptions {
 	 * when re-planning built-ins, so widening it before
 	 * {@link SessionTools.reconcileBuiltinTools} is what lets a session created
 	 * with a narrow (or empty) whitelist — `--lightweight`, subagents — construct
-	 * a tool it never built at startup. `undefined` drops the list.
+	 * a tool it never built at startup. A function receives the live list, so an
+	 * additive injection never has to read (and race) a stale copy. `undefined`
+	 * drops the list.
 	 */
-	setRuntimeToolWhitelist?: (names: string[] | undefined) => void;
+	setRuntimeToolWhitelist?: (update: RuntimeToolWhitelistUpdate) => void;
 	/**
 	 * Built-in names this session could still construct on demand, honoring the
 	 * same settings gates as registration. Non-constructing: listing must not
@@ -1049,7 +1067,12 @@ export class SessionTools {
 		);
 	}
 
-	async #applyActiveToolsByName(toolNames: string[], forcePromptRefresh = false, signal?: AbortSignal): Promise<void> {
+	async #applyActiveToolsByName(
+		toolNames: string[],
+		forcePromptRefresh = false,
+		signal?: AbortSignal,
+		freezePrompt = false,
+	): Promise<void> {
 		signal?.throwIfAborted();
 		toolNames = normalizeToolNames(toolNames);
 		let builtInWriteAvailable = this.#builtInToolNames.has("write");
@@ -1189,10 +1212,14 @@ export class SessionTools {
 					evalPreludes: this.#promptSurface.evalPreludes,
 					sessionAgents: this.#promptSurface.sessionAgents,
 				});
-				const freezeImplicitPromptRefresh =
-					!forcePromptRefresh &&
-					triggerSignature !== this.#lastAppliedToolSignature &&
-					this.#implicitRebuildBinding() === "frozen";
+				// `freezePrompt` is the caller's explicit cache-safety verdict
+				// (`/inject` after the prefix is cached): never rebuild the base
+				// prompt, announce the roster change through the hidden notice.
+				const freezeImplicitPromptRefresh = freezePrompt
+					? triggerSignature !== this.#lastAppliedToolSignature
+					: !forcePromptRefresh &&
+						triggerSignature !== this.#lastAppliedToolSignature &&
+						this.#implicitRebuildBinding() === "frozen";
 				if (freezeImplicitPromptRefresh) {
 					frozenSignature = triggerSignature;
 				} else if (forcePromptRefresh || triggerSignature !== this.#lastAppliedToolSignature) {
@@ -1830,7 +1857,7 @@ export class SessionTools {
 	}
 
 	/** Selects enabled tools, ignoring names absent from the registry. */
-	setActiveToolsByName(toolNames: string[]): Promise<void> {
+	setActiveToolsByName(toolNames: string[], options?: { freezePrompt?: boolean }): Promise<void> {
 		return this.runToolRegistryMutation(async () => {
 			const normalized = normalizeToolNames(toolNames);
 			// Transport-write eligibility keys off the *current* active set: an ordinary
@@ -1839,6 +1866,9 @@ export class SessionTools {
 				normalized,
 				this.#xdev?.mountedNames ?? new Set(),
 				this.getActiveToolNames().includes("write"),
+				false,
+				undefined,
+				options?.freezePrompt ?? false,
 			);
 		});
 	}
@@ -1903,6 +1933,7 @@ export class SessionTools {
 		writeSelected: boolean,
 		forcePromptRefresh = false,
 		signal?: AbortSignal,
+		freezePrompt = false,
 	): Promise<void> {
 		const retainedMountedDevice = [...mounted].some(name => normalized.includes(name));
 		const retainedDeferrableTool = normalized.some(name => this.#toolRegistry.get(name)?.deferrable === true);
@@ -1919,7 +1950,7 @@ export class SessionTools {
 			normalized.filter(name => !mounted.has(name) && !(name === "write" && transportWriteActive)),
 		);
 		try {
-			await this.#applyActiveToolsByName(normalized, forcePromptRefresh, signal);
+			await this.#applyActiveToolsByName(normalized, forcePromptRefresh, signal, freezePrompt);
 		} catch (error) {
 			this.#runtimeSelectedToolNames = previousRuntimeSelectedToolNames;
 			throw error;
@@ -1990,10 +2021,15 @@ export class SessionTools {
 	 * `xd://` mounting) against live settings: registers newly allowed tools,
 	 * unregisters disallowed ones, and reapplies the enabled set with one forced
 	 * prompt rebuild — unconditionally unless `refreshPrompt` is false, then only
-	 * when the tool set changed. Unrelated selections and MCP/extension tools are
-	 * preserved.
+	 * when the tool set changed. `freezePrompt` keeps the committed base prompt
+	 * byte-stable and announces the roster change through the hidden notice
+	 * instead (used by `/inject` once the provider has cached the prefix).
+	 * Unrelated selections and MCP/extension tools are preserved.
 	 */
-	reconcileBuiltinTools({ refreshPrompt = true }: { refreshPrompt?: boolean } = {}): Promise<void> {
+	reconcileBuiltinTools({
+		refreshPrompt = true,
+		freezePrompt = false,
+	}: { refreshPrompt?: boolean; freezePrompt?: boolean } = {}): Promise<void> {
 		return this.runToolRegistryMutation(async () => {
 			const reconcile = this.#reconcileSettingsGatedTools;
 			if (!reconcile || this.#host.isDisposed()) return;
@@ -2015,7 +2051,7 @@ export class SessionTools {
 				if (delta.xdev) delta.xdev.decorateExecution = tool => this.#wrapToolForAcpPermission(tool);
 			}
 			if (!refreshPrompt && !xdevChanged && delta.added.length === 0 && delta.removed.length === 0) return;
-			await this.#applyActiveToolsByName([...enabled], true);
+			await this.#applyActiveToolsByName([...enabled], refreshPrompt, undefined, freezePrompt);
 		});
 	}
 
@@ -2033,22 +2069,47 @@ export class SessionTools {
 	}
 
 	/**
-	 * Runtime tool injection (`/inject`): installs the whitelist, materializes any
-	 * built-in the session never constructed, and selects exactly `names`.
+	 * Runtime tool injection (`/inject`): widens the whitelist, materializes any
+	 * built-in the session never constructed, and applies the resulting set.
 	 * Selecting alone (`setActiveToolsByName`) only reaches the registry, and a
 	 * session created with a narrow whitelist never constructed the tools outside
 	 * it — the built-in reconcile is what constructs a newly planned name, so the
-	 * widened list is applied through it first. Returns the names that landed: a
-	 * factory may decline (`createIf`, e.g. `ask` without interactive prompts) or
-	 * a settings gate may have closed between the catalog read and the injection.
+	 * widened list is applied through it first.
+	 *
+	 * `mode` decides the resulting set: `add` unions with the enabled set
+	 * (the common case — `/inject read` then `/inject write` keeps both), `only`
+	 * replaces it, `remove` drops just the named tools.
+	 *
+	 * Cache safety: once the transcript carries a message the provider has
+	 * already cached the prefix (system prompt + wire schema), so the base prompt
+	 * is frozen and the new tool reaches the model through the wire schema plus
+	 * the hidden roster notice on the next prompt instead of a prompt rebuild.
+	 * Before the first message the prompt is free to absorb the new roster.
+	 *
+	 * Returns the names that landed: a factory may decline (`createIf`, e.g.
+	 * `ask` without interactive prompts) or a settings gate may have closed
+	 * between the catalog read and the injection.
 	 */
-	async injectToolsByName(names: string[]): Promise<string[]> {
-		if (this.#setRuntimeToolWhitelist) {
-			this.#setRuntimeToolWhitelist(names);
-			await this.reconcileBuiltinTools();
-		}
-		const applied = names.filter(name => this.#toolRegistry.has(name));
-		await this.setActiveToolsByName(applied);
+	async injectToolsByName(names: string[], mode: InjectToolsMode = "add"): Promise<string[]> {
+		const requested = [...new Set(names)];
+		const freezePrompt = this.#host.agent.state.messages.length > 0;
+		this.#setRuntimeToolWhitelist?.(current => {
+			if (mode === "add") return current === undefined ? undefined : [...new Set([...current, ...requested])];
+			if (mode === "remove") return current?.filter(name => !requested.includes(name));
+			return requested;
+		});
+		// Removal only deselects: the entry stays registered (and inactive) so a
+		// later reconcile — or a re-injection — does not pay a rebuild to restore it.
+		if (mode !== "remove") await this.reconcileBuiltinTools({ refreshPrompt: !freezePrompt, freezePrompt });
+		const enabled = this.getEnabledToolNames();
+		const next =
+			mode === "add"
+				? [...new Set([...enabled, ...requested])]
+				: mode === "remove"
+					? enabled.filter(name => !requested.includes(name))
+					: requested;
+		const applied = next.filter(name => this.#toolRegistry.has(name));
+		await this.setActiveToolsByName(applied, { freezePrompt });
 		return applied;
 	}
 

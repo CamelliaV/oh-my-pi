@@ -10,6 +10,7 @@ import { loadSlashCommands } from "../extensibility/slash-commands";
 import { rebindMemoryBackendForCwd } from "../hindsight/backend";
 import { memoryStatsUnavailableMessage, resolveMemoryBackend } from "../memory-backend";
 import type { FreshSessionResult, HandoffResult } from "../session/agent-session";
+import type { InjectToolsMode } from "../session/session-tools";
 import { COMPACT_MODES, parseCompactArgs } from "../session/compact-modes";
 import { USER_INTERRUPT_LABEL } from "../session/messages";
 import { resolveResumableSession } from "../session/session-listing";
@@ -647,14 +648,14 @@ export const BUILTIN_LIFECYCLE_SLASH_COMMANDS: ReadonlyArray<SlashCommandSpec> =
 		name: "inject",
 		icon: "tools",
 		description:
-			"Inject named tools into the session (`/inject read,bash`). Overrides the current tool whitelist; pass `--all` to restore the full catalog.",
+			"Add tools to the session (`/inject read,bash`). Injection is additive; `--only` replaces the set, `--remove` drops tools, `--all` restores the full catalog.",
 		acpDescription: "Inject named tools into the session",
-		inlineHint: "<tools|--all|list>",
+		inlineHint: "<tools|--only|--remove|--all|list>",
 		allowArgs: true,
 		getTuiAutocompleteDescription: runtime => {
 			const names = runtime.ctx.session.getActiveToolNames?.() ?? [];
 			return names.length === 0
-				? "No tool whitelist active — `/inject read,bash` enables just those, `--all` restores the full set"
+				? "No tool whitelist active — `/inject read,bash` adds just those, `--all` restores the full set"
 				: `Active tools: ${names.join(", ")}`;
 		},
 		handleTui: async (command, runtime) => {
@@ -674,14 +675,21 @@ export const BUILTIN_LIFECYCLE_SLASH_COMMANDS: ReadonlyArray<SlashCommandSpec> =
 				return;
 			}
 			const fullyRestore = argsText === "--all" || argsText === "all";
+			// Additive by default: a second `/inject` augments the roster instead of
+			// replacing it. `--only` opts back into replacement, `--remove` drops.
+			const modeFlag = /^(--only|--replace|--remove)\b/i.exec(argsText)?.[1]?.toLowerCase();
+			const mode: InjectToolsMode = modeFlag === "--remove" ? "remove" : modeFlag ? "only" : "add";
+			const remainder = modeFlag ? argsText.slice(modeFlag.length).trim() : argsText;
 			const requested = fullyRestore
 				? catalog
-				: argsText
+				: remainder
 						.split(/[,\s]+/)
 						.map(s => s.trim())
 						.filter(Boolean);
 			if (!fullyRestore && requested.length === 0) {
-				showInfo("Usage: /inject <tools>[,<tools>...] — pass `--all` to restore full catalog, `list` to inspect");
+				showInfo(
+					"Usage: /inject <tools>[,<tools>...] (additive) — `--only` replaces, `--remove` drops, `--all` restores, `list` inspects",
+				);
 				return;
 			}
 			// Deduplicate while validating so `/inject read,read` stays a no-drama case.
@@ -692,17 +700,24 @@ export const BUILTIN_LIFECYCLE_SLASH_COMMANDS: ReadonlyArray<SlashCommandSpec> =
 				runtime.ctx.showError(`Unknown tools: ${unknown.join(", ")}. See /inject list.`);
 				return;
 			}
-			const applied = await session.injectToolsByName(targets);
-			const unavailable = targets.filter(name => !applied.includes(name));
+			const applied = fullyRestore
+				? await session.injectToolsByName(catalog, "only")
+				: await session.injectToolsByName(targets, mode);
+			// `remove` returns the resulting set, so the names it dropped are the
+			// requested ones that are no longer in it.
+			const removed = mode === "remove" ? targets.filter(name => !applied.includes(name)) : [];
+			const unavailable = mode === "remove" ? [] : targets.filter(name => !applied.includes(name));
 			showInfo(
 				fullyRestore
 					? `Tool whitelist cleared — full catalog (${applied.length}) active`
-					: `Injected ${applied.length} tool(s): ${applied.join(", ")}`,
+					: mode === "remove"
+						? `Removed ${removed.length} tool(s): ${applied.length} active`
+						: `Injected ${applied.length} tool(s) [${mode}]: ${applied.join(", ")}`,
 			);
 			// A catalog entry can still decline to materialize (a `createIf` factory,
 			// e.g. `ask` without interactive prompts). Say so instead of reporting a
 			// success the session cannot honor.
-			if (!fullyRestore && unavailable.length > 0) {
+			if (!fullyRestore && mode !== "remove" && unavailable.length > 0) {
 				runtime.ctx.showError(`Not exposed by this session: ${unavailable.join(", ")}`);
 			}
 			await runtime.notifyConfigChanged?.();

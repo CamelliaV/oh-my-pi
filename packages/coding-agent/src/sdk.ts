@@ -4921,8 +4921,8 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 				toolSession.pendingFullWriteDescription = enabled ? true : undefined;
 			},
 			ensureGoalRegistered,
-			setRuntimeToolWhitelist: names => {
-				runtimeToolNames = names;
+			setRuntimeToolWhitelist: update => {
+				runtimeToolNames = typeof update === "function" ? update(runtimeToolNames) : update;
 			},
 			listInjectableBuiltinToolNames,
 			reconcileSettingsGatedTools,

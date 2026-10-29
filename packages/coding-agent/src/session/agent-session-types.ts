@@ -47,7 +47,7 @@ import type { JobWidgetView } from "@oh-my-pi/pi-tui/tools/job-widget";
 import type { ToolSession } from "../tools";
 import type { XdevState } from "../tools/xdev";
 import type { CodexAutoRedeemCoordinator } from "./codex-auto-reset";
-import type { SettingsGatedToolDelta } from "./session-tools";
+import type { RuntimeToolWhitelistUpdate, SettingsGatedToolDelta } from "./session-tools";
 import type { SessionManager } from "./session-manager";
 
 /** Maximum time the interactive shutdown path waits for Mnemopi consolidation. */
@@ -303,7 +303,7 @@ export interface AgentSessionConfig {
 	/** Re-resolves settings-gated tools against live settings; driven by `SessionTools.reconcileBuiltinTools`. */
 	reconcileSettingsGatedTools?: (isBuiltIn: (name: string) => boolean) => Promise<SettingsGatedToolDelta>;
 	/** Rewrites the SDK's runtime tool whitelist; `/inject` applies the widened list through `reconcileBuiltinTools`. */
-	setRuntimeToolWhitelist?: (names: string[] | undefined) => void;
+	setRuntimeToolWhitelist?: (update: RuntimeToolWhitelistUpdate) => void;
 	/** Built-in names the session could still construct on demand; drives the `/inject` catalog. */
 	listInjectableBuiltinToolNames?: () => Promise<string[]>;
 	/** Current session pre-LLM message transform pipeline. */

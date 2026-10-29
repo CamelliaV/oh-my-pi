@@ -5,7 +5,7 @@ import { executeBuiltinSlashCommand } from "@oh-my-pi/pi-coding-agent/slash-comm
 
 interface InjectHarness {
 	runtime: { ctx: InteractiveModeContext; notifyConfigChanged?: () => Promise<void> };
-	injectToolsByName: Mock<(names: string[]) => Promise<string[]>>;
+	injectToolsByName: Mock<(names: string[], mode?: string) => Promise<string[]>>;
 	showError: Mock<(msg: string) => void>;
 	showStatus: Mock<(msg: string, opts?: unknown) => void>;
 	notifyConfigChanged: Mock<() => Promise<void>>;
@@ -21,7 +21,9 @@ function createHarness(
 	catalog: readonly string[] = ["read", "edit", "bash", "grep", "ls"],
 	declines: readonly string[] = [],
 ): InjectHarness {
-	const injectToolsByName = vi.fn(async (names: string[]) => names.filter(name => !declines.includes(name)));
+	const injectToolsByName = vi.fn(async (names: string[], _mode?: string) =>
+		names.filter(name => !declines.includes(name)),
+	);
 	const showError = vi.fn();
 	const showStatus = vi.fn((_msg: string, _opts?: unknown) => {});
 	const notifyConfigChanged = vi.fn(async () => {});
@@ -51,7 +53,7 @@ describe("/inject slash command", () => {
 		const handled = await executeBuiltinSlashCommand("/inject read,bash", harness.runtime);
 
 		expect(handled).toBe(true);
-		expect(harness.injectToolsByName).toHaveBeenCalledWith(["read", "bash"]);
+		expect(harness.injectToolsByName).toHaveBeenCalledWith(["read", "bash"], "add");
 		expect(harness.notifyConfigChanged).toHaveBeenCalled();
 		expect(harness.showError).not.toHaveBeenCalled();
 	});
@@ -62,7 +64,7 @@ describe("/inject slash command", () => {
 
 		await executeBuiltinSlashCommand("/inject bash", harness.runtime);
 
-		expect(harness.injectToolsByName).toHaveBeenCalledWith(["bash"]);
+		expect(harness.injectToolsByName).toHaveBeenCalledWith(["bash"], "add");
 		expect(harness.showError).not.toHaveBeenCalled();
 	});
 
@@ -82,7 +84,7 @@ describe("/inject slash command", () => {
 		const handled = await executeBuiltinSlashCommand("/inject --all", harness.runtime);
 
 		expect(handled).toBe(true);
-		expect(harness.injectToolsByName).toHaveBeenCalledWith(["read", "edit", "bash"]);
+		expect(harness.injectToolsByName).toHaveBeenCalledWith(["read", "edit", "bash"], "only");
 	});
 
 	it("surfaces a catalog entry the session refused to materialize", async () => {
@@ -90,7 +92,7 @@ describe("/inject slash command", () => {
 
 		await executeBuiltinSlashCommand("/inject read,ask", harness.runtime);
 
-		expect(harness.injectToolsByName).toHaveBeenCalledWith(["read", "ask"]);
+		expect(harness.injectToolsByName).toHaveBeenCalledWith(["read", "ask"], "add");
 		expect(harness.showError).toHaveBeenCalledWith(expect.stringContaining("Not exposed by this session: ask"));
 	});
 
@@ -123,6 +125,30 @@ describe("/inject slash command", () => {
 		const handled = await executeBuiltinSlashCommand("/inject read bash", harness.runtime);
 
 		expect(handled).toBe(true);
-		expect(harness.injectToolsByName).toHaveBeenCalledWith(["read", "bash"]);
+		expect(harness.injectToolsByName).toHaveBeenCalledWith(["read", "bash"], "add");
+	});
+
+	it("is additive by default and reports the resulting roster", async () => {
+		const harness = createHarness(["read", "write"]);
+
+		await executeBuiltinSlashCommand("/inject read", harness.runtime);
+		await executeBuiltinSlashCommand("/inject write", harness.runtime);
+
+		// Two separate additive injections: the second must not narrow the first.
+		expect(harness.injectToolsByName.mock.calls.map(call => call[1])).toEqual(["add", "add"]);
+		expect(harness.showStatus).toHaveBeenLastCalledWith(
+			expect.stringContaining("Injected 1 tool(s) [add]"),
+			expect.anything(),
+		);
+	});
+
+	it("`--only` replaces the set and `--remove` drops tools", async () => {
+		const harness = createHarness();
+
+		await executeBuiltinSlashCommand("/inject --only read,bash", harness.runtime);
+		expect(harness.injectToolsByName).toHaveBeenLastCalledWith(["read", "bash"], "only");
+
+		await executeBuiltinSlashCommand("/inject --remove bash", harness.runtime);
+		expect(harness.injectToolsByName).toHaveBeenLastCalledWith(["bash"], "remove");
 	});
 });

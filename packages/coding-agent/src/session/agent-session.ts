@@ -460,7 +460,7 @@ import { SessionMemory, type SessionMemoryHost } from "./session-memory";
 import { buildSessionMetadata } from "./session-metadata";
 import { SessionProviderBoundary, type SessionProviderBoundaryHost } from "./session-provider-boundary";
 import { SessionStatsTracker, type SessionStatsTrackerHost } from "./session-stats";
-import { SessionTools, type SessionToolsHost } from "./session-tools";
+import { type InjectToolsMode, SessionTools, type SessionToolsHost } from "./session-tools";
 import { resolveOpenAIWebsocketPreference } from "./settings-stream-fn";
 import type { ShakeMode, ShakeResult } from "./shake-types";
 import { ToolChoiceQueue } from "./tool-choice-queue";
@@ -6665,7 +6665,7 @@ export class AgentSession implements SettingsScope {
 	 * SDK runs it whenever a gating setting changes; other runtime owners may call it
 	 * after changing an input the gate reads.
 	 */
-	reconcileBuiltinTools(options?: { refreshPrompt?: boolean }): Promise<void> {
+	reconcileBuiltinTools(options?: { refreshPrompt?: boolean; freezePrompt?: boolean }): Promise<void> {
 		return this.#tools.reconcileBuiltinTools(options);
 	}
 
@@ -6718,12 +6718,16 @@ export class AgentSession implements SettingsScope {
 	}
 
 	/**
-	 * Runtime tool injection (`/inject`): installs the whitelist, materializes the
+	 * Runtime tool injection (`/inject`): widens the whitelist, materializes the
 	 * built-ins the session never constructed at startup (`--lightweight`,
-	 * subagents), and selects exactly `names`. Returns the names that landed.
+	 * subagents), and applies the resulting set. `add` unions with the enabled
+	 * tools, `only` replaces them, `remove` deselects the named ones. Once the
+	 * transcript carries a message the base prompt is frozen and the new tool is
+	 * announced through the hidden roster notice instead (cache-safe). Returns
+	 * the names that landed.
 	 */
-	injectToolsByName(names: string[]): Promise<string[]> {
-		return this.#tools.injectToolsByName(names);
+	injectToolsByName(names: string[], mode?: InjectToolsMode): Promise<string[]> {
+		return this.#tools.injectToolsByName(names, mode);
 	}
 
 	/** Full metadata for every registered tool, including source provenance (backs `getAllTools()`). */

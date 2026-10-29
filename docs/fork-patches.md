@@ -3,7 +3,8 @@
 Detailed rationale, wire measurements, and verification notes for every local
 patch on top of upstream. `AGENTS.md` carries only the index; read this file
 before rebasing, before touching a patched region, or when a patch's
-reasoning matters.
+reasoning matters. The per-release upgrade history sits at the bottom
+(§ Upgrade chronicle).
 
 ## Patch list (v18.5.1 baseline; merged 2026-10-04 from v18.5.0 via trial/v18.5.1 — adjudications at the bottom)
 
@@ -1434,3 +1435,282 @@ the installed `omp-patched` binary emitted Chinese intents
 (`"i":"读取 README 前五行"`, `"i":"读取 README 开头 30 行"`); the installed
 binary carries the marker (12 matches) and `--smoke-test: ok`. Applies to new
 sessions only — persisted transcripts keep the labels they recorded.
+
+## Patch 44: `feat(tui)` read-only System Prompt Viewer (`/prompt`, `alt+s`) (2026-10-29)
+
+The `/context` modal reports four invisible categories — System prompt,
+System tools, System context, Skills — as bare token counts; the content
+behind them was only observable by provoking an HTTP 400 and reading
+`~/.omp/logs/http-400-requests/*.json`. This adds a fullscreen viewer that
+shows the verbatim text the estimator tokenizes.
+
+Data seam: `ExtensionContext.getPromptSnapshot()` (optional; three runtime
+producers wired: `runtime-init.ts`, `extension-ui-controller.ts` both TUI
+paths, `acp-agent.ts`, plus the direct-session fallback in
+`agent-session.#createCommandContext`). The snapshot builder
+(`prompt-viewer/snapshot.ts`) reads `session.systemPrompt`,
+`session.renderedSkills`, `session.agent.state.tools`, and
+`session.agent.tokenizer`, and reuses `computeSessionContextBreakdown` for
+the section totals (so the numbers match `/context`).
+
+Per-block counting is deliberately separated from display. A tool block
+renders `# name`, the full description, the pretty-printed wire schema,
+and `renderToolExamples`, but counts exactly the four fragments
+`estimateToolSchemaTokens` pushes — `name`, `description`, compact
+`JSON.stringify(toolWireSchema(tool))`, and `renderToolExamples(tool)` —
+so per-block tokens sum to the `System tools` category (verified: 16-tool
+session summed to 5643 vs category 5.6K; `--tools read` gave 595 = 595).
+Counting the rendered text instead double-counted name/description and
+inflated `read` to 1.2K against a 595 category. When the model sets
+`toolSchemasInContext === false` the estimator reports 0, so block labels
+carry `(schemas not sent to this model)`. Skills are filtered through the
+same `renderedSkills` mirror (`read` tool present, `hide !== true`) and
+counted per-name/per-description, matching `estimateSkillsTokens`.
+
+UI (`prompt-viewer/component.ts`) is the Workspace Inspector two-pane
+overlay: left lists sections and blocks with per-block token counts, right
+shows the selected block's text (soft-wrap default, `w` toggles, `←/→`
+pans when unwrapped). `1`-`4` jump to a section, `Tab` flips pane focus,
+`g`/`G` jump ends, wheel/drag scrolls. Registered via
+`createPromptViewerExtension` in `sdk.ts`: `/prompt` command and `alt+s`
+shortcut.
+
+Verified: `bun run check` clean (10 pre-existing wiki-vault driver errors
+remain); standalone render smoke (deleted after use) asserted chrome,
+category markers, and footer hints; tmux PTY probe of the installed
+`omp-patched --no-session` opened `/prompt`, rendered all four sections
+with live totals (System prompt 3.7K / System context 18K / System tools
+5.6K / Skills 5.3K), walked blocks with arrow keys, jumped sections with
+`1`-`4`, showed bash's wire JSON schema, and closed on `Esc`/`q` back to
+the composer. A same-day follow-up moved the registration out of the
+`!restrictToolNames` gate so `--lightweight` sessions keep `/prompt`
+(commit `57e34ab74e`): the viewer registers no LLM tools, so it does not
+belong next to `createWorkspaceInspectorExtension` /
+`createAutoresearchExtension`. Under `--lightweight` the viewer mirrors the
+carve-out exactly (System prompt = user-level AGENTS.md placeholder,
+System context = the repo context-file blocks, System tools = 0, Skills =
+0) — the same numbers `/context` reports there. A later follow-up
+separated display text from counting (see above) after a `--lightweight
+--tools read` probe showed the block at 1.2K against a 595 category; the
+corrected probe reports exactly 595 and the block pane now shows the long
+`read` description that was previously invisible (the original renderer
+only printed the schema JSON, which is why the count looked impossible).
+
+## Upgrade chronicle (v18.3.2 → v18.12.3)
+
+Moved out of `AGENTS.md` on 2026-10-28: it is history, not policy, and cost
+~7K prompt tokens per request. The ranges already documented above
+(v18.5.0 → v18.5.1, v18.6.0 → v18.8.0) are not repeated.
+
+### Earlier history (v17.3.5 → v18.3.0)
+
+Synthetic-commit upgrades started at v17.3.5→v18.0.7 (34 files, 76 hunks; merge
+`008c64c`); v18.0.9→v18.0.10 cost exactly ONE trivial conflict (159 files,
++6398−774); v18.0.10→v18.1.10 went through `trial/v18.1.6` (40 conflicts), then
+the incremental merge added only 8 (541 files, +31953−15683); v18.1.10→v18.2.3
+went through `trial/v18.1.19-master` then `upgrade/v18.2.3` (synthetic
+`upstream/v18.2.3` parented on `6e64dd0`); v18.2.3→v18.3.0 went through
+`upgrade/v18.2.8` and `trial/v18.2.11`, then `upgrade/v18.3.0` (synthetic
+parented on `558cdc0a`, 918 files). The hub tool was deleted upstream; fork
+resume moved to `write agent://<id>?resume=1`. Config `apiKeys` pools moved
+onto `authStorage.keys.setConfigPool`.
+
+### Per-release record
+
+v18.3.2→v18.3.4 (2026-09-27) parented `upstream/v18.3.4` on `d633fbf9` (555 files, +63063−6801, 11 conflicts resolved in trial/v18.3.4).
+v18.3.4→v18.4.3 (2026-09-29) parented `upstream/v18.4.3` on `0c1b9acf7` (via `upstream/v18.4.2` `da3bb473`, 27 conflicts, resolved directly on master as `upgrade/v18.4.3` = `58b90e4`).
+v18.4.3→v18.4.8 (2026-10-01) parented `upstream/v18.4.8` on `fc728b9f2` (1175 files, +96241−11929, 17 conflicts across 32 blocks resolved in trial/v18.4.8). Notable unions: fork bubble/ImageStrip + upstream native `describe()` coexist in `user-message.ts`; fork `#workUsage` (bubble usage row) + upstream `TurnUsageTally` (assistant turn chip) both run in `event-controller.ts`; fork HUD pin predicate `isHudPinnedSubagent` kept under upstream's `livePreview` multi-row shape; `stats-cli.ts` local `printStatsSummary` deleted in favor of the omp-stats package version (already carries the fork cost-provenance rows); `sessionUsageSegment` gained the upstream-required native `describe()`.
+v18.4.8→v18.4.9 (2026-10-02) parented `upstream/v18.4.9` on `26db729d2` (187 files, +10153−1208, 0 conflicts; merge `upgrade/v18.4.9`). Auto-merged overlap kept every fork marker (`[1210]`/`始终思考` in `flags.ts`, `configPoolProviders`, `requestUsage` in `session-manager.ts`, `#workUsage`, kitty graphics store). Collapsed the duplicate `images` field in `UserBubbleOptions` (`user-message.ts`) that the v18.4.8 merge left behind — upstream's native chip field and the fork's ImageStrip field were the same type. Natives bumped to 18.4.9 (`Shell.pids()`, `readTextFromClipboard`); `Shell.pids()` is unguarded and only reached from the Jobs panel.
+v18.4.9→v18.4.10 (2026-10-02) parented `upstream/v18.4.10` on `c64364adf8` (merge `upgrade/v18.4.10` = `126ff01c`). Also carries `feat(session): pin a thinking level on ^model mentions` (`model-mentions.ts`, `:level` suffix kept in persisted selectors).
+v18.4.10→v18.5.0 (2026-10-03) parented `upstream/v18.5.0` on `86230eb479` (413 files, +15390−4985, 5 conflict blocks across 4 files resolved in `trial/v18.5.0`; merge `c8439b35`). All conflicts additive unions: main.ts kept fork `fuzzyMatchResumableSessions` + upstream `SessionMoveRefusedError`; executor.ts kept fork `execution?: SubagentExecutionState` + upstream `completionProbe`; interactive-mode/types.ts kept fork `SessionUsageSnapshot`/composer image-context init + upstream `reportContainer`, dropping only the fork `RecentSession`/`WelcomeLspServerInfo` imports whose consumers upstream deleted (welcome banner dropped model/lsp/recent-sessions rows). Upstream added `#isFirstAttemptMidStreamSocketDrop` (same-model retry for first-attempt socket drops with streamed progress) alongside the fork's `handleCommittedTextStreamStall` — both kept. Repaired a pre-existing fork bug the merge exposed: the v18.4.3 merge had taken upstream's `rules.json` wholesale, silently dropping the `web/grok` seed (Grok relay channel dead since 2026-09-29); recompiled rules.json, injected the built `web/grok` row into `models.json`, fixed the two chain tests that masked it, and un-pinned the codex UA assertions. Natives unchanged in ABI (index.d.ts identical); restamped 18.4.10 binaries to 18.5.0 via `scripts/stamp-native-version.ts` (clipboard.rs lock is Windows-only).
+v18.5.1→v18.6.0 (2026-10-04) parented `upstream/v18.6.0` on `223d4b6727` (414 files, +28485−3678; merge `76e6447eeb`, merged directly on master). Natives bumped to 18.6.0; models.json kept fork-side wholesale (fork bakes + web/grok seed).
+
+v18.8.0→v18.10.0 (2026-10-12) went through `trial/v18.9.1` (33 conflicts across 21 files)
+then `trial/v18.10.0` (3 more conflicts: main.ts + two catalogs; merge `upgrade/v18.10.0`
+= `abeb752c08`, fork master head after stage was `f84deef3cb`). Synthetic commits:
+`upstream/v18.9.1` on `8d9f3a6371` (`1fd6f60697`); `upstream/v18.10.0` parented on `1fd6f60697`
+(`bf5ccb976c`). Natives refreshed from the official v18.10.0 Linux binary (`wasmGrammarFor`,
+`__ompSetGrammarDir`, `missingGrammars` — new unguarded callers in `tools/ast-grep.ts`,
+`tools/ast-edit.ts`, `tools/read-summary.ts`); index.d.ts identical across v18.8.0→v18.10.0.
+
+Notable adjudications: `mnemopi/state.ts` took upstream's `withLoopPhase` wrappers and
+RecallBlock/persisted-recall structure wholesale, while keeping fork's per-call
+`redactSecretFields(result, this.session.obfuscator)` chain and `selectRecallContext`
+import removed (orphaned by upstream refactor, `#recallBlock` replaces it; wiki backend
+is the active path with no mnemopi `llm` configured, so the fork gate was dormant);
+fork's memory-retain keeps the unified runtime branch (upstream split mnemopi-only
+with loop-phase tagging); `image.ts` adopted upstream's `#retire` loop wholesale
+(upstream deleted the `placement-emit` machinery but left a single stray
+`#deletePlacementState` call as a merge orphan caught by `check:ts`); `main.ts` resumed
+upstream's `moveMissingCwdSessionIfNeeded` + `forkIfMovedAway` wrapping while re-anchoring
+patch #6's fuzzy fallback to run after the upstream no-match dispatch; `models.json`
+keeps fork's 62 fork-only rows (incl. `web/grok`) on top of the upstream bake; `rules.json`
+is regenerated (web.kdl keeps fork's seed row for `model "grok"`); `publisher-stack`
+guide-dog severity on the markdown tests left untouched. `update-cli.test` and
+`sse/legacy-sse/http-transport` flakes all fail identically on the pre-upgrade master.
+ai suite: 1 baseline flake on `anthropic-stream-timeout` (matches master);
+`supersede-prune` expectation adjusted from 14 to 15 wire positions for fork's
+per-call image-group separator in tool_result hosting (`febfdebc95` made hoist
+exclude `msg.isError`), and `anthropic-many-image-resize` extraction helper
+taught to walk hoisted image blocks (fork hoist takes them out of tool_result
+content entirely, not just on error) — fork wire-shape wins; upstream test was
+asserting its own build's hoist policy.
+
+`agent-session-message-pipeline.test.ts` fake backend gained
+`capabilities: memoryBackendCapabilities.mnemopi` to satisfy the upstream-typed
+`MemoryBackend` contract; `memory-tools.test.ts`'s first-turn supersede test
+now asserts the `commit()` gate contract (upstream's prepare-time staleness
+vaults moved into commit(), so a stale `RecallContextPreparation.context` is
+returned but never injected — only `commit()` supersedes).
+
+v18.10.0→v18.10.3 (2026-10-13) — three patch releases: 18.10.1 Tern UI polish (copy-led
+turn footer, one running counter, picker sheets), 18.10.2 structured task results now opt-in
+via `task.structured` (plain-text final message, no `yield`; background bash/eval cards
+stream to completion) + `CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS` + transparent-image fix,
+18.10.3 snapcompact frame sizing, official-endpoint image budgets (relay base URLs keep the
+old limits), `omp --restore`, `task.agentSoftRequestBudget`, `o200k` tokenizer. Synthetic
+`upstream/v18.10.3` parented on `bf5ccb976c` (`2816fe6d63`, 317 files, +28693−3145); trial
+merge `ae3543dee2`, fast-forwarded onto master via `upgrade/v18.10.3` (`847cae7f4e`).
+
+Only 5 conflicts: two generated artifacts (`rules.json`, `models.json`) plus three
+additive unions — `event-controller.ts` (imports: fork `resolveToolCallIntent` +
+upstream `asyncJobState/isSettledJobFrame/parksAsBackground/settleWithJobFrame`; the reset
+path keeps fork `#workUsage`/`#sessionUsage`/`syncSessionUsageFromBranch` and takes upstream's
+rename to `#backgroundCallIds` plus the new `#settledBeforeReturn`), `ui-helpers.ts` (same
+import union), and `prompts/tools/task.md` (fork's `completed:`/`resume=1` lines stay inside
+upstream's new `{{#if asyncEnabled}}{{#if structured}}` gate, with upstream's `{{/if}}{{/if}}`
+closer). All 39 auto-merged overlap files passed a line-presence audit with zero lines lost
+from either side, and `check:ts` is byte-identical to master's warning set with zero errors.
+
+Fork decisions: `models.json` keeps upstream's 18.10.3 bake, re-injects the 62 fork-only rows
+(`web/grok` seed verified in the KDL and in the recompiled rules.json — 1015 rules), and now
+re-derives the compat leaves of three stale fork-carried rows
+(`google-vertex/claude-sonnet-4-5@20250929`, `openai-codex/gpt-5.5`,
+`umans/umans-mimo-v2.6-pro-lab`) from the 18.10.3 engine so `compat-parity` reports 0 diffs —
+master carried 1 diff on the same family. Upstream dropped `meta/sam-3.1`; the fork accepts
+the removal rather than re-baking a retired row. Natives: `index.d.ts` byte-identical, but the
+binaries were refreshed from the official v18.10.3 Linux release (`~/.omp/natives/18.10.3/`)
+instead of restamping the 18.10.0 pair — they differ in content, so re-stamp after every copy.
+
+Verified: targeted suites all pass on the merged tree (task prompt-cache ×3, task restore ×2,
+agent-session-restore, context-fits-model, read-media-path, jobs-panel,
+snapcompact-shape-preview, anthropic-disable-experimental-betas, memory-tools,
+agent-session-message-pipeline, catalog request-size/tokenizer/image-tokenization); `packages/agent`
+has master's single pre-existing `warm-cache guard` failure; `packages/mnemopi`'s 7 failures
+are a subset of master's 15 (suite-order flakes); all 5 zh/[1210] driver cases pass; `gallery`
+renders; `--smoke-test: ok`; installed binary carries `text/uri-list`=5,
+`fuzzyMatchResumableSessions`, `boxRound`, `onActiveTerminalFocusChange`, `resume=1`, and the
+zh effort pattern — CJK is transpiled to **uppercase** `\uXXXX` escapes, so grep `u59CB`
+(the raw UTF-8 bytes are absent from the binary).
+
+
+v18.10.3→v18.12.1 (2026-10-18) — seven upstream releases: 18.10.4 (approval prompts take
+over the composer, Ctrl+Enter approves, Ctrl+O expands; plan-review extension hooks;
+`omp gc --compress`; **Codex Code Mode removed**), 18.11.0 (Tern mic button + local Nemotron
+streaming dictation; composer stays usable during approvals — sending denies+steers; agent
+frontmatter `structured: true`; session entries record the writing build), 18.11.1
+(`judge()`/`judge_batch()` image attachments; `/jobs` job tree; `ctx.ui.getEditorComponent()`;
+directory `read` marks `[unreadable: …]`), 18.11.2 (`lsp.requestTimeout`;
+`auth-gateway serve --clients=<file>`; todo updates piggyback on the next tool call, saving a
+model turn; `memory.save` stored as `stated`; grep searches whole directly-named files), 18.11.3
+(**`imageCountBudget`** in models.yml/modelOverrides; status line shows profile; `prewalk.auto`;
+`/seance` + the `seance` agent to consult saved sessions read-only; approval prompt three-row
+Approve/Approve-session/Deny; **`rs-parking-lot` rule removed**), 18.12.0 (models.yml explicit
+`contextWindow`/`maxTokens` now beat catalog limit rules; API connection prewarm covers every
+built-in provider, never probes gateways; snapcompact keeps imaged-read indentation as
+`[»2]`/`[·4]` count brackets; Opus 5.5 mid-tool replies leave the Thought block), 18.12.1
+(**eval `display()` removed** — print/console.log covers it; `advisor.continueSeverity`;
+DataFrames print as tables, figures attach to results). Synthetic `upstream/v18.12.1` parented
+on `2816fe6d63` (`acdb9016ca`, 1259 files, +73375−15599, matches the trees API exactly); trial
+merge `540ccc5580` + two fix commits, merged to master as `2ce9b18643`.
+
+30 conflicts across 30 files, all adjudicated: `compaction.ts` (6) — upstream refactored remote
+V2 compaction into `sendV2`/`sendRemoteCompaction` with `providerReplayThroughEntryId`
+(compacting before the kept tail when the whole history overflows); fork's `requestUsage`
+billing survived by re-injecting the capture INTO upstream's `sendV2` where `remote` is in
+scope (type + `normalizeCompactionV2Usage` kept). `session-maintenance.ts` (5) + RPC wire
+(`state.ts`, `schema.json`, `generated.ts`, `_wire.py`, `wire.go`, `wire.rs`) — additive
+unions: fork `requestUsage` ⊕ upstream `providerReplayThroughEntryId`; `gen:rpc` not re-run
+(conformance passes with hand-union). `lsp.ts` (2) — fork's per-type card labels kept with
+upstream's expanded-rail `contentLines` wrapping + `clipped` expand-hint heuristic.
+`model-registry.ts` (2) — fork `#configPoolSync` await kept, upstream `AuthPeekOptions`
+threaded through `keys.peek`. `openai-http.ts` — upstream's try/catch `networkFailureError`
+wrapper + per-call `maxAttempts` override, fork's `[1210]` `retryNonRetryableResponse` inside.
+`select.ts` — fork `startAt` wins; upstream's no-session identity order subsumed by fork's
+4-arg `#getCredentialOrder` (needs follow-up: upstream's peek-doesn't-consume-round-robin
+semantics for no-session calls is NOT in the fork path). `learn.ts`/`mnemopi/backend.ts` —
+fork's unified `createToolMemoryRuntimeContext().save()` kept over upstream's legacy direct
+mnemopi/local/hindsight writes; upstream's `veracity: "stated"` adopted inside the options.
+`task.md` — upstream's `{{#ifAny structured hasStructuredAgents}}` + `{{asyncGuidance}}`
+shape taken; fork's `resume=1`/`completed:` wording lives on in `task-async-contract.md`.
+`web-search-codex.test.ts` — fork's stub-auth affinity suite kept, upstream's sqlite/TempDir
+suite body merged around it (TempDir import restored). `selector-controller.ts` — upstream's
+seance consult-picker conditional ⊕ fork's `onRename`. `persisted-agents.ts`,
+`event-controller.ts`, `interactive-mode.ts`, `main.ts`, `lsp/tool.ts`, `priority.json`
+**deleted upstream** (KDL role-defaults replaced it), `docs/memory.md`, `docs/tools/web_search.md`
+— additive unions or upstream takes.
+
+Fork decision that mattered: master's `web/grok`-first chain lived in `priority.json`, which
+upstream DELETED in this series (role chains now come from KDL `role-defaults`). The seed row
+in `web.kdl` survived the merge, but the chain test caught the loss
+(`rolePriorityDefaults("web")[0]` was `web/parallel`). Fix: `model "web/grok"` added as the
+first entry of `role-defaults "web"` in `runtime/behavior.kdl` + `gen:compat` (1077 rules).
+models.json: upstream 18.12.1 bake + 64 re-injected fork-only rows. Natives: ABI **grew**
+(`holdDisplayUntilReleased`/`releaseDisplayAwake`, `parseCodeStatus`,
+`WorkspaceDirectoryError`, `reportDirectoryErrors`, sixel `backgroundRgb` param) — refreshed
+from the official v18.12.1 binary (only a `modern` variant ships; it was copied to both
+baseline+modern slots and stamped).
+
+Verified: `check:ts` = master's 10 pre-existing `wiki-vault-backend.driver.ts` errors
+(patch #42 debt: optional `search`/`read` on `MemoryBackend`), zero new. `packages/agent`
+1 fail = master's `warm-cache guard` (identical). `anthropic-*` 9 fails byte-identical to
+master. mnemopi 7 trial fails are a SUBSET of master's 15, all suite-order flakes (isolated
+runs pass). TUI 10 fails identical to master. Web-search: grok-chain test green after the
+KDL fix; xAI-routing fail pre-exists on master. zh [1210] driver: all 5 pass. `--smoke-test:
+ok`; print-mode probe (`-p` with muyuan relay) completes a real turn; live `web_search`
+probe returns results through the new chain. Binary markers: `text/uri-list`=5,
+`fuzzyMatchResumableSessions`=4, `wasmGrammarFor`=4, `resume=1`=1, `u59CB`=14,
+`holdDisplayUntilReleased`=4, `providerReplayThroughEntryId`=32.
+
+v18.12.1→v18.12.3 (2026-10-20) — two upstream releases: 18.12.2 (computer-use
+background input + takeover fallback, `el.type/press` targeted input, macOS menu
+single-call selection, Escape stops takeover for the turn, `UserIntervened`
+guard, DeepSeek web search engine, bash persistent shell under auto-background,
+`tui.completeScrollback`, verbose tool-call intents, idle compaction aligned to
+1h prompt-cache expiry ~54min in, judge → TypeSafe Jev 1.14 default, browser
+relay background-tab ownership) and 18.12.3 (**Ask and remember** approval mode
+`always-ask-cached` + `/forget-approvals` + `approvalCacheTargets`, job widgets
+via new `widget` model role with local-only rule computation, `proc://<id>/streams`
+pipe tapping, focused-subagent `/model`+`/effort` session-only switching,
+hashline block-edit over-unseen-line rejection, post-restart column-cap edit
+forcing `:raw` re-read, `history.db` corruption quarantine, unknown slash
+command Enter passthrough fix, cancelled-subagent transcript revive). Synthetic
+`upstream/v18.12.3` parented on `acdb9016ca` (`426a540237`, 530 files, +50326
+−4810); trial `trial/v18.12.3`, master merge `7db0821d5c`.
+
+Only 5 conflicts: `rules.json` (took upstream, recompiled — 1079 rules, web/grok
+seed + chain verified), `models.json` (upstream 18.12.3 bake + 70 fork-only rows
+re-injected in upstream insertion order; 1239 stale fork-carried rows re-baked
+from upstream), `task/executor.ts` (3 hunks: upstream `assistantStreaming`/
+`sawAssistantMessage` flags union with fork `updateExecution` transition calls in
+`message_start`/`message_end`; fork `initialExecution` read kept with upstream's
+rewritten owner-routed-job comment), `web/search/utils.ts` (fork `RequestPacer` +
+abort helpers kept, upstream `recencyAfterDate` added alongside), `tui/tools/task.ts`
+(single gate hunk).
+
+Fork decision on the task card: the patch #30 `expanded && view.active` gate —
+mechanically translated to `expanded && (running||pending)` by 9cc8eca5d6 when the
+execution-view card lines were dropped — is residue, not policy (the execution
+state's user surface now lives in agent-hub `presentSubagentExecution` only). Took
+upstream shape: collapsed cards show the stage line and current tool again, and
+upstream's richer post-tool retry detail replaces the fork's pre-route retry line.
+This turned master's 4 chronic `task-progress-render` failures green; upstream's
+`⟦done⟧` statusText ordering adopted too. Trial-only TUI failures: 0 (6 remaining
+all pre-exist on master). mnemopi: 13 trial fails all suite-order flakes (isolated
+runs pass; upstream touched only package.json version). Web-search 4 fails and
+`anthropic-*` 9 fails byte-identical to master. zh [1210] driver: 5/5 pass.
+Natives ABI grew (`escapeStops`, `setRunDeadline`, `axSelectText`, `axType`,
+`LineMatcher`, `PipeStreams`, `closeDesktopEventTaps`, `hiddenContent`,
+`normalizePtyDimensions`) — refreshed from official v18.12.3 binary (modern only,
+copied to both slots + stamped). New binary markers: `escapeStops`=3, `PipeStreams`=4,
+`LineMatcher`=4, `always-ask-cached`=15; all legacy markers intact.

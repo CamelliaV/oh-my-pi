@@ -524,6 +524,7 @@ export class ExtensionRunner {
 	#getContextUsageFn: () => ContextUsage | undefined = () => undefined;
 	#compactFn: (instructionsOrOptions?: string | CompactOptions) => Promise<void> = async () => {};
 	#getSystemPromptFn: () => string[] = () => [];
+	#getPromptSnapshotFn?: ExtensionContextActions["getPromptSnapshot"];
 	#runEphemeralTurnFn?: ExtensionContextActions["runEphemeralTurn"];
 	#ephemeralTurnBlocker = new AsyncLocalStorage<string | undefined>();
 	#getAsyncJobSnapshotFn: () => AsyncJobSnapshot | null = () => null;
@@ -840,6 +841,7 @@ export class ExtensionRunner {
 		this.#getContextUsageFn = contextActions.getContextUsage;
 		this.#compactFn = contextActions.compact;
 		this.#getSystemPromptFn = contextActions.getSystemPrompt;
+		this.#getPromptSnapshotFn = contextActions.getPromptSnapshot;
 		this.#runEphemeralTurnFn = contextActions.runEphemeralTurn;
 
 		// Command context actions (optional, only for interactive mode)
@@ -1444,6 +1446,7 @@ export class ExtensionRunner {
 			getPendingPlanReview: () => this.#getPendingPlanReviewFn(),
 			openPlanReview: () => this.#openPlanReviewFn(),
 			getSystemPrompt: () => this.#getSystemPromptFn(),
+			getPromptSnapshot: this.#getPromptSnapshotFn,
 			runEphemeralTurn: runEphemeralTurn
 				? async options => {
 						if (this.#ephemeralTurnBlocker.getStore()) {

@@ -42,6 +42,7 @@ import { HookSelectorComponent, type HookSelectorSlider } from "@oh-my-pi/pi-tui
 import { getAvailableThemesWithPaths, getThemeByName, setTheme, type Theme, theme } from "@oh-my-pi/pi-tui/theme";
 import type { InteractiveModeContext, InteractiveSelectorDialogOptions } from "../../modes/types";
 import { normalizeCustomMessagePayload, USER_INTERRUPT_LABEL } from "../../session/messages";
+import { buildPromptSnapshot } from "../../prompt-viewer/snapshot";
 import { disambiguateDisplayLabels, sanitizeCarriageReturns } from "@oh-my-pi/pi-tui/render/render-utils";
 import { setExtensionTerminalTitle, setSessionTerminalTitle } from "../../utils/title-generator";
 import { getEditorCommand, openInEditor } from "../../utils/external-editor";
@@ -254,6 +255,7 @@ export class ExtensionUiController {
 			getContextUsage: () => this.ctx.session.getContextUsage(),
 			compact: instructionsOrOptions => this.#compactSession(instructionsOrOptions),
 			getSystemPrompt: () => this.ctx.session.systemPrompt,
+			getPromptSnapshot: () => buildPromptSnapshot(this.ctx.session),
 			runEphemeralTurn: args => this.ctx.session.runEphemeralTurn(args),
 		};
 		const commandActions: ExtensionCommandContextActions = {
@@ -485,6 +487,7 @@ export class ExtensionUiController {
 			getContextUsage: () => this.ctx.session.getContextUsage(),
 			compact: instructionsOrOptions => this.#compactSession(instructionsOrOptions),
 			getSystemPrompt: () => this.ctx.session.systemPrompt,
+			getPromptSnapshot: () => buildPromptSnapshot(this.ctx.session),
 			runEphemeralTurn: args => this.ctx.session.runEphemeralTurn(args),
 		};
 		const commandActions: ExtensionCommandContextActions = {

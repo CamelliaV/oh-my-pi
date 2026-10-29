@@ -11,6 +11,7 @@ import { getSessionSlashCommands } from "../extensibility/extensions/get-command
 import type { ExtensionError, ExtensionMode, ExtensionUIContext } from "../extensibility/extensions/types";
 import type { AgentSession } from "../session/agent-session";
 import { USER_INTERRUPT_LABEL } from "../session/messages";
+import { buildPromptSnapshot } from "../prompt-viewer/snapshot";
 
 /** Action name for an extension-originated send failure. */
 export type ExtensionSendAction = "extension_send" | "extension_send_user";
@@ -146,6 +147,7 @@ export async function initializeExtensions(session: AgentSession, options: Initi
 			shutdown,
 			getContextUsage: () => session.getContextUsage(),
 			getSystemPrompt: () => session.systemPrompt,
+			getPromptSnapshot: () => buildPromptSnapshot(session),
 			runEphemeralTurn: args => session.runEphemeralTurn(args),
 			compact: instructionsOrOptions => runExtensionCompact(session, instructionsOrOptions),
 		},

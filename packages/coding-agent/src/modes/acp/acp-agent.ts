@@ -54,6 +54,7 @@ import {
 	timedOutAskDialogResult,
 } from "../../extensibility/extensions";
 import { runExtensionCompact } from "../../extensibility/extensions/compact-handler";
+import { buildPromptSnapshot } from "../../prompt-viewer/snapshot";
 import { getSessionSlashCommands } from "../../extensibility/extensions/get-commands-handler";
 import { buildSkillPromptMessage, parseSkillInvocation } from "../../extensibility/skills";
 import { MCPManager } from "../../mcp/manager";
@@ -2628,6 +2629,7 @@ export class AcpAgent implements Agent {
 				shutdown: () => {},
 				getContextUsage: () => record.session.getContextUsage(),
 				getSystemPrompt: () => record.session.systemPrompt,
+				getPromptSnapshot: () => buildPromptSnapshot(record.session),
 				runEphemeralTurn: args => record.session.runEphemeralTurn(args),
 				compact: instructionsOrOptions => runExtensionCompact(record.session, instructionsOrOptions),
 			},

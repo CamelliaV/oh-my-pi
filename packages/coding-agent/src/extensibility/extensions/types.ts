@@ -38,6 +38,7 @@ import type {
 import type { CompactionResult } from "@oh-my-pi/pi-agent-core/compaction";
 import type { ContextUsage } from "@oh-my-pi/pi-tui/status-line/types";
 import type { ConfiguredThinkingLevel } from "@oh-my-pi/pi-tui/thinking";
+import type { PromptSnapshot } from "../../prompt-viewer/snapshot";
 import type {
 	Api,
 	AssistantMessage,
@@ -740,6 +741,13 @@ export interface ExtensionContext {
 	isProjectTrusted(): boolean;
 	/** Get the current effective system prompt. */
 	getSystemPrompt(): string[];
+	/**
+	 * Read-only snapshot of the invisible system-side prompt content behind the
+	 * /context usage categories: verbatim system prompt blocks, system context
+	 * blocks, per-tool wire schemas, and the rendered skills catalog, each with
+	 * tokenizer-derived token counts. Optional for hosts without a full session.
+	 */
+	getPromptSnapshot?(): PromptSnapshot;
 
 	/** Run a /btw-style side turn without appending to history or executing tool calls.
 	 * Pass tools: false to omit tool definitions; existing context/provider hooks still run.
@@ -2175,6 +2183,7 @@ export interface ExtensionContextActions {
 	getContextUsage: () => ContextUsage | undefined;
 	compact: (instructionsOrOptions?: string | CompactOptions) => Promise<void>;
 	getSystemPrompt: () => string[];
+	getPromptSnapshot?: () => PromptSnapshot;
 	runEphemeralTurn?: (options: EphemeralTurnOptions) => Promise<EphemeralTurnResult>;
 }
 

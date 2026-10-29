@@ -404,6 +404,7 @@ import {
 	VIBE_MODE_CONTEXT_MESSAGE_TYPE,
 } from "./messages";
 import { ModelControls, type ModelControlsHost } from "./model-controls";
+import { buildPromptSnapshot } from "../prompt-viewer/snapshot";
 import {
 	isPrewalkPlanNudge,
 	PrewalkCoordinator,
@@ -8623,6 +8624,7 @@ export class AgentSession implements SettingsScope {
 				await this.reload();
 			},
 			getSystemPrompt: () => this.systemPrompt,
+			getPromptSnapshot: () => buildPromptSnapshot(this),
 			runEphemeralTurn: args => this.runEphemeralTurn(args),
 			// The SDK always builds a runner (which receives the annotations factory); this runner-less
 			// context only exists for directly constructed sessions, which have no `/annotate` wiring.

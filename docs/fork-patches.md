@@ -1475,6 +1475,25 @@ pans when unwrapped). `1`-`4` jump to a section, `Tab` flips pane focus,
 `createPromptViewerExtension` in `sdk.ts`: `/prompt` command and `alt+s`
 shortcut.
 
+Segmentation (`prompt-viewer/segments.ts`): block 0 and every
+system-context block are cut at line-start markers — harness `§ ` sections,
+markdown H1/H2 headings, `<skills>`, `<project-context>`, `<repo-rules>`,
+`<workstation>`, `<critical>`, `<memory_guidance>`, `Memory summary:`,
+`Learned lessons (` — so one row is one source region rather than a
+multi-thousand-token wall. Invariants: the split is **lossless** (segment
+texts rejoin the block byte for byte; a throwaway smoke asserted this over
+synthetic harness/context shapes), fenced code blocks never split (a
+`# comment` inside ``` stays literal), closing tags do not open segments,
+and a marker whose whole segment is its own line is folded forward into the
+content it titles, producing compound labels like
+`§ Runtime · # Skills & Rules`, `§ Critical · <critical>`,
+`<project-context> · <workstation>`. `# Context file: <abs>` rows shorten
+`$HOME` instead of truncating, so lightweight sessions read
+`block 1 · # Context file: ~/code/oh-my-pi/AGENTS.md` — the file that
+produced the row. Per-segment tokens are the segment's own count, so their
+sum is the block total while the section header keeps the `/context`
+category (which subtracts the skills list).
+
 Verified: `bun run check` clean (10 pre-existing wiki-vault driver errors
 remain); standalone render smoke (deleted after use) asserted chrome,
 category markers, and footer hints; tmux PTY probe of the installed

@@ -80,7 +80,7 @@ export function buildPromptSnapshot(session: AgentSession): PromptSnapshot {
 
 	const systemPromptBlocks: PromptBlock[] = [
 		{
-			label: "block 0 · harness template (skills list rendered inside; counted under Skills)",
+			label: "block 0 · harness template (raw count; skills list inside, counted under Skills)",
 			text: block0,
 			tokens: countTokens(block0),
 		},
@@ -94,8 +94,19 @@ export function buildPromptSnapshot(session: AgentSession): PromptSnapshot {
 
 	const tools = shape.agent?.state?.tools ?? [];
 	const systemToolsBlocks: PromptBlock[] = tools.map(tool => {
-		// Per-tool wire text: the same fragments the schema estimator tokenizes.
-		const wireLines: string[] = [];
+		// Display: name, description, pretty schema, examples.
+		// Counting mirrors estimateToolSchemaTokens exactly — four separate
+		// fragments, compact JSON — so per-block sums match the category total.
+		const displayLines: string[] = [];
+		const fragments: string[] = [];
+		if (typeof tool.name === "string") {
+			fragments.push(tool.name);
+			displayLines.push(`# ${tool.name}`, "");
+		}
+		if (typeof tool.description === "string") {
+			fragments.push(tool.description);
+			displayLines.push(tool.description, "");
+		}
 		try {
 			const wireTool = {
 				name: tool.name,
@@ -103,17 +114,22 @@ export function buildPromptSnapshot(session: AgentSession): PromptSnapshot {
 				parameters: tool.parameters,
 				examples: tool.examples,
 			} as Parameters<typeof toolWireSchema>[0];
-			wireLines.push(JSON.stringify(toolWireSchema(wireTool) ?? {}, null, 2));
+			const wireJson = JSON.stringify(toolWireSchema(wireTool) ?? {});
+			if (typeof wireJson === "string") fragments.push(wireJson);
+			displayLines.push(JSON.stringify(toolWireSchema(wireTool) ?? {}, null, 2));
 			const examplesBlock = renderToolExamples(wireTool as Parameters<typeof renderToolExamples>[0]);
-			if (examplesBlock) wireLines.push(examplesBlock);
+			if (examplesBlock) {
+				fragments.push(examplesBlock);
+				displayLines.push("", examplesBlock);
+			}
 		} catch (error) {
-			wireLines.push(`[schema unavailable: ${error instanceof Error ? error.message : String(error)}]`);
+			displayLines.push(`[schema unavailable: ${error instanceof Error ? error.message : String(error)}]`);
 		}
-		const text = wireLines.join("\n");
 		return {
-			label: tool.name,
-			text,
-			tokens: countTokens([tool.name, tool.description ?? "", text].filter(fragment => fragment.length > 0)),
+			label:
+				shape.model?.toolSchemasInContext === false ? `${tool.name} (schemas not sent to this model)` : tool.name,
+			text: displayLines.join("\n"),
+			tokens: countTokens(fragments),
 		};
 	});
 

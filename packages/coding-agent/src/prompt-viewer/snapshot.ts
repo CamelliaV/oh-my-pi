@@ -2,6 +2,7 @@ import { renderToolExamples } from "@oh-my-pi/pi-ai/dialect";
 import { toolWireSchema } from "@oh-my-pi/pi-ai/utils/schema";
 import { computeSessionContextBreakdown } from "../session/context-usage-runtime";
 import type { AgentSession } from "../session/agent-session";
+import { splitIntoSegments } from "./segments";
 
 /**
  * Read-only snapshot of the invisible system-side prompt content behind the
@@ -78,19 +79,25 @@ export function buildPromptSnapshot(session: AgentSession): PromptSnapshot {
 	const parts = shape.systemPrompt ?? [];
 	const block0 = parts[0] ?? "";
 
-	const systemPromptBlocks: PromptBlock[] = [
-		{
-			label: "block 0 · harness template (raw count; skills list inside, counted under Skills)",
-			text: block0,
-			tokens: countTokens(block0),
-		},
-	];
-
-	const systemContextBlocks: PromptBlock[] = parts.slice(1).map((part, index) => ({
-		label: `block ${index + 1}${index === parts.length - 2 && parts.length > 1 ? " · project context" : ""}`,
-		text: part ?? "",
-		tokens: countTokens(part ?? ""),
+	// Split each prompt block at structural markers so a row is one source
+	// region (harness section, wrapper tag, rules file heading) rather than a
+	// multi-thousand-token wall of text. Lossless: segments rejoin the block.
+	const systemPromptBlocks: PromptBlock[] = splitIntoSegments(block0).map(segment => ({
+		label:
+			segment.label === "<skills>"
+				? `block 0 · <skills> (${segment.text.split("\n").length - 2} lines, counted under Skills)`
+				: `block 0 · ${segment.label}`,
+		text: segment.text,
+		tokens: countTokens(segment.text),
 	}));
+
+	const systemContextBlocks: PromptBlock[] = parts.slice(1).flatMap((part, index) =>
+		splitIntoSegments(part ?? "").map(segment => ({
+			label: `block ${index + 1} · ${segment.label}`,
+			text: segment.text,
+			tokens: countTokens(segment.text),
+		})),
+	);
 
 	const tools = shape.agent?.state?.tools ?? [];
 	const systemToolsBlocks: PromptBlock[] = tools.map(tool => {

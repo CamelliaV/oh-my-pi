@@ -1308,14 +1308,21 @@ Two defects in the original shape:
    tool still reaches the model through the wire schema plus the hidden roster
    notice (`prompts/system/tool-roster-notice.md`, delivered with the next user
    prompt, "Your current tool schema is authoritative"), never through a prompt
-   rewrite. `injectToolsByName` sets `freezePrompt = agent.state.messages.length > 0`:
-   before the first message the prompt may absorb the roster for free; after it,
-   the committed prompt stays byte-identical.
+   rewrite. `injectToolsByName` freezes on `#providerPrefixDelivered()` — an
+   assistant message exists, sticky so compaction cannot re-enable rebuilds —
+   never on message count: a `custom` notice seeded at startup (an attached
+   `eval` kernel state, a session-agent card) and a queued user prompt are
+   unsent scaffolding that rides the *next* request, so counting them froze the
+   prompt for sessions whose prefix had never been cached (observed as a
+   `test/session/inject-tools.test.ts` failure only when another test file left
+   an eval kernel attached). Before a reply the prompt may absorb the roster
+   for free; after it, the committed prompt is not even re-assigned.
 
 Verified offline in `test/session/inject-tools.test.ts` (real `createAgentSession`,
-whitelist `[]`): additive add, `only`, `remove`; the base prompt *changes* when
-the roster is injected before any message and is **byte-identical** when a
-message exists, while `getActiveToolNames()` still gains the tool. Verified on
+whitelist `[]`): additive add, `only`, `remove`; the base prompt array is
+re-assigned (rebuilt) when the roster is injected before a reply and stays the
+**same array** once the provider has answered, while `getActiveToolNames()`
+still gains the tool; a pre-seeded unsent `custom` message does not freeze. Verified on
 the installed binary: `--lightweight` → `/inject read` then `/inject bash`
 reports `read, bash`; a resumed session with history → `/inject goal` reports
 `25 tool(s) [add]`, `/prompt` shows the frozen `# Tool Inventory` without `goal`

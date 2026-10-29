@@ -50,7 +50,10 @@ describe("injectToolsByName", () => {
 			modelRegistry,
 			sessionManager: SessionManager.inMemory(),
 			settings: Settings.isolated(),
-			model: getBundledModel("openai", "gpt-4o-mini"),
+			// Clone the bundled entry: `getBundledModel` returns a shared object, and
+			// `prefixBinding` decides whether an implicit prompt rebuild may commit —
+			// reading it from a mutable global would make this test order-dependent.
+			model: { ...getBundledModel("openai", "gpt-4o-mini"), thinking: { enabled: false, prefixBinding: false } } as never,
 			disableExtensionDiscovery: true,
 			skills: [],
 			contextFiles: [],
@@ -65,9 +68,17 @@ describe("injectToolsByName", () => {
 		return created.session;
 	};
 
-	/** One prior user turn: the provider has seen, and cached, the request prefix. */
-	const deliverUserMessage = (live: AgentSession): void => {
+	/**
+	 * One settled turn: the provider answered, so its prompt cache holds the
+	 * prefix that this session sent.
+	 */
+	const deliverTurn = (live: AgentSession): void => {
 		live.agent.state.messages.push({ role: "user", content: "hello", timestamp: Date.now() });
+		live.agent.state.messages.push({
+			role: "assistant",
+			content: [{ type: "text", text: "hi" }],
+			timestamp: Date.now(),
+		} as never);
 	};
 
 	it("adds to the active roster instead of replacing it", async () => {
@@ -84,6 +95,25 @@ describe("injectToolsByName", () => {
 		expect(live.getActiveToolNames()).toEqual(["read"]);
 	});
 
+	it("does not freeze on unsent scaffolding that was never on the wire", async () => {
+		const live = await start();
+		// A seeded `custom` notice (an attached eval kernel state, a session-agent
+		// card) rides the next request; it is not evidence of a cached prefix, so
+		// the prompt may still absorb the roster.
+		live.agent.state.messages.push({
+			role: "custom",
+			customType: "eval-state-context",
+			content: "kernel state",
+			display: false,
+			timestamp: Date.now(),
+		} as never);
+		const before = live.systemPrompt;
+
+		await live.injectToolsByName(["read"]);
+
+		expect(live.systemPrompt).not.toBe(before);
+	});
+
 	it("`only` replaces the set", async () => {
 		const live = await start();
 		await live.injectToolsByName(["read", "bash"]);
@@ -93,25 +123,29 @@ describe("injectToolsByName", () => {
 
 	it("lets the base prompt absorb the new roster before the first message", async () => {
 		const live = await start();
-		const before = [...live.systemPrompt];
+		// `agent.setSystemPrompt` stores the array by reference, so identity is the
+		// rebuild signal — independent of what the template happens to render.
+		const before = live.systemPrompt;
 
 		await live.injectToolsByName(["read"]);
 
-		// Nothing is cached yet, so the prompt is free to describe the new tool.
-		expect([...live.systemPrompt]).not.toEqual(before);
+		// Nothing is cached yet, so a rebuild is allowed to commit.
+		expect(live.systemPrompt).not.toBe(before);
 	});
 
-	it("freezes the base prompt once a message exists, while exposing the tool schema", async () => {
+	it("freezes the base prompt once the provider answered, while exposing the tool schema", async () => {
 		const live = await start();
 		await live.injectToolsByName(["read"]);
-		deliverUserMessage(live);
-		const before = [...live.systemPrompt];
+		deliverTurn(live);
+		const before = live.systemPrompt;
 
 		await live.injectToolsByName(["bash"]);
 
-		// Cache contract: the committed prompt is byte-identical, so the cached
-		// prefix still matches, and the new tool rides the wire schema instead.
-		expect([...live.systemPrompt]).toEqual(before);
+		// Cache contract: the committed prompt is not even re-assigned, let alone
+		// rewritten, so the cached prefix still matches and the new tool rides the
+		// wire schema instead.
+		expect(live.systemPrompt).toBe(before);
+		expect([...live.systemPrompt]).toEqual([...before]);
 		expect(live.getActiveToolNames().sort()).toEqual(["bash", "read"]);
 	});
 });

@@ -397,6 +397,8 @@ export class SessionTools {
 	/** The latest per-turn override and the base its hook was given; kept after the turn ends. */
 	#lastTurnSystemPromptOverride: { prompt: string[]; base: string[] } | undefined;
 	#lastAppliedToolSignature: string | undefined;
+	/** Sticky: an assistant reply was observed, so the provider holds a cached prefix. */
+	#prefixDelivered = false;
 	/** Full enabled set, including tools demoted from the model-visible surface. */
 	#enabledToolNames = new Set<string>();
 	/**
@@ -2080,19 +2082,41 @@ export class SessionTools {
 	 * (the common case — `/inject read` then `/inject write` keeps both), `only`
 	 * replaces it, `remove` drops just the named tools.
 	 *
-	 * Cache safety: once the transcript carries a message the provider has
-	 * already cached the prefix (system prompt + wire schema), so the base prompt
-	 * is frozen and the new tool reaches the model through the wire schema plus
-	 * the hidden roster notice on the next prompt instead of a prompt rebuild.
-	 * Before the first message the prompt is free to absorb the new roster.
+	 * Cache safety: once the provider has answered a request (see
+	 * {@link #providerPrefixDelivered}) it has cached the prefix (system prompt +
+	 * wire schema), so the base prompt is frozen and the new tool reaches the
+	 * model through the wire schema plus the hidden roster notice on the next
+	 * prompt instead of a prompt rebuild. Before that the prompt is free to
+	 * absorb the new roster.
 	 *
 	 * Returns the names that landed: a factory may decline (`createIf`, e.g.
 	 * `ask` without interactive prompts) or a settings gate may have closed
 	 * between the catalog read and the injection.
 	 */
+	/**
+	 * Whether a request carrying the current prefix has already reached the
+	 * provider, which is the only state in which a prompt rewrite costs a cache
+	 * miss. Evidence is an assistant message: unsent scaffolding — `custom`
+	 * notices seeded at startup (an attached `eval` kernel state, for one), a
+	 * queued user prompt — rides the *next* request and is still free to change.
+	 * The verdict is sticky so compaction pruning the transcript cannot re-enable
+	 * mid-session rebuilds.
+	 */
+	#providerPrefixDelivered(): boolean {
+		if (this.#prefixDelivered) return true;
+		if (this.#host.agent.state.messages.some(message => message.role === "assistant")) {
+			this.#prefixDelivered = true;
+		}
+		return this.#prefixDelivered;
+	}
+
 	async injectToolsByName(names: string[], mode: InjectToolsMode = "add"): Promise<string[]> {
 		const requested = [...new Set(names)];
-		const freezePrompt = this.#host.agent.state.messages.length > 0;
+		// The provider caches a prefix only after a request carried it. An assistant
+		// reply is the evidence a request went out; unsent scaffolding (`custom`
+		// notices seeded at startup, a queued user prompt) must not freeze the
+		// prompt, or the roster would never reach a prompt that is still free.
+		const freezePrompt = this.#providerPrefixDelivered();
 		this.#setRuntimeToolWhitelist?.(current => {
 			if (mode === "add") return current === undefined ? undefined : [...new Set([...current, ...requested])];
 			if (mode === "remove") return current?.filter(name => !requested.includes(name));

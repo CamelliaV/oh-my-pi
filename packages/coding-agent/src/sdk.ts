@@ -2792,12 +2792,14 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 
 			inlineExtensions.push(...(options.extensions ?? []));
 			inlineExtensions.push(createWorkspaceInspectorExtension);
-			inlineExtensions.push(createPromptViewerExtension);
 			inlineExtensions.push(createAutoresearchExtension);
 			if (customTools.length > 0) {
 				inlineExtensions.push(createCustomToolsExtension(customTools, customToolSourcePaths));
 			}
 		}
+		// The prompt viewer is read-only over the session (no LLM tools), so it
+		// stays available under --lightweight / restricted tool rosters too.
+		inlineExtensions.push(createPromptViewerExtension);
 		// Forward the path list (NOT the loaded tools) to subagents so they
 		// re-bind under their own `CustomToolAPI` while skipping the FS scan.
 		toolSession.customToolPaths = customToolPaths;

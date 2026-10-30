@@ -595,9 +595,19 @@ export interface ResetSessionContextResult {
 /** Queued user content restored to the editor. */
 export type RestoredQueuedMessage = { text: string; images?: ImageContent[] };
 
+/** Bound on the session history an ephemeral turn replays. */
+export interface EphemeralHistoryWindow {
+	/** Keep at most this many trailing messages. */
+	readonly maxMessages: number;
+	/** Keep the opener (the first operator-authored user message) as an anchor when it falls outside the window. Default true. */
+	readonly keepOpeningTurn?: boolean;
+}
+
 /** Options for the same ephemeral side turn used by /btw. */
 export interface EphemeralTurnOptions {
 	promptText: string;
+	/** Replay only a bounded tail of the session history instead of the whole branch (title naming, side turns). */
+	historyWindow?: EphemeralHistoryWindow;
 	/** Detached prior side-turn messages to prepend to this request. They are copied and never appended to the session history. */
 	history?: readonly Message[];
 	/** Opaque provider-lineage key for a series of related side turns. Rotate it after cancellation or failure before retrying. */

@@ -38,7 +38,6 @@ import { ToolError } from "@oh-my-pi/pi-tui/tools/tool-errors";
 import {
 	isMountableUnderXdev,
 	listXdevTools,
-	planXdevPromptDocs,
 	type XdevState,
 	xdevDocsFor,
 	xdevEntries,
@@ -204,6 +203,8 @@ export interface MCPXdevGuidanceProjection {
 
 const MAX_MCP_XDEV_GUIDANCE_MAPPING_DATA_LENGTH = 4000;
 const MAX_MCP_XDEV_GUIDANCE_MAPPINGS = 64;
+/** Per-server cap on instructions text delivered through a mount notice (mirrors the base prompt's cap). */
+const MAX_MCP_NOTICE_INSTRUCTIONS_LENGTH = 4000;
 
 /** Yield exact mounted MCP ownership and route metadata. */
 export function* collectMountedMCPToolRoutes(
@@ -1733,6 +1734,36 @@ export class SessionTools {
 		return projection.notice;
 	}
 
+	/**
+	 * Instructions text for the MCP servers that own `addedNames`, rendered into
+	 * the mount notice instead of the base prompt (`## MCP Server Instructions`).
+	 * The base prompt keeps whatever it was built with; a later real rebuild
+	 * absorbs the current text. Empty when no added device belongs to a server
+	 * that publishes instructions.
+	 */
+	#mcpNoticeInstructions(addedNames: readonly string[]): { server: string; text: string }[] {
+		const all = this.#getMcpServerInstructions?.();
+		if (!all || all.size === 0 || addedNames.length === 0 || !this.#xdev) return [];
+		const added = new Set(addedNames);
+		const servers = new Set<string>();
+		for (const route of collectMountedMCPToolRoutes(listXdevTools(this.#xdev))) {
+			if (added.has(route.name)) servers.add(route.mcpServerName);
+		}
+		const out: { server: string; text: string }[] = [];
+		for (const server of [...servers].sort()) {
+			const text = all.get(server);
+			if (!text) continue;
+			out.push({
+				server,
+				text:
+					text.length > MAX_MCP_NOTICE_INSTRUCTIONS_LENGTH
+						? `${text.slice(0, MAX_MCP_NOTICE_INSTRUCTIONS_LENGTH)}\n[truncated]`
+						: text,
+			});
+		}
+		return out;
+	}
+
 	/** Stable fingerprint of a mount notice's rendered text, ignoring its timestamp. */
 	#xdevNoticeContentKey(notice: CustomMessage<XdevMountNoticeDetails> | undefined): string {
 		if (!notice) return "";
@@ -1770,32 +1801,14 @@ export class SessionTools {
 		// {@link #notifyXdevMountDelta} cancel a mount followed by an unmount before
 		// any request is sent (issue #7139 reviews).
 		if (baseCatalogDelivered) {
-			// Route guidance ships in the same request's append prompt: a pending
-			// add whose route line already carries its catalog summary needs no
-			// notice line — the route renders the same name and summary. Deferred
-			// MCP discovery is the common path — the post-connect mount lands
-			// before the next user turn while the base catalog (which the check
-			// above consults) never lists routed tools — so without this check
-			// the notice would duplicate every route line verbatim. Two devices
-			// keep their notice lines: ones the bounded route projection omits
-			// (no shipped route line to lean on), and ones whose docs the prompt
-			// inlines (their route line has no summary; the notice is what
-			// delivers their docs).
-			let routedSummaryNames: Set<string> | undefined;
-			if (this.#xdev) {
-				const docsPlan = planXdevPromptDocs(
-					this.#xdev,
-					cfgToolsXdevDocs.get(this.#host.settings),
-					cfgToolsXdevInlineDevices.get(this.#host.settings),
-				);
-				routedSummaryNames = new Set(
-					projectMountedMCPXdevGuidance(collectMountedMCPToolRoutes(listXdevTools(this.#xdev)))
-						.mappings.filter(mapping => docsPlan.catalog.has(mapping.name))
-						.map(mapping => mapping.name),
-				);
-			}
+			// A device the base prompt's own route guidance already lists carries
+			// its name and summary there, so its mount needs no notice line. New
+			// MCP routes are NOT assumed to ship that way any more: a mid-session
+			// mount no longer rebuilds the base prompt (rebuilding busts the
+			// provider cache prefix), so its route lines reach the model through
+			// this notice until some later real rebuild absorbs them.
 			for (const name of pending.added) {
-				if (this.#basePromptXdevNames.has(name) || routedSummaryNames?.has(name)) announcedMounts.add(name);
+				if (this.#basePromptXdevNames.has(name)) announcedMounts.add(name);
 			}
 		}
 		// Only announce a net change relative to what the model already knows (from
@@ -1825,7 +1838,12 @@ export class SessionTools {
 			notice: {
 				role: "custom",
 				customType: XDEV_MOUNT_NOTICE_MESSAGE_TYPE,
-				content: prompt.render(xdevMountNoticePrompt, { added, removed, docs }),
+				content: prompt.render(xdevMountNoticePrompt, {
+					added,
+					removed,
+					docs,
+					instructions: this.#mcpNoticeInstructions(addedNames),
+				}),
 				details: { added: addedNames, removed: removedNames },
 				attribution: "agent",
 				display: false,
@@ -2286,17 +2304,18 @@ export class SessionTools {
 	 *      desync prompt guidance from actual tool routing. Likewise a flipped
 	 *      `readsSkillUris` changes skill catalog/URI guidance with identical
 	 *      names and descriptions, so it must rebuild too.
-	 *   3. The bounded mounted-MCP projection: escaped original-name labels,
-	 *      actual `xd://` paths, and the omission flag in catalog order. These are
-	 *      the exact values rendered by the global transport guidance; catalog
-	 *      churn wholly behind the fallback does not change the prompt.
-	 *   4. MCP server instructions text (per server), since `rebuildSystemPrompt`
-	 *      embeds these in the appended prompt under "## MCP Server Instructions".
-	 *      A server upgrade can change instructions while keeping tools identical.
-	 *   5. Sorted names of mounted xd:// skill readers: mounting, unmounting,
+	 *   3. Sorted names of mounted xd:// skill readers: mounting, unmounting,
 	 *      or flipping such a reader changes skill catalog/URI guidance without
 	 *      touching the direct inventory, so it must rebuild. Mount churn of
 	 *      capability-less tools leaves this segment empty and the prompt stable.
+	 *
+	 * Mounted MCP routes and their server instructions are deliberately NOT part
+	 * of the signature. A gateway that connects mid-session must never rewrite the
+	 * base prompt: that busts the provider prompt-cache prefix for every remaining
+	 * turn (the 2026-10-30 incident lost a 43,776-token prefix to one mount). New
+	 * routes, summaries and server instructions ride the `xdev-mount-notice`
+	 * instead, and the next real rebuild (model switch, skills refresh, resume)
+	 * absorbs them into the base snapshot.
 	 *
 	 * Settings-driven tool metadata is covered automatically: built-in tools that
 	 * depend on settings expose `description`/`label` via getters (see `TaskTool`,
@@ -2328,41 +2347,20 @@ export class SessionTools {
 		const describeTool = (tool: AgentTool): string =>
 			`${tool.name}=${tool.label ?? ""}|${tool.description ?? ""}|${tool.customWireName ?? ""}|${toolReadsSkillUris(tool)}`;
 		const descriptionSegment = tools.map(describeTool).join("\u0002");
-		const mountedMCPProjection = projectMountedMCPXdevGuidance(
-			collectMountedMCPToolRoutes(this.#xdev ? listXdevTools(this.#xdev) : []),
-		);
-		const mountedMCPRouteSegment =
-			JSON.stringify({
-				mappings: mountedMCPProjection.mappings.map(mapping => [mapping.label, mapping.path] as const),
-				hasOmittedMappings: mountedMCPProjection.hasOmittedMappings,
-			}) ?? "{}";
-		const serverInstructions = this.#getMcpServerInstructions?.();
-		let instructionsSegment = "";
-		if (serverInstructions && serverInstructions.size > 0) {
-			// Sort by server name so transport flap order does not perturb the signature.
-			const entries: string[] = [];
-			for (const [server, instructions] of serverInstructions) {
-				entries.push(`${server}=${instructions}`);
-			}
-			entries.sort();
-			instructionsSegment = entries.join("\u0006");
-		}
-		// The non-MCP remainder of the xd:// inventory is deliberately NOT part
-		// of the signature: its mount/unmount announces itself through
-		// `#notifyXdevMountDelta` rather than rewriting the system prompt, keeping
-		// the provider cache prefix byte-stable. Mounted MCP routes are the narrow
-		// exception above, bounded to the exact projection rendered in the global
-		// route guidance so churn wholly behind its fallback does not rebuild.
-		// Mounted xd:// readers stay out of the direct inventory, but a mounted
-		// skill reader still drives catalog/URI guidance: hash only the sorted
-		// names of mounted readers so their mount/unmount/flip rebuilds, while
-		// mount churn of capability-less tools keeps the prompt byte-stable.
+		// The whole xd:// inventory — MCP routes included — is deliberately NOT
+		// part of the signature: its mount/unmount announces itself through
+		// `#notifyXdevMountDelta` (and rebuilds would rewrite the system prompt,
+		// busting the provider cache prefix). Mounted xd:// readers stay out of
+		// the direct inventory, but a mounted skill reader still drives
+		// catalog/URI guidance: hash only the sorted names of mounted readers so
+		// their mount/unmount/flip rebuilds, while mount churn of
+		// capability-less tools keeps the prompt byte-stable.
 		const mountedReaderSegment = mountedTools
 			.filter(tool => toolReadsSkillUris(tool))
 			.map(tool => tool.name)
 			.sort()
 			.join("\u0002");
-		return `${nameSegment}\u0003${descriptionSegment}\u0007${instructionsSegment}\u0008${mountedMCPRouteSegment}\u0009${mountedReaderSegment}`;
+		return `${nameSegment}\u0003${descriptionSegment}\u0009${mountedReaderSegment}`;
 	}
 
 	/**

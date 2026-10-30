@@ -287,6 +287,7 @@ import type {
 	CommandMetadataChangedListener,
 	ContextUsageBreakdown,
 	DroppedPrompt,
+	EphemeralHistoryWindow,
 	EphemeralTurnOptions,
 	EphemeralTurnResult,
 	FollowUpOptions,
@@ -477,6 +478,8 @@ const SESSION_STOP_CONTINUATION_CAP = 8;
 const DEFERRED_TITLE_MIN_WORDS = 40;
 /** Cap on the forked title request itself (measured p90 2.3s). */
 const TITLE_FORK_TIMEOUT_MS = 15_000;
+/** Trailing session messages a forked title request replays (the whole branch would price a naming request at session size). */
+const TITLE_FORK_HISTORY_MESSAGES = 12;
 
 /** The public summary of `job` (see {@link AsyncJobSnapshotItem}). */
 function jobSnapshotItem(job: AsyncJob): AsyncJobSnapshotItem {
@@ -811,6 +814,23 @@ function ephemeralMaxTokensRejection(model: Model): string | undefined {
 	// policy says the output limit will be omitted or overwritten.
 	if (!supportsOutputTokenLimit(model)) return "does not support maxTokens for ephemeral turns";
 	return undefined;
+}
+
+/**
+ * Bound the session history an ephemeral turn replays: the last `maxMessages`
+ * messages plus the opener when the window does not already cover it. A naming
+ * request must cost a fixed slice of the session, not the whole branch.
+ */
+function windowEphemeralHistory(
+	messages: readonly AgentMessage[],
+	window: EphemeralHistoryWindow,
+): AgentMessage[] {
+	const limit = Math.max(1, Math.floor(window.maxMessages));
+	if (messages.length <= limit) return [...messages];
+	const tail = messages.slice(-limit);
+	if (window.keepOpeningTurn === false) return tail;
+	const opening = messages.find(message => isUserAuthoredMessage(message));
+	return opening && !tail.includes(opening) ? [opening, ...tail] : tail;
 }
 
 /** True for transcript messages that create, use, or report on eval runtime state. */
@@ -9887,6 +9907,7 @@ export class AgentSession implements SettingsScope {
 		const started = performance.now();
 		const icons = this.#cardIcons();
 		this.runEphemeralTurn({
+			historyWindow: { maxMessages: TITLE_FORK_HISTORY_MESSAGES },
 			promptText: prompt.render(titleForkPrompt, {
 				card: icons !== "boring",
 				nerdFonts: icons === "nf+emoji",
@@ -9965,7 +9986,11 @@ export class AgentSession implements SettingsScope {
 	#startAutoTitle(text: string, sessionId: string): void {
 		this.#titleGenerationInFlightFor = sessionId;
 		const signal = this.#titleGenerationAbortController.signal;
-		this.generateTitle(text)
+		// Name the goal, not the current micro-step: the opener plus the recent
+		// window, bounded — never the whole branch (that priced a naming request
+		// at session size and made it depend on the provider cache).
+		const context = this.#buildReplanTitleContext() || text;
+		this.generateTitle(context)
 			.then(async title => {
 				// Re-check after generation so a later completion cannot replace
 				// the first title, and a request from a replaced session cannot
@@ -11681,7 +11706,7 @@ export class AgentSession implements SettingsScope {
 		}
 		assertEphemeralTurnReady();
 		const cacheSessionId = this.sessionId;
-		const snapshot = this.#buildEphemeralSnapshot(args.promptText, args.history);
+		const snapshot = this.#buildEphemeralSnapshot(args.promptText, args.history, args.historyWindow);
 		const llmMessages = await this.convertMessagesToLlm(snapshot, args.signal);
 		assertEphemeralTurnReady();
 		const sideContext = await this.agent.buildSideRequestContext(llmMessages);
@@ -11824,8 +11849,14 @@ export class AgentSession implements SettingsScope {
 	 * the partial response in context, then appends detached side-channel history
 	 * and the current prompt after the no-tools reminder.
 	 */
-	#buildEphemeralSnapshot(promptText: string, history?: readonly Message[]): AgentMessage[] {
-		const messages = [...this.messages];
+	#buildEphemeralSnapshot(
+		promptText: string,
+		history?: readonly Message[],
+		historyWindow?: EphemeralHistoryWindow,
+	): AgentMessage[] {
+		const messages = historyWindow
+			? windowEphemeralHistory(this.messages, historyWindow)
+			: [...this.messages];
 		const streaming = this.agent.state.streamMessage;
 		if (streaming && streaming.role === "assistant" && Array.isArray(streaming.content)) {
 			const preservedBlocks: AssistantMessage["content"] = [];

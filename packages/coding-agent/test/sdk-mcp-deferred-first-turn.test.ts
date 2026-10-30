@@ -11,10 +11,10 @@ import { TempDir } from "@oh-my-pi/pi-utils";
 import { createInMemoryAuthStorage } from "./helpers/agent-session-setup";
 
 // Contract: UI/RPC sessions (`hasUI`) defer MCP discovery off startup. A prompt that
-// arrives while MCP servers are still connecting must not send its first request without
-// their routes: every later request (and, on resume, the previous process) carries them,
-// so a first request without them changes the system prompt bytes and misses the provider
-// prompt cache. That covers servers still connecting after discovery's startup window too.
+// arrives while MCP servers are still connecting holds its first request until their
+// routes are known, so the base prompt is built once with them instead of being
+// re-announced later. Routes never rewrite the base prompt after it is built: a server
+// that connects later rides a mount notice, keeping the provider cache prefix stable.
 // The wait is bounded, paid by the first turn only, and ends at once on abort.
 //
 // When the turn stops waiting is observed at `before_agent_start`, which the turn emits
@@ -22,6 +22,20 @@ import { createInMemoryAuthStorage } from "./helpers/agent-session-setup";
 // agent loop that would blur the deadline. Request contents are asserted at the provider.
 
 const MCP_TOOL_NAME = "mcp__probe_lookup";
+/** Rendered xd:// mount notices persisted on the session branch. */
+function mountNoticeText(session: {
+	agent: { state: { messages: readonly { role: string; customType?: string; content?: unknown }[] } };
+}): string {
+	return session.agent.state.messages
+		.filter(message => message.role === "custom" && message.customType === "xdev-mount-notice")
+		.map(message => {
+			const content = message.content as string | { type: string; text?: string }[];
+			return typeof content === "string"
+				? content
+				: content.flatMap(part => (part.type === "text" && part.text ? [part.text] : [])).join("");
+		})
+		.join("\n");
+}
 const MCP_ROUTE = `xd://${MCP_TOOL_NAME}`;
 /** Margin around the deadline: Bun's fake clock fires a timer 1 ms before it is due. */
 const DEADLINE_SLACK_MS = 5;
@@ -196,7 +210,9 @@ describe("createAgentSession deferred MCP discovery and the first turn", () => {
 		await stepUntil(() => systemPrompts.length > 0, SEND_MS);
 		vi.useRealTimers();
 		await prompted;
-		expect(systemPrompts[0]).toContain(MCP_ROUTE);
+		// The probe connected after the base prompt was built, so its route arrives in
+		// the mount notice instead of rewriting the prompt bytes.
+		expect(`${systemPrompts[0]}\n${mountNoticeText(session)}`).toContain(MCP_ROUTE);
 	});
 
 	it("publishes the tools discovery returned before waiting on slower servers", async () => {

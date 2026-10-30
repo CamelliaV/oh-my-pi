@@ -35,7 +35,7 @@ export const cfgTitleGenerator = register({
 	id: "title.generator",
 	type: "enum",
 	values: ["fork", "tiny"] as const,
-	default: "fork",
+	default: "tiny",
 	ui: {
 		tab: "tasks",
 		group: "Modes",
@@ -44,11 +44,15 @@ export const cfgTitleGenerator = register({
 		options: [
 			{
 				value: "fork",
-				label: "Fork",
+				label: "Fork (opt-in)",
 				description:
-					"A side turn of the reply on the session's model: reads its prompt cache, adds the card icon (default)",
+					"A side turn of the reply on the session's model, with a bounded recent-history window: adds the card icon. Costs a slice of the session on every new session",
 			},
-			{ value: "tiny", label: "Tiny", description: "The title model role only; plain titles without a card" },
+			{
+				value: "tiny",
+				label: "Tiny (default)",
+				description: "The title model role on a bounded opener+recent context; plain titles, no card, no dependency on the session model",
+			},
 		],
 	},
 });

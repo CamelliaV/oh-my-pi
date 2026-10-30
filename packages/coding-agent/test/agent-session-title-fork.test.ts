@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "bun:test";
-import { Agent, type AgentTool } from "@oh-my-pi/pi-agent-core";
+import { Agent, type AgentMessage, type AgentTool } from "@oh-my-pi/pi-agent-core";
 import * as ai from "@oh-my-pi/pi-ai";
 import { createMockModel, type MockModel, type MockResponse } from "@oh-my-pi/pi-ai/providers/mock";
 import { getBundledModel } from "@oh-my-pi/pi-catalog/models";
@@ -44,7 +44,11 @@ async function createSession(
 	main: MockModel,
 	side: MockModel,
 	settings: Record<string, unknown> = {},
-	{ autoTitle = true, todo = false }: { autoTitle?: boolean; todo?: boolean } = {},
+	{
+		autoTitle = true,
+		todo = false,
+		initialMessages = [],
+	}: { autoTitle?: boolean; todo?: boolean; initialMessages?: AgentMessage[] } = {},
 ): Promise<AgentSession> {
 	authStorage = await AuthStorage.create(":memory:");
 	authStorage.keys.setRuntime("anthropic", "test-key");
@@ -54,6 +58,8 @@ async function createSession(
 	const sessionSettings = Settings.isolated({
 		"compaction.enabled": false,
 		"retry.enabled": false,
+		// These cases exercise the opt-in fork generator; the default is `tiny`.
+		"title.generator": "fork",
 		modelRoles: { tiny: `${model.provider}/${model.id}` },
 		...settings,
 	});
@@ -72,7 +78,7 @@ async function createSession(
 	session = new AgentSession({
 		agent: new Agent({
 			getApiKey: () => "test-key",
-			initialState: { model, systemPrompt: ["Test"], tools, messages: [] },
+			initialState: { model, systemPrompt: ["Test"], tools, messages: initialMessages },
 			streamFn: main.stream,
 		}),
 		sessionManager,
@@ -249,6 +255,46 @@ describe("AgentSession title fork", () => {
 
 		expect(target.sessionName).toBe("Fix flaky park tests");
 		expect(side.calls).toHaveLength(0);
+	});
+
+	it("bounds the forked title request to a recent window plus the opener", async () => {
+		const history: AgentMessage[] = [
+			{
+				role: "user",
+				content: [{ type: "text", text: "opening goal: fix the flaky park tests" }],
+				attribution: "user",
+				timestamp: 1,
+			} as AgentMessage,
+		];
+		for (let i = 0; i < 20; i++) {
+			history.push(
+				(i % 2 === 0
+					? { role: "assistant", content: [{ type: "text", text: `note ${i}` }], timestamp: 2 + i }
+					: {
+							role: "user",
+							content: [{ type: "text", text: `follow-up ${i}` }],
+							attribution: "user",
+							timestamp: 2 + i,
+						}) as AgentMessage,
+			);
+		}
+		const main = createMockModel({ responses: [{ content: ["Reading the park tests first."] }] });
+		const side = createMockModel({ handler: { content: [CARD_REPLY] } });
+		const target = await createSession(main, side, {}, { initialMessages: history });
+		const titled = nextTitle(target);
+
+		await target.prompt(FIRST_MESSAGE);
+		await titled;
+
+		// 12-message tail + opener + the streaming partial + the no-tools reminder
+		// + the title prompt. A naming request must cost a fixed slice, never the
+		// whole branch (21 messages here).
+		const sideMessages = side.calls[0]!.context.messages;
+		expect(sideMessages.length).toBeGreaterThanOrEqual(13);
+		expect(sideMessages.length).toBeLessThanOrEqual(16);
+		expect(sideMessages.length).toBeLessThan(history.length);
+		expect(JSON.stringify(sideMessages[0]?.content)).toContain("opening goal");
+		expect(JSON.stringify(sideMessages)).not.toContain("note 0");
 	});
 
 	it("retitles from the steer an interrupt flushes after it cancelled the first message's fork", async () => {

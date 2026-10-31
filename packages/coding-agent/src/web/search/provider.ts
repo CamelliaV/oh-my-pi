@@ -1,4 +1,5 @@
 import type { WebSearchGrounding } from "@oh-my-pi/pi-catalog/types";
+import { truncate } from "@oh-my-pi/pi-utils";
 import type { SearchProvider } from "./providers/base";
 import {
 	getSearchProviderLabel,
@@ -112,13 +113,19 @@ export function createSearchProviderFailure(
 	};
 }
 
+/** Cap on one provider failure's flattened reason inside fallback notes and metadata. */
+const MAX_FAILURE_REASON_CHARS = 240;
+
 /** Format retained provider failures for model-visible tool output and TUI metadata. */
 export function formatSearchProviderFailureRecord(failure: SearchProviderFailure): string {
 	const status =
 		failure.status !== undefined && !failure.message.includes(String(failure.status))
 			? ` (HTTP ${failure.status})`
 			: "";
-	return `${failure.label}: ${failure.message}${status}`;
+	// A raw provider error can be whole HTML error pages; flatten to one line
+	// and cap it so the fallback note stays a bounded, single-line aside.
+	const reason = truncate(failure.message.replaceAll(/\s+/g, " ").trim(), MAX_FAILURE_REASON_CHARS);
+	return `${failure.label}: ${reason}${status}`;
 }
 
 export function formatSearchProviderFailureRecords(failures: readonly SearchProviderFailure[]): string {

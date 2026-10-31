@@ -1835,3 +1835,35 @@ covered by clean check:ts. Fork patch suites green: web/search throughput+
 render 11, anthropic cch-cache-stability+alignment+stream-envelope 170.
 compat-parity.test.ts fails identically on unmerged master (fork extraBetas /
 usageInputIncludesCache debt — pre-existing, not a merge regression).
+
+v18.14.0→v18.14.1 (2026-10-31) — follow-up patch release: Anthropic inline-image
+128 MB request-body clamp (per-wire body-room sizing, Factory Droid history
+comparison), `providers.openai-codex.daybreak` opt-out setting, jobs-sheet
+selected-job retention, intent-length rejection removal, session-ownership
+lease checks without taking them, `FileLock.isHeld` natives probe (Linux
+`connect(2)`), RPC wire SDK regeneration. Synthetic `upstream/v18.14.1` =
+`cc8a6df813` parented on `2516e1d665` (181 files, +8742 −2158); merge
+`ad3a91f076` into `upgrade/v18.14.1`.
+
+Only 3 conflicts, all adjudicated: `slash-commands/types.ts` (both — fork
+`notifyConfigChanged` /inject field + upstream's new `followUp` queue-behind-run
+field), `agent-session.ts` (both — fork `TITLE_FORK_HISTORY_MESSAGES` +
+upstream `TITLE_DRIFT_JUDGE_TIMEOUT_MS`), `compat/rules.json` (took upstream,
+recompiled from merged KDL — 1115 rules, web/grok seed verified). models.json
+untouched by the release; fork web/grok rows intact (23 models).
+
+Natives: ABI grew `FileLock.isHeld` (+ Windows walker/rsync fixes invisible on
+linux-x64). Materialized from the official v18.14.1 binary's extraction
+(modern only — official builds ship one variant), copied to both slots and
+stamped 18.14.1. cp → stamp → build order preserved.
+
+Verification: `check:ts` 0 errors. zh reasoning-fallback driver 6/6.
+web/search suite 221 pass. Binary built + installed (`omp/18.14.1`),
+`--smoke-test: ok`, `gallery` renders.
+
+Known fork debt surfaced by the new `agent-session-retry-cap.test.ts` (3
+fails, byte-identical on unmerged fork base `64743b66a4`, NOT a merge
+regression): fork patch #28's user-retry-rules delay semantics (1 800 000 ms
+hard cap) override upstream's relative/zero-valued usage-limit retry hints —
+upstream now expects ≤100 ms probe delays and 13-minute dual-signal waits.
+Unresolved; needs a patch-#28 semantic update before the next upgrade.

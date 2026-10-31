@@ -15,6 +15,8 @@ export interface ToolCallBlockSpec {
 	readonly id: string;
 	/** Directory the call's relative paths resolve against. */
 	readonly cwd: string;
+	/** The model's `i` intent from the call (or its tool-derived intent). */
+	readonly intent?: string;
 }
 
 /**
@@ -32,7 +34,7 @@ export function createToolCallBlock(ctx: InteractiveModeContext, call: ToolCallB
 	return new ToolExecutionComponent(
 		call.name,
 		call.args,
-		{ useBuiltInRenderer: builtIn, showImages: cfgTerminalShowImages.get(settings) },
+		{ useBuiltInRenderer: builtIn, showImages: cfgTerminalShowImages.get(settings), intent: call.intent },
 		call.tool,
 		ctx.ui,
 		call.cwd,

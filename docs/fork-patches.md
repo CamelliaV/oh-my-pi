@@ -104,8 +104,14 @@ reasoning matters. The per-release upgrade history sits at the bottom
    `tool-execution.ts` (`#renderBodyWithIntent`: accent `tool.intent` marker
    (new symbol key, ✦/*) + bold accent text, frame-width clamped; body wrapped
    in `#bodyBox` for injection). Same annotation in `read-tool-group.ts` rows.
-   Gallery fixtures expose intent. Tests: gallery-cli, read-tool-group,
-   tool-execution, event-controller-args-reveal.
+   Gallery fixtures expose intent. Follow-up: `createToolCallBlock` carries
+   `intent`, so intent reaches every card *creation* path (stream mount,
+   execution-start mount, start refresh, session rebuild) — upstream's
+   factory refactor had left only the streaming-update path calling
+   `updateIntent`, so a call whose args arrived in one delta, or any resumed
+   card, rendered without the row. Tests: gallery-cli, read-tool-group,
+   tool-execution, event-controller-args-reveal, event-controller-tool-intent,
+   tool-intent-rebuild.
 10. `feat(extensions)` session-nav user-turn viewport jump — runtime extension
    at `extensions/session-nav.ts`, deployed by symlink to
    `~/.omp/agent/extensions/session-nav.ts` (rebase-immune, no binary rebuild).

@@ -1743,6 +1743,7 @@ export class EventController {
 						tool,
 						id: content.id,
 						cwd: this.ctx.sessionManager.getCwd(),
+						intent: resolveToolCallIntent(content.intent, content.arguments),
 					});
 					const pendingPreview = this.#pendingStreamPreviews.get(content.id);
 					if (pendingPreview !== undefined) {
@@ -2068,6 +2069,7 @@ export class EventController {
 				tool,
 				id: event.toolCallId,
 				cwd: this.ctx.sessionManager.getCwd(),
+				intent: event.intent,
 			});
 			const pendingPreview = this.#pendingStreamPreviews.get(event.toolCallId);
 			if (pendingPreview !== undefined) {
@@ -2096,6 +2098,9 @@ export class EventController {
 			// execution path emits with the full args immediately before the result.
 			this.#toolArgsReveal.finish(event.toolCallId);
 			const component = this.ctx.pendingTools.get(event.toolCallId);
+			if (component) {
+				component.updateIntent(event.intent, event.toolCallId);
+			}
 			if (component && typeof component.updateArgs === "function") {
 				component.updateArgs(renderArgsWithIntent(event.args, event.intent), event.toolCallId);
 				if (typeof component.setArgsComplete === "function") {

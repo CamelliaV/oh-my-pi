@@ -767,6 +767,7 @@ export class UiHelpers {
 						tool,
 						id: content.id,
 						cwd: this.ctx.viewSession.sessionManager.getCwd(),
+						intent: resolveToolCallIntent(content.intent, content.arguments),
 					});
 					// Persisted args are final: settle a reply's text now. Cards keep their own args-complete timing.
 					if (!partialJson && component instanceof ReplyWriteComponent) component.setArgsComplete();

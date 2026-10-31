@@ -1778,3 +1778,60 @@ Natives ABI grew (`escapeStops`, `setRunDeadline`, `axSelectText`, `axType`,
 `normalizePtyDimensions`) — refreshed from official v18.12.3 binary (modern only,
 copied to both slots + stamped). New binary markers: `escapeStops`=3, `PipeStreams`=4,
 `LineMatcher`=4, `always-ask-cached`=15; all legacy markers intact.
+
+v18.12.3→v18.14.0 (2026-10-31) — big-bang models.json format migration
+(12.6 MB flat provider-map → 1.1 MB interned `version/keys/booleanShapes/nodes/
+compat/providers` encoding from `model-catalog-format.ts`), collab-web export
+viewer, Windows walker/rsync natives work, Anthropic 128 MB inline-image clamp +
+Daybreak Blue opt-out setting, per-wire image body-room sizing. Synthetic
+`upstream/v18.14.0` = `2516e1d665` parented on `426a540237`; merge `237b9a9fd8`
+into `upgrade/v18.14.0`. 162 both-touched files, most auto-merged.
+
+Adjudications / incidents:
+
+1. **models.json + rules.json fork seeds intact.** Verified by decoding through
+   `openModelCatalog`/`getCatalogProvider` (NOT a raw `require`, which misreads
+   the compact format — a false alarm first suggested `web` was dropped). Merged
+   tree: `web` provider present with 23 models incl. `grok` (`webSearchModel:
+   grok-4.5`); rules.json `web/grok` seed present. Natives re-stamped 18.14.0
+   (baseline+modern) after copy.
+
+2. **web-search fallback-note wording (fork win, tests aligned).** Upstream
+   v18.14.0 re-added assertions pinning the legacy `answered by X after Y
+   failed` note, but the merge correctly kept the fork's patch-#29 renderer
+   (`Web search fallback used. …`, rich label/HTTP-status/duration attribution).
+   Rewrote the two chain assertions against the fork wording and dropped the
+   upstream `flattens and caps` test — it pins a `.replace(/\s+/g," ")` +
+   `truncate(240)` sanitization the fork's `formatSearchProviderFailureRecord`
+   deliberately does not implement. Trade-off recorded for user decision: fork
+   keeps full multi-line failure bodies (richer, but unbounded HTML error pages
+   can reach the prompt). commit `2aa7e25061`. web/search suite 220 pass.
+
+3. **master `a0d0eec9a6` (prompt-cache MCP-notice) merged in** — 6 conflicts,
+   all resolved to HEAD: 3 pure upstream-formatter reflows, 3 the v18.14.0
+   image-aware ephemeral turn (6-arg `#buildEphemeralSnapshot` / `promptImages`
+   on `EphemeralTurnOptions`, a superset of master's 3-arg shape). 0 TS errors;
+   title-fork + tool-rebuild-skip 61 pass. merge `e97708be40`.
+
+4. **Stale export-viewer metadata** blocked `ci:release:build-binaries`
+   (`gen:export-viewer --check`). Regenerated via `build-export-viewer.ts`
+   (content-addressed asset bump, no behavior change). commit `901e06df4c`.
+
+5. **pi-tui exports regression (root-caused, fixed).** Binary bundle failed
+   `Could not resolve @oh-my-pi/pi-tui/prompt/composer.js`: v18.14.0's new
+   `startup-composer.ts` requires the subpath WITH `.js`, and the fork's five
+   extra wildcard exports (`./prompt/*` `./chat/*` `./chrome/*` `./tools/*`
+   `./status-line/*`, carried since v18.5) map `composer.js` →
+   `src/prompt/composer.js.ts` (nonexistent); Node/bun longest-prefix matching
+   prefers these over the `./*` + `./*.js` catch-all. Dropped the five
+   wildcards to upstream's shape — all fork imports of these subpaths are
+   extensionless and still resolve via `./*` (bun `*` spans path segments).
+   Verified: composer.js resolves, composer-cache tests pass. commit pending.
+
+Verification: baseline (pristine `2516e1d665`) `check:ts` = 0 errors; merged
+tree `check:ts` = 0 errors (net-new = 0). zh reasoning-fallback driver 6/6 pass
+(incl. [1210] transport-retry + 200-never-refetched). RPC-wire conformance
+covered by clean check:ts. Fork patch suites green: web/search throughput+
+render 11, anthropic cch-cache-stability+alignment+stream-envelope 170.
+compat-parity.test.ts fails identically on unmerged master (fork extraBetas /
+usageInputIncludesCache debt — pre-existing, not a merge regression).

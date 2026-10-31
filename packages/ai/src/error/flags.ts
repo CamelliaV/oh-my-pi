@@ -230,7 +230,8 @@ export const TRANSIENT_TRANSPORT_PATTERN =
 	/\b(?:no[_ -]?capacity|(?:high|peak)[ _-]?demand|(?:at|over|insufficient)[ _-]?capacity|capacity[ _-]?(?:exceeded|exhausted)|peak[ _-]?load)\b|overloaded|provider.?returned.?error|rate.?limit|too many requests|auth-gateway\s+5\d{2}(?=[:\s]|$)|\b(?:429|500|502|503|504)\b|service.?unavailable|temporar(?:y|ily)[ _-]?unavailable|server.?error|internal.?error|retry your request|network.?error|connection.?error|connection.?refused|unable.?to.?connect\.\s*is the computer able to access the url\?|other side closed|use of closed network connection|fetch failed|upstream.?connect|upstream.?request.?failed|reset before headers|socket hang up|timed? out|timeout|terminated|retry delay|stream stall|no error details in response|HTTP2(?:StreamReset|RefusedStream|EnhanceYourCalm)|nghttp2_(?:internal_error|refused_stream)|stream closed with error code nghttp2_(?:internal_error|refused_stream)|\bE(?:TIMEOUT|NOTFOUND|NETUNREACH|HOSTUNREACH)\b|\bFailedToOpenSocket\b|no internet connection|couldn.?t reach|couldn.?t connect to|tls certificate verification failed|malformed.?function.?call/i;
 const AUTH_FAILURE_PATTERN =
 	/\b(?:401|403|unauthorized|forbidden|authentication|auth[_ ]?unavailable|no auth available|(?:invalid|no)[_ ]?api[_ ]?key)\b/i;
-const MALFORMED_FUNCTION_CALL_PATTERN = /\bmalformed.?function.?call\b/i;
+const MALFORMED_FUNCTION_CALL_PATTERN =
+	/\b(?:malformed[_. ]?(?:function[_. ]?call|response)|unexpected[_. ]?tool[_. ]?call)\b/i;
 const PROVIDER_FINISH_ERROR_PATTERN = /\bProvider (?:returned error finish_reason|finish_reason:\s*error)\b/i;
 /** Misrouted relay rejection: new-api gateways' misleading always-thinking 400. */
 const MISROUTED_RELAY_400_PATTERN = /\[1210\]|该模型始终思考|不支持关闭思考/;
@@ -316,6 +317,16 @@ export const LLAMA_CPP_TOOL_CALL_PARSE_PATTERN =
 // (both the NaN wording and "detected in generation") so it cannot swallow
 // genuine request-validation 400s.
 const GENERATION_NAN_PATTERN = /floating[ _-]?point nan\b.*\bdetected in generation/is;
+// Aliyun DashScope's compatible-mode multimodal gateway intermittently fails
+// perfectly valid inline image payloads with a validation-flavored 400:
+// "The provided URL does not appear to be valid" or "Download multimodal file
+// timed out" (InternalError.Algo.InvalidParameter). The gateway's internal
+// fetch/decode of the data-URL image flakes; a byte-identical replay of the
+// same payload succeeds (verified against production with the original
+// failing request). Kept narrow to these two gateway phrasings so genuine
+// request-validation 400s stay terminal; the retry budget bounds a truly bad
+// payload to maxRetries attempts before it surfaces anyway.
+export const ALIYUN_MM_GATEWAY_PATTERN = /provided url does not appear to be valid|download multimodal file timed out/i;
 // Anthropic strict-tool grammar too large / schema too complex (400 invalid_request_error).
 // Feature-gated deployments (Azure Foundry, Baseten, …) reject `strict: true`
 // tools outright when the hosted model lacks structured outputs, e.g.
@@ -564,13 +575,23 @@ export function isStreamEnvelopeErrorText(text: string): boolean {
 	return text.includes(STREAM_ENVELOPE_ERROR_PREFIX);
 }
 
+/** Persisted-text form of a truncated stream envelope: an
+ *  `Anthropic stream envelope error:` diagnostic naming the frame the stream
+ *  never reached (`before message_start|delta|stop`). Covers both a connection
+ *  that dies inside an open envelope and an in-band `error` frame that a
+ *  gateway or proxy substitutes for the cut, so turn recovery can classify the
+ *  family by its envelope marker instead of per-gateway wording. */
+export function isStreamEnvelopeTruncationText(text: string): boolean {
+	return TRANSIENT_ENVELOPE_PATTERN.test(text) && TRANSIENT_ENVELOPE_TRUNCATION_PATTERN.test(text);
+}
+
 function isTransientErrorText(text: string): boolean {
 	return (
 		isUnexpectedSocketCloseMessage(text) ||
 		isStreamReadErrorText(text) ||
 		PYTHON_HTTP2_STREAM_RESET_PATTERN.test(text) ||
 		PYTHON_HTTP_INCOMPLETE_CHUNK_PATTERN.test(text) ||
-		(TRANSIENT_ENVELOPE_PATTERN.test(text) && TRANSIENT_ENVELOPE_TRUNCATION_PATTERN.test(text)) ||
+		isStreamEnvelopeTruncationText(text) ||
 		TRANSIENT_TRANSPORT_PATTERN.test(text)
 	);
 }
@@ -715,6 +736,9 @@ function classifyText(
 		// 200/400 across replays, so the fingerprint — not the status — marks it
 		// retryable.
 		if (MISROUTED_RELAY_400_PATTERN.test(cleanMessage)) kinds |= Flag.Transient;
+		// Same shape for Aliyun's multimodal gateway: a flaky 400 on valid inline
+		// images — replay succeeds (see the pattern's rationale).
+		if (statusClean === 400 && ALIYUN_MM_GATEWAY_PATTERN.test(cleanMessage)) kinds |= Flag.Transient;
 		if (matchesStrictToolsRejection(cleanMessage, statusClean)) kinds |= Flag.Grammar;
 		if (matchesFastModeUnsupported(cleanMessage, statusClean)) kinds |= Flag.FastModeUnsupported;
 		if (matchesCacheControlRejection(cleanMessage, statusClean)) kinds |= Flag.CacheControlUnsupported;

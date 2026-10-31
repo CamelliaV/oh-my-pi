@@ -12,9 +12,13 @@ export interface SessionPickerHost<T extends SessionSelectorEntry = SessionSelec
 	loadPinnedIds?(): Promise<ReadonlySet<string>>;
 	loadHistoryMatcher?(): SessionHistoryMatcher;
 	deleteSession?(session: T): Promise<boolean>;
+	/** Hide a visible session. */
 	hideSession?(session: T): Promise<boolean>;
+	/** Restore a hidden session. */
 	unhideSession?(session: T): Promise<boolean>;
-	renameSession?(session: T, title: string): Promise<boolean>;
+	/** Rename the session and resolve with the title as stored, or null when it did not happen. */
+	renameSession?(session: T, title: string): Promise<string | null>;
+	setSessionPinned?(session: T, pinned: boolean): Promise<void>;
 	loadAllSessions?(): Promise<T[]>;
 	loadHiddenSessions?(): Promise<T[]>;
 }
@@ -28,6 +32,8 @@ export interface SessionPickerOptions<T extends SessionSelectorEntry = SessionSe
 	scopeLabel?: string | false;
 	showCwd?: boolean;
 	allowDelete?: boolean;
+	/** Rename the selected session; resolve with the title as stored, or null when it did not happen. */
+	onRename?: (session: T, title: string) => Promise<string | null>;
 	allowGlobalScope?: boolean;
 	historySearch?: boolean;
 	pinnedIds?: ReadonlySet<string>;
@@ -116,6 +122,8 @@ export async function selectSession<T extends SessionSelectorEntry>(
 					onUnhide: host.unhideSession,
 					loadHiddenSessions: host.loadHiddenSessions,
 					initialScope: options.initialScope,
+					onRename: options.onRename ?? host.renameSession,
+					onSetPinned: host.setSessionPinned,
 					historyMatcher,
 					allSessions: options.allSessions,
 					// Without the lazy loader, scope could only toggle when a caller

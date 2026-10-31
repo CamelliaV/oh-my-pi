@@ -38,8 +38,8 @@ import {
 	getSearchProviderLabel,
 	MAX_WEB_SEARCH_TIMEOUT_SECONDS,
 	SearchProviderError,
-	type SearchProviderFailure,
 	type SearchProviderId,
+	type SearchProviderFailure,
 	type SearchResponse,
 	type SearchResultDetails,
 } from "./types";
@@ -190,9 +190,8 @@ function expandHostedCandidate(
 ): RoleChainCandidate[] {
 	if (!isHostedPlaceholder(candidate.model) || !sessionModel) return [candidate];
 	const swap = resolveConfiguredModelTarget(sessionModel.webSearchModel, sessionModel, pool);
-	const models = [swap, sessionModel].filter(
-		(model, index, all): model is Model<Api> => !!model?.webSearch && all.indexOf(model) === index,
-	);
+	const distinctSwap = swap?.provider === sessionModel.provider && swap.id === sessionModel.id ? undefined : swap;
+	const models = [distinctSwap, sessionModel].filter((model): model is Model<Api> => !!model?.webSearch);
 	if (models.length === 0) return [candidate];
 	return models.map(model => ({ ...candidate, model }));
 }
@@ -263,7 +262,7 @@ async function executeSearch(
 	let availableProviderCount = 0;
 	let lastProvider: { id: string; label: string } | undefined;
 	let failedResponseProvider: SearchResponse["provider"] = "none";
-	for (const candidate of candidates) {
+	for (const candidate of expanded) {
 		let provider: SearchProvider | undefined;
 		const attemptStartedAtMs = performance.now();
 		const candidateMeta = {

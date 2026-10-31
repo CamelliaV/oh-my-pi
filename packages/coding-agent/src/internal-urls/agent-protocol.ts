@@ -188,6 +188,8 @@ export class AgentProtocolHandler implements ProtocolHandler {
 		if (hasPathExtraction(url)) {
 			throw new Error("agent:// message target cannot have a JSON-path suffix.");
 		}
+		const progress = url.searchParams.has("progress");
+		if (progress && to === "all") throw new Error("agent://all broadcasts cannot be ?progress updates.");
 		if (!content.trim()) throw new Error("agent:// messages require non-empty content.");
 		if (url.searchParams.get("resume") === "1") {
 			const result = await executeResume(session, { to, message: content });
@@ -204,7 +206,7 @@ export class AgentProtocolHandler implements ProtocolHandler {
 		}
 		const result = await executeSend(
 			{ registry, senderId, sessionFileHint: session.getSessionFile?.() },
-			{ to, message: content },
+			{ to, message: content, progress },
 		);
 		return {
 			content: [

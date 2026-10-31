@@ -19,7 +19,6 @@ import { logger, prompt } from "@oh-my-pi/pi-utils";
 import type { WritethroughCallback } from "../lsp";
 import { collectOnlineTinyCandidates } from "../tiny/online-candidates";
 import type { ToolSession } from "../tools";
-import { invalidateFsScanAfterWrite } from "../tools/fs-cache-invalidation";
 import repairPromptSource from "./auto-repair.md" with { type: "text" };
 import type { AppliedEditSnapshot } from "./blackbox";
 
@@ -384,6 +383,7 @@ export async function attemptEditAutoRepair(options: {
 			const apiKey = await registry.getApiKey(model, sessionId);
 			if (!apiKey) continue;
 			try {
+				session.costGate?.admit();
 				const response = await retryTransientCompletion(
 					() =>
 						completeSimple(
@@ -399,9 +399,17 @@ export async function attemptEditAutoRepair(options: {
 						),
 					{ signal, provider: model.provider },
 				);
+				session.costGate?.record(response.usage.cost.total);
 				if (response.stopReason === "error") {
 					lastError = new Error(response.errorMessage ?? "auto-repair completion failed");
 					continue;
+				}
+				if (response.stopReason === "aborted") {
+					throw new Error(
+						timeout.aborted
+							? `auto-repair timed out after ${REPAIR_TIMEOUT_MS}ms waiting on ${model.provider}/${model.id}`
+							: "auto-repair aborted",
+					);
 				}
 				usedModel = model;
 				return response.content.map(block => (block.type === "text" ? block.text : "")).join("");
@@ -417,7 +425,6 @@ export async function attemptEditAutoRepair(options: {
 	if (!repair) return undefined;
 
 	await writethrough(snapshot.path, repair.content, options.signal, Bun.file(snapshot.path));
-	invalidateFsScanAfterWrite(snapshot.path);
 	logger.debug("Edit auto-repair applied", {
 		path: snapshot.path,
 		attempts: repair.attempts,

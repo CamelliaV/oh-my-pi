@@ -3,75 +3,78 @@
 > Run one web query through the configured search chain and return the first usable answer/sources, with optional citations.
 
 ## Source
+
 - Entry: `packages/coding-agent/src/web/search/index.ts`
 - Model-facing prompt: `packages/coding-agent/src/prompts/tools/web-search.md`
 - Key collaborators:
-  - `packages/coding-agent/src/web/search/provider.ts` — lazy provider registry; availability chain.
-  - `packages/coding-agent/src/web/search/types.ts` — unified `SearchResponse` / `SearchProviderError` types.
-  - `packages/tui/src/tools/web-search.ts` / `web-search-types.ts` — transcript rendering and shared response/provider types.
-  - `packages/coding-agent/src/web/search/providers/base.ts` — provider interface and shared params contract.
-  - `packages/coding-agent/src/web/search/providers/utils.ts` — credential lookup; source normalization.
-  - `packages/coding-agent/src/web/search/providers/browser-headers.ts` — shared Chromium navigation headers for scrape providers.
-  - `packages/coding-agent/src/web/search/query.ts` — Google-style query parsing, provider syntax formatting, and lenient result filtering.
-  - `packages/coding-agent/src/web/search/providers/browser-page.ts` — shared fetch/headless-browser page loader for scrape providers.
-  - `packages/coding-agent/src/web/search/providers/anthropic.ts` — Claude web-search provider.
-  - `packages/coding-agent/src/web/search/providers/brave.ts` — Brave Search API adapter.
-  - `packages/coding-agent/src/web/search/providers/deepseek.ts` — DeepSeek Search API adapter.
-  - `packages/coding-agent/src/web/search/providers/codex.ts` — OpenAI Codex SSE adapter.
-  - `packages/coding-agent/src/web/search/providers/openai.ts` — billed OpenAI API Responses adapter, separate from Codex OAuth.
-  - `packages/coding-agent/src/web/search/providers/openrouter.ts` — chat-completions grounding through OpenRouter's web plugin.
-  - `packages/coding-agent/src/web/search/providers/duckduckgo.ts` — DuckDuckGo HTML frontend scraper.
-  - `packages/coding-agent/src/web/search/providers/ecosia.ts` — Ecosia browser-backed scraper.
-  - `packages/coding-agent/src/web/search/providers/exa.ts` — Exa API or MCP adapter.
-  - `packages/coding-agent/src/web/search/providers/firecrawl.ts` — Firecrawl search adapter.
-  - `packages/coding-agent/src/web/search/providers/gemini.ts` — Gemini grounding SSE adapter.
-  - `packages/coding-agent/src/web/search/providers/google.ts` — Google browser-backed SERP scraper.
-  - `packages/coding-agent/src/web/search/providers/jina.ts` — Jina Reader search adapter.
-  - `packages/coding-agent/src/web/search/providers/kagi.ts` — Kagi provider wrapper.
-  - `packages/coding-agent/src/web/search/providers/kimi.ts` — Kimi search adapter.
-  - `packages/coding-agent/src/web/search/providers/mojeek.ts` — Mojeek browser-backed scraper (independent index).
-  - `packages/coding-agent/src/web/search/providers/parallel.ts` — Parallel provider wrapper.
-  - `packages/coding-agent/src/web/search/providers/perplexity.ts` — Perplexity API / OAuth adapter.
-  - `packages/coding-agent/src/web/search/providers/public.ts` — Public Web aggregate over all credential-free engines.
-  - `packages/coding-agent/src/web/search/providers/searxng.ts` — self-hosted SearXNG adapter.
-  - `packages/coding-agent/src/web/search/providers/startpage.ts` — Startpage (Google-proxied) form-flow scraper.
-  - `packages/coding-agent/src/web/search/providers/synthetic.ts` — Synthetic search adapter.
-  - `packages/coding-agent/src/web/search/providers/ollama.ts` — Ollama web search adapter.
-  - `packages/coding-agent/src/web/search/providers/tavily.ts` — Tavily search adapter.
-  - `packages/coding-agent/src/web/search/providers/tinyfish.ts` — TinyFish search adapter.
-  - `packages/coding-agent/src/web/search/providers/xai.ts` — xAI Responses web and X search adapter.
-  - `packages/coding-agent/src/web/search/providers/zai.ts` — Z.AI remote MCP adapter.
-  - `packages/coding-agent/src/web/parallel.ts` — Parallel search/extract HTTP client.
-  - `packages/coding-agent/src/web/kagi.ts` — Kagi HTTP client.
-  - `packages/coding-agent/src/tools/index.ts` — built-in tool registration and enable flag.
+   - `packages/coding-agent/src/web/search/provider.ts` — lazy provider registry; availability chain.
+   - `packages/coding-agent/src/web/search/types.ts` — unified `SearchResponse` / `SearchProviderError` types.
+   - `packages/tui/src/tools/web-search.ts` / `web-search-types.ts` — transcript rendering and shared response/provider types.
+   - `packages/coding-agent/src/web/search/providers/base.ts` — provider interface and shared params contract.
+   - `packages/coding-agent/src/web/search/providers/utils.ts` — credential lookup; source normalization.
+   - `packages/coding-agent/src/web/search/providers/browser-headers.ts` — shared Chromium navigation headers for scrape providers.
+   - `packages/coding-agent/src/web/search/query.ts` — Google-style query parsing, provider syntax formatting, and lenient result filtering.
+   - `packages/coding-agent/src/web/search/providers/browser-page.ts` — shared fetch/headless-browser page loader for scrape providers.
+   - `packages/coding-agent/src/web/search/providers/anthropic.ts` — Claude web-search provider.
+   - `packages/coding-agent/src/web/search/providers/brave.ts` — Brave Search API adapter.
+   - `packages/coding-agent/src/web/search/providers/deepseek.ts` — DeepSeek Search API adapter.
+   - `packages/coding-agent/src/web/search/providers/codex.ts` — OpenAI Codex SSE adapter.
+   - `packages/coding-agent/src/web/search/providers/openai.ts` — billed OpenAI API Responses adapter, separate from Codex OAuth.
+   - `packages/coding-agent/src/web/search/providers/openrouter.ts` — chat-completions grounding through OpenRouter's web plugin.
+   - `packages/coding-agent/src/web/search/providers/duckduckgo.ts` — DuckDuckGo HTML frontend scraper.
+   - `packages/coding-agent/src/web/search/providers/ecosia.ts` — Ecosia browser-backed scraper.
+   - `packages/coding-agent/src/web/search/providers/exa.ts` — Exa API or MCP adapter.
+   - `packages/coding-agent/src/web/search/providers/firecrawl.ts` — Firecrawl search adapter.
+   - `packages/coding-agent/src/web/search/providers/gemini.ts` — Gemini grounding SSE adapter.
+   - `packages/coding-agent/src/web/search/providers/google.ts` — Google browser-backed SERP scraper.
+   - `packages/coding-agent/src/web/search/providers/jina.ts` — Jina Reader search adapter.
+   - `packages/coding-agent/src/web/search/providers/kagi.ts` — Kagi provider wrapper.
+   - `packages/coding-agent/src/web/search/providers/kimi.ts` — Kimi search adapter.
+   - `packages/coding-agent/src/web/search/providers/mojeek.ts` — Mojeek browser-backed scraper (independent index).
+   - `packages/coding-agent/src/web/search/providers/parallel.ts` — Parallel provider wrapper.
+   - `packages/coding-agent/src/web/search/providers/perplexity.ts` — Perplexity API / OAuth adapter.
+   - `packages/coding-agent/src/web/search/providers/public.ts` — Public Web aggregate over all credential-free engines.
+   - `packages/coding-agent/src/web/search/providers/searxng.ts` — self-hosted SearXNG adapter.
+   - `packages/coding-agent/src/web/search/providers/startpage.ts` — Startpage (Google-proxied) form-flow scraper.
+   - `packages/coding-agent/src/web/search/providers/synthetic.ts` — Synthetic search adapter.
+   - `packages/coding-agent/src/web/search/providers/ollama.ts` — Ollama web search adapter.
+   - `packages/coding-agent/src/web/search/providers/tavily.ts` — Tavily search adapter.
+   - `packages/coding-agent/src/web/search/providers/tinyfish.ts` — TinyFish search adapter.
+   - `packages/coding-agent/src/web/search/providers/xai.ts` — xAI Responses web and X search adapter.
+   - `packages/coding-agent/src/web/search/providers/zai.ts` — Z.AI remote MCP adapter.
+   - `packages/coding-agent/src/web/parallel.ts` — Parallel search/extract HTTP client.
+   - `packages/coding-agent/src/web/kagi.ts` — Kagi HTTP client.
+   - `packages/coding-agent/src/tools/index.ts` — built-in tool registration and enable flag.
 
 ## Inputs
 
-| Field | Type | Required | Description |
-| --- | --- | --- | --- |
-| `query` | `string` | Yes | Raw query. The parser recognizes `site:`/`-site:`, `after:`/`before:`, `inurl:`, `intitle:`, `intext:`, `filetype:`, `lang:`/`language:`, quoted phrases, exclusions, `OR`, and directive aliases. Providers map these to native filters or supported syntax; body/language directives are not central source filters. |
-| `recency` | `"day" \| "week" \| "month" \| "year"` | No | Relative time filter. Implemented by Brave, DeepSeek, Perplexity, Parallel, Tavily, SearXNG, Kagi, TinyFish, Firecrawl, DuckDuckGo, Startpage, Google, and Mojeek. Public Web forwards it to its engines; other adapters ignore it. |
-| `limit` | `number` | No | Max results to return. Usually becomes the provider request's result-count parameter when `num_search_results` is absent. TinyFish uses it for paginated fetches before slicing. xAI uses the collapsed value only as a local cap on parsed sources/citations, defaulting to `10` and max `30`. |
-| `max_tokens` | `number` | No | Token cap passed through by Anthropic, Gemini, OpenAI Responses, xAI, and Perplexity API-key mode. Ignored by the other providers. |
-| `temperature` | `number` | No | Passed through only by Anthropic models that support sampling parameters, Gemini, xAI, and Perplexity API-key mode. Ignored or omitted by the other provider/model paths. |
-| `num_search_results` | `number` | No | Provider-native search breadth or local result cap, usually taking precedence over `limit`. Perplexity API and OpenRouter use it upstream; Anthropic, Gemini, Codex, OpenAI Responses, and xAI cap parsed sources locally. TinyFish sends a per-page count and paginates. See adapter limits below. |
+| Field                | Type                                   | Required | Description                                                                                                                                                                                                                                                                                                            |
+| -------------------- | -------------------------------------- | -------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `query`              | `string`                               | Yes      | Raw query. The parser recognizes `site:`/`-site:`, `after:`/`before:`, `inurl:`, `intitle:`, `intext:`, `filetype:`, `lang:`/`language:`, quoted phrases, exclusions, `OR`, and directive aliases. Providers map these to native filters or supported syntax; body/language directives are not central source filters. |
+| `recency`            | `"day" \| "week" \| "month" \| "year"` | No       | Relative time filter. Implemented by Brave, DeepSeek, Perplexity, Parallel, Tavily, SearXNG, Kagi, TinyFish, Firecrawl, DuckDuckGo, Startpage, Google, and Mojeek. Public Web forwards it to its engines; other adapters ignore it.                                                                                    |
+| `limit`              | `number`                               | No       | Max results to return. Usually becomes the provider request's result-count parameter when `num_search_results` is absent. TinyFish uses it for paginated fetches before slicing. xAI uses the collapsed value only as a local cap on parsed sources/citations, defaulting to `10` and max `30`.                        |
+| `max_tokens`         | `number`                               | No       | Token cap passed through by Anthropic, Gemini, OpenAI Responses, xAI, and Perplexity API-key mode. Ignored by the other providers.                                                                                                                                                                                     |
+| `temperature`        | `number`                               | No       | Passed through only by Anthropic models that support sampling parameters, Gemini, xAI, and Perplexity API-key mode. Ignored or omitted by the other provider/model paths.                                                                                                                                              |
+| `num_search_results` | `number`                               | No       | Provider-native search breadth or local result cap, usually taking precedence over `limit`. Perplexity API and OpenRouter use it upstream; Anthropic, Gemini, Codex, OpenAI Responses, and xAI cap parsed sources locally. TinyFish sends a per-page count and paginates. See adapter limits below.                    |
 
 The schema does not impose integer, positivity, or range constraints on numeric fields; provider adapters apply their own caps. The built-in tool is read-approved, strict-schema, and discoverable.
+
 ## Outputs
+
 The tool returns a single text content block plus structured `details`.
 
 - `content`: `[{ type: "text", text: string }]`
 - `details`: `SearchResultDetails` from `packages/coding-agent/src/web/search/types.ts`
-  - `response: SearchResponse`
-  - `error?: string`
+   - `response: SearchResponse`
+   - `error?: string`
 
 `text` is produced by `formatForLLM()` in `packages/coding-agent/src/web/search/index.ts`. Notes about relaxed query constraints are emitted first:
 
 - If `response.answer` exists, it is emitted first.
 - If sources exist, one entry per source follows (the `## Sources` header with a source count is emitted only when an answer was also produced):
-  - `[n] <title> (<formatted age or published date>)`
-  - `    <url>`
-  - optional snippet line truncated to 240 chars.
+   - `[n] <title> (<formatted age or published date>)`
+   - `    <url>`
+   - optional snippet line truncated to 240 chars.
 - If citations exist, a `## Citations` section follows with URL/title plus optional cited text truncated to 240 chars.
 - If related questions exist, a `## Related` bullet list follows.
 - If search queries exist, a `Search queries: <n>` section follows, capped to the first 3 queries and 120 chars each.
@@ -87,11 +90,14 @@ Streaming: none. `WebSearchTool.execute()` forwards its `AbortSignal` into `exec
 Each provider search transport receives a hard timeout from `providers.webSearchTimeoutSeconds` (default `60`, maximum `300`). When that transport exceeds the ceiling, the automatic chain records the provider failure and advances to the next candidate. The setting is not a whole-chain deadline, and providers may impose shorter upstream, retry, or aggregate limits. Set a positive number of seconds, for example `omp config set providers.webSearchTimeoutSeconds 180` for slower model-backed search.
 
 ## Flow
+
 1. `WebSearchTool.execute()` in `packages/coding-agent/src/web/search/index.ts` delegates directly to `executeSearch()`.
 2. `executeSearch()` builds the candidate pool with `roleCandidatePool("web", …)`: available models the `web` role accepts, i.e. `web/*` search-engine catalog models (kind `search`) and chat models that declare a `webSearch` grounding. It then orders candidates:
    - if `params.model` is set (not in the model-facing schema; `omp q --model <selector>` sets it), that selector resolves to at most one candidate, marked explicit;
    - otherwise `resolveRoleChain("web", …)` (`packages/coding-agent/src/config/model-resolver.ts`) yields the `web` role chain described under [Provider selection](#modes--variants).
 3. `web/hosted` expands to the active model's same-provider `webSearchModel` swap when available, then the active model itself, retaining only models with grounding. A failed swap falls through to the active model. An unexpandable placeholder is skipped automatically or fails explicitly. Each remaining candidate lazily loads its search engine or grounding backend (`gemini`, `anthropic`, `codex`, `openai`, `xai`, `openrouter`). Explicit candidates use `isExplicitlyAvailable()`, automatic ones use `isAvailable()`; unavailable explicit candidates record a failure while automatic ones are skipped.
+   GPT-5+ models on OpenAI Responses and Codex Responses use `gpt-6-luna` as the same-provider hosted-search swap target.
+   If the swap has the active model's provider and id, only the active model is attempted, preserving session-specific configuration even when it is a separate object from the catalog entry.
 4. If no candidate was available and none failed, `executeSearch()` returns `Error: No web search model configured.` (or `No web search model matches selector "<model>".` when `params.model` was given) with `details.response.provider = "none"`.
 5. For each provider in order, `executeSearch()` calls `provider.search()` with:
    - `query`,
@@ -107,19 +113,21 @@ Each provider search transport receives a hard timeout from `providers.webSearch
    - Anthropic `404` becomes `Anthropic web search returned 404 (model or endpoint not found).`
    - `401`/`403` become `<Provider> authorization failed ...` except Z.AI, which preserves its raw message.
    - other `SearchProviderError`s surface `error.message`.
-10. If more than one provider failed, the final message is `All web search providers failed: <provider/error>; ...`; otherwise it is just the normalized last error.
+10.   If more than one provider failed, the final message is `All web search providers failed: <provider/error>; ...`; otherwise it is just the normalized last error.
 
 ## Modes / Variants
+
 - **Provider selection**
-  - Provider choice is the `web` model role. A candidate is a catalog model: `web/<engine>` for a search engine (for example `web/brave`, `web/duckduckgo`), or a chat model whose catalog entry declares a `webSearch` grounding (for example `anthropic/claude-haiku-4-5`, bundled `openai/gpt-6-luna`, or `openai/gpt-5.6-luna`), in which case that model runs the grounded search.
-  - **Primary**: `modelRoles.web`. If it is set, its first selector pattern that matches an available model becomes the first candidate and is explicit. If it is unset, the role resolves through the built-in `web` priority list.
-  - **Fallbacks**: `retry.fallbackChains.web`. If it is set (even as an empty list), exactly those selectors follow the primary and are explicit. If it is unset, every entry of the built-in `web` priority list that matches an available model follows as a non-explicit candidate. Duplicate models are dropped, and a model listed by any explicit selector stays explicit.
-  - **Explicit vs automatic**: explicit candidates use `isExplicitlyAvailable()`, so Perplexity and Public Web can run their unauthenticated paths when you select them. Parallel, Exa, and Firecrawl run their keyless paths in either mode. Automatic candidates use `isAvailable()` and are skipped when their credentials are missing.
-  - **Per-request selector**: `SearchQueryParams.model` (`omp q --model web/duckduckgo "…"`) replaces the whole chain with that single explicit candidate.
-  - **xAI credential order**: xAI-grounded candidates are reordered among their own slots by provider priority, so an `xai-oauth` login runs before an `xai` API key wherever both appear (unless `modelProviderOrder` says otherwise); other candidates keep their positions.
-  - **X-only queries**: without a per-request selector, a query whose `site:` values are all X hosts or that names `from:<handle>` authors moves the chain's xAI-grounded candidates to the front; a chain without one gets `xaiModelChain()`'s default xAI model prepended as an automatic candidate. Only xAI's `x_search` reaches X posts. The rest of the chain still follows. The tool description names these X operators only when an xAI-grounded model has credentials (`xSearchAvailable()`). That check runs once per process, at the first description read with a model registry, so the description and prompt cache stay stable; an xAI login or logout takes effect in the description after a restart (routing itself follows credentials live).
-  - **Default chain** (the `web` role defaults in `packages/catalog/src/compat/rules/runtime/behavior.kdl`, read via `roleDefaultModels()`): `web/parallel`, `web/hosted`, `web/exa`, `web/firecrawl`, `web/searxng`, `web/startpage`, `web/duckduckgo`, `web/ecosia`, `web/google`, `web/mojeek`, `web/public`. Parallel/Exa/Firecrawl offer keyless paths but use configured credentials when available; hosted search uses the session provider's credential. The chain is not a guarantee of zero billing. Other paid engines/chat providers require explicit role/fallback configuration. Public Web is explicit-only and never runs automatically.
-  - **Legacy settings**: on load, `packages/coding-agent/src/config/settings.ts` migrates `providers.webSearch`, `providers.webSearchOrder`, `providers.webSearchExclude`, and `providers.webSearchGeminiModel` into `modelRoles.web` plus `retry.fallbackChains.web`, then deletes the old keys. The migration never overwrites a role or chain that is already set. The migrated chain is the listed providers followed by the default chain, with excluded providers removed; `providers.webSearchGeminiModel` only shapes a listed `gemini` entry.
+   - Provider choice is the `web` model role. A candidate is a catalog model: `web/<engine>` for a search engine (for example `web/brave`, `web/duckduckgo`), or a chat model whose catalog entry declares a `webSearch` grounding (for example `anthropic/claude-haiku-4-5`, bundled `openai/gpt-6-luna`, or `openai/gpt-5.6-luna`), in which case that model runs the grounded search.
+   - **Primary**: `modelRoles.web`. If it is set, its first selector pattern that matches an available model becomes the first candidate and is explicit. If it is unset, the role resolves through the built-in `web` priority list.
+   - **Fallbacks**: `retry.fallbackChains.web`. If it is set (even as an empty list), exactly those selectors follow the primary and are explicit. If it is unset, every entry of the built-in `web` priority list that matches an available model follows as a non-explicit candidate. Duplicate models are dropped, and a model listed by any explicit selector stays explicit.
+   - **Explicit vs automatic**: explicit candidates use `isExplicitlyAvailable()`, so Perplexity and Public Web can run their unauthenticated paths when you select them. Parallel, Exa, and Firecrawl run their keyless paths in either mode. Automatic candidates use `isAvailable()` and are skipped when their credentials are missing.
+   - **Per-request selector**: `SearchQueryParams.model` (`omp q --model web/duckduckgo "…"`) replaces the whole chain with that single explicit candidate.
+   - **xAI credential order**: xAI-grounded candidates are reordered among their own slots by provider priority, so an `xai-oauth` login runs before an `xai` API key wherever both appear (unless `modelProviderOrder` says otherwise); other candidates keep their positions.
+   - **X-only queries**: without a per-request selector, a query whose `site:` values are all X hosts or that names `from:<handle>` authors moves the chain's xAI-grounded candidates to the front; a chain without one gets `xaiModelChain()`'s default xAI model prepended as an automatic candidate. Only xAI's `x_search` reaches X posts. The rest of the chain still follows. The tool description names these X operators only when an xAI-grounded model has credentials (`xSearchAvailable()`). That check runs once per process, at the first description read with a model registry, so the description and prompt cache stay stable; an xAI login or logout takes effect in the description after a restart (routing itself follows credentials live).
+   - **Default chain** (the `web` role defaults in `packages/catalog/src/compat/rules/runtime/behavior.kdl`, read via `roleDefaultModels()`): `web/parallel`, `web/hosted`, `web/exa`, `web/firecrawl`, `web/searxng`, `web/startpage`, `web/duckduckgo`, `web/ecosia`, `web/google`, `web/mojeek`, `web/public`. Parallel/Exa/Firecrawl offer keyless paths but use configured credentials when available; hosted search uses the session provider's credential. The chain is not a guarantee of zero billing. Other paid engines/chat providers require explicit role/fallback configuration. Public Web is explicit-only and never runs automatically.
+   - **Legacy settings**: on load, `packages/coding-agent/src/config/settings.ts` migrates `providers.webSearch`, `providers.webSearchOrder`, `providers.webSearchExclude`, and `providers.webSearchGeminiModel` into `modelRoles.web` plus `retry.fallbackChains.web`, then deletes the old keys. The migration never overwrites a role or chain that is already set. The migrated chain is the listed providers followed by the default chain, with excluded providers removed; `providers.webSearchGeminiModel` only shapes a listed `gemini` entry.
+     Legacy `codex` preferences and order entries resolve to `openai-codex/gpt-6-luna`.
 - **Provider timeout**: `providers.webSearchTimeoutSeconds` supplies the hard ceiling for each provider's search transport before the automatic chain advances. It defaults to `60`; invalid non-positive values fall back to that default and values above `300` are capped, while provider-specific upstream or aggregate limits may still be shorter.
 - **Provider adapters**
   - **Perplexity** — `packages/coding-agent/src/web/search/providers/perplexity.ts`
@@ -271,19 +279,21 @@ Each provider search transport receives a hard timeout from `providers.webSearch
     - Deadline race: returns at the earliest of all engines settled, 5s soft deadline with at least one success, or 30s hard cap; stragglers are aborted. Individual engine failures are tolerated; it fails only when every engine fails.
 
 ## Side Effects
+
 - Network
-  - Calls one or more external search providers over HTTPS until one succeeds or all fail.
-  - Provider-specific transports include JSON POST (including OpenAI Responses), JSON GET, SSE streaming (Perplexity OAuth/API, Gemini, Codex), and JSON-RPC over HTTP (Z.AI).
+   - Calls one or more external search providers over HTTPS until one succeeds or all fail.
+   - Provider-specific transports include JSON POST (including OpenAI Responses), JSON GET, SSE streaming (Perplexity OAuth/API, Gemini, Codex), and JSON-RPC over HTTP (Z.AI).
 - Subprocesses / native bindings
-  - Most HTTP/API adapters spawn nothing. Google, Ecosia, and Mojeek first try a plain fetch, but failed, non-2xx, or challenged production responses can acquire the project-shared broker-owned headless Chromium. Hosts without a CLI worker entry (such as an embedded SDK host) instead launch process-local Chromium.
-  - This fallback can start a Chromium process and create its browser-profile lifecycle. On first browser use it can also download Chromium into the omp Puppeteer cache unless a system Chromium or `PUPPETEER_EXECUTABLE_PATH` is available. The search adapter itself uses no native binding.
+   - Most HTTP/API adapters spawn nothing. Google, Ecosia, and Mojeek first try a plain fetch, but failed, non-2xx, or challenged production responses can acquire the project-shared broker-owned headless Chromium. Hosts without a CLI worker entry (such as an embedded SDK host) instead launch process-local Chromium.
+   - This fallback can start a Chromium process and create its browser-profile lifecycle. On first browser use it can also download Chromium into the omp Puppeteer cache unless a system Chromium or `PUPPETEER_EXECUTABLE_PATH` is available. The search adapter itself uses no native binding.
 - Session state (transcript, memory, jobs, checkpoints, registries)
-  - Uses a module-global provider-instance cache in `packages/coding-agent/src/web/search/provider.ts`.
-  - `packages/coding-agent/src/tools/index.ts` gates tool availability behind `cfgWebSearchEnabled.get(session.settings)` (`web_search.enabled`, defined in `packages/coding-agent/src/tools/settings.ts`).
+   - Uses a module-global provider-instance cache in `packages/coding-agent/src/web/search/provider.ts`.
+   - `packages/coding-agent/src/tools/index.ts` gates tool availability behind `cfgWebSearchEnabled.get(session.settings)` (`web_search.enabled`, defined in `packages/coding-agent/src/tools/settings.ts`).
 - Background work / cancellation
-  - Many provider adapters accept `AbortSignal`; `WebSearchTool.execute()` passes the tool call signal into `executeSearch()`, which forwards it as `params.signal` to providers and rethrows cancellation during fallback.
+   - Many provider adapters accept `AbortSignal`; `WebSearchTool.execute()` passes the tool call signal into `executeSearch()`, which forwards it as `params.signal` to providers and rethrows cancellation during fallback.
 
 ## Limits & Caps
+
 - Default chain length: 11 selectors (the `web` role defaults in `packages/catalog/src/compat/rules/runtime/behavior.kdl`).
 - `formatForLLM()` truncates source snippets and citation text to 240 chars (`packages/coding-agent/src/web/search/index.ts`).
 - `formatForLLM()` emits at most 3 search queries, each truncated to 120 chars (`packages/coding-agent/src/web/search/index.ts`).
@@ -307,19 +317,21 @@ Each provider search transport receives a hard timeout from `providers.webSearch
 - Gemini HTTP retries: up to `3` retries, exponential base delay `1000` ms, each retry delay capped at `5 * 60 * 1000` ms; the transport abort signal bounds attempts and delays.
 
 ## Errors
+
 - Tool-level no-candidate case returns a normal tool result with `Error: No web search model configured.` (or `No web search model matches selector "<model>".`); it does not throw.
 - Tool-level all-failed case also returns a normal tool result with `Error: ...`; the message is either the single normalized provider error or a semicolon-separated summary of all failed providers.
 - Provider adapters usually throw `SearchProviderError(provider, message, status)` for HTTP or protocol failures.
 - Availability is provider-specific: most credentialed adapters inspect AuthStorage, while keyless engines and explicitly selected Perplexity/Public Web have separate admission rules.
 - Per-provider notable failures:
-  - Anthropic: missing credentials throw a plain `Error`; a `404` is remapped to a special final message by `formatSearchProviderFailure()`.
-  - Perplexity: no admitted auth method raises `SearchProviderError("perplexity", ..., 401)`; ask-stream `error_code` events also become provider errors.
-  - Gemini: auth refresh and HTTP retries are internal; exhausted failures surface through the shared provider failure handling.
-  - Codex and Gemini both fail if the HTTP response has no body after a `200`.
-  - Z.AI treats malformed SSE/JSON-RPC payloads as provider errors and retries only argument-shape failures across request variants.
-  - SearXNG `findAuth()` can throw configuration errors before any HTTP call if Basic auth fields are incomplete or invalid.
+   - Anthropic: missing credentials throw a plain `Error`; a `404` is remapped to a special final message by `formatSearchProviderFailure()`.
+   - Perplexity: no admitted auth method raises `SearchProviderError("perplexity", ..., 401)`; ask-stream `error_code` events also become provider errors.
+   - Gemini: auth refresh and HTTP retries are internal; exhausted failures surface through the shared provider failure handling.
+   - Codex and Gemini both fail if the HTTP response has no body after a `200`.
+   - Z.AI treats malformed SSE/JSON-RPC payloads as provider errors and retries only argument-shape failures across request variants.
+   - SearXNG `findAuth()` can throw configuration errors before any HTTP call if Basic auth fields are incomplete or invalid.
 
 ## Notes
+
 - The model-facing schema does not expose a provider or model; CLI/internal callers can pin one through `SearchQueryParams.model`.
 - `executeSearch()` loads provider modules lazily as the chain reaches them. Provider instances are cached per id (`packages/coding-agent/src/web/search/provider.ts`), and asking for labels via `getSearchProviderLabel()` does not trigger imports.
 - Most providers treat `limit` and `num_search_results` as the same number because adapters pass `params.numSearchResults ?? params.limit`. Perplexity preserves both concepts. TinyFish uses the collapsed value as a local cap, serializes `num_results` per page, and paginates when more results are needed. xAI uses it only to cap parsed sources/citations (`10` default, `30` max).

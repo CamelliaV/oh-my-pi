@@ -53,7 +53,10 @@ describe("injectToolsByName", () => {
 			// Clone the bundled entry: `getBundledModel` returns a shared object, and
 			// `prefixBinding` decides whether an implicit prompt rebuild may commit —
 			// reading it from a mutable global would make this test order-dependent.
-			model: { ...getBundledModel("openai", "gpt-4o-mini"), thinking: { enabled: false, prefixBinding: false } } as never,
+			model: {
+				...getBundledModel("openai", "gpt-4o-mini"),
+				thinking: { enabled: false, prefixBinding: false },
+			} as never,
 			disableExtensionDiscovery: true,
 			skills: [],
 			contextFiles: [],

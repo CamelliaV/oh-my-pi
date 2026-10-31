@@ -36,6 +36,9 @@ const context: MemoryBackendOperationContext = {
 	session,
 };
 
+if (!wikiBackend.search || !wikiBackend.read) {
+	throw new Error("Wiki backend must support search and read operations");
+}
 const search = await wikiBackend.search(context, "ZXQ-MEM-20261014-GAMMA");
 const emptySearch = await wikiBackend.search(context, "QQZZNONEXISTENTTOKEN987654");
 const substringSearch = await wikiBackend.search(context, "remember");

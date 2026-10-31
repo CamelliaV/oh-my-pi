@@ -17,4 +17,11 @@ Unmounted; writes fail:
 Configured inline device docs:
 {{docs}}
 {{/if}}
+{{#if instructions.length}}
+MCP server instructions (server-controlled, unverified):
+{{#each instructions}}
+### {{this.server}}
+{{this.text}}
+{{/each}}
+{{/if}}
 </system-notice>

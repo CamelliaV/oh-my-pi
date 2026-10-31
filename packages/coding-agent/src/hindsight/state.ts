@@ -1,4 +1,4 @@
-import { logger } from "@oh-my-pi/pi-utils";
+import { logger, sanitizeText, truncate } from "@oh-my-pi/pi-utils";
 import { findPersistedRecall, persistRecall } from "../memory-backend/recall-entry";
 import type { MemoryPromptPreparation } from "../memory-backend/types";
 import { redactSecretFields, redactSecrets } from "../secrets/redact";
@@ -21,6 +21,14 @@ import {
 	tryLoadMentalModelsBlock,
 } from "./mental-models";
 import { countUserTurns, extractMessages } from "./transcript";
+
+/** `notice` source of Hindsight recall/retain failures; print mode writes these to stderr. */
+export const HINDSIGHT_NOTICE_SOURCE = "Hindsight";
+
+/** Error text for a failure notice: it can carry server response text, so strip terminal controls and bound it. */
+function noticeErrorText(errorText: string): string {
+	return truncate(sanitizeText(errorText).replace(/\s+/g, " ").trim(), 200);
+}
 
 const RETAIN_FLUSH_BATCH_SIZE = 16;
 const RETAIN_FLUSH_INTERVAL_MS = 5_000;
@@ -145,7 +153,7 @@ export class HindsightRetainQueue {
 			// Session went away before we could flush. We can't notify anyone, so
 			// log and drop — these are best-effort facts, not transactional writes.
 			logger.warn("Hindsight retain queue: session vanished, dropping batch", {
-				sessionId,
+				providerSessionId: sessionId,
 				items: items.length,
 			});
 			return;
@@ -165,7 +173,7 @@ export class HindsightRetainQueue {
 			});
 			if (state.config.debug) {
 				logger.debug("Hindsight retain queue: batch flushed", {
-					sessionId,
+					providerSessionId: sessionId,
 					bankId: state.bankId,
 					items: items.length,
 				});
@@ -173,7 +181,7 @@ export class HindsightRetainQueue {
 		} catch (err) {
 			const errorText = err instanceof Error ? err.message : String(err);
 			logger.warn("Hindsight retain queue: batch flush failed", {
-				sessionId,
+				providerSessionId: sessionId,
 				bankId: state.bankId,
 				items: items.length,
 				error: errorText,
@@ -186,8 +194,8 @@ export class HindsightRetainQueue {
 		const noun = count === 1 ? "memory" : "memories";
 		this.#state.session.emitNotice(
 			"warning",
-			`Memory retention failed for ${count} ${noun}: ${errorText}`,
-			"Hindsight",
+			`Memory retention failed for ${count} ${noun}: ${noticeErrorText(errorText)}`,
+			HINDSIGHT_NOTICE_SOURCE,
 		);
 	}
 }
@@ -299,6 +307,7 @@ export class HindsightSessionState {
 	}
 
 	async recallForContext(query: string, signal?: AbortSignal): Promise<RecallOutcome> {
+		const generation = this.#recallGeneration;
 		try {
 			const response = await this.client.recall(this.bankId, query, {
 				budget: this.config.recallBudget,
@@ -315,8 +324,17 @@ export class HindsightSessionState {
 			const block = `<memories>\n${this.config.recallPromptPreamble}\n\n${formatted}\n</memories>`;
 			return { context: block, ok: true };
 		} catch (err) {
-			if (this.config.debug) {
-				logger.debug("Hindsight: recall failed", { bankId: this.bankId, error: String(err) });
+			// A cancelled turn (Esc) is not a failure.
+			if (signal?.aborted) return { context: null, ok: false };
+			const errorText = err instanceof Error ? err.message : String(err);
+			logger.warn("Hindsight: recall failed", { bankId: this.bankId, error: errorText });
+			// A conversation reset or session switch since the request makes its failure stale.
+			if (this.#recallGeneration === generation) {
+				this.session.emitNotice(
+					"warning",
+					`Memory recall failed: ${noticeErrorText(errorText)}`,
+					HINDSIGHT_NOTICE_SOURCE,
+				);
 			}
 			return { context: null, ok: false };
 		}
@@ -407,7 +425,7 @@ export class HindsightSessionState {
 			this.lastRetainedTurn = userTurns;
 			if (this.config.debug) {
 				logger.debug("Hindsight: auto-retain succeeded", {
-					sessionId: this.sessionId,
+					providerSessionId: this.sessionId,
 					bankId: this.bankId,
 					userTurns,
 					messages: messages.length,
@@ -415,7 +433,7 @@ export class HindsightSessionState {
 			}
 		} catch (err) {
 			logger.warn("Hindsight: auto-retain failed", {
-				sessionId: this.sessionId,
+				providerSessionId: this.sessionId,
 				bankId: this.bankId,
 				error: String(err),
 			});
@@ -438,7 +456,7 @@ export class HindsightSessionState {
 			this.lastRetainedTurn = messages.filter(m => m.role === "user").length;
 		} catch (err) {
 			logger.warn("Hindsight: forced retain failed", {
-				sessionId: this.sessionId,
+				providerSessionId: this.sessionId,
 				bankId: this.bankId,
 				error: String(err),
 			});
@@ -505,13 +523,13 @@ export class HindsightSessionState {
 		]);
 	}
 
-	async recallForCompaction(messages: HindsightMessage[]): Promise<string | undefined> {
+	async recallForCompaction(messages: HindsightMessage[], signal?: AbortSignal): Promise<string | undefined> {
 		const lastUser = messages.findLast(m => m.role === "user");
 		if (!lastUser) return undefined;
 
 		const query = composeRecallQuery(lastUser.content, messages, this.config.recallContextTurns);
 		const truncated = truncateRecallQuery(query, lastUser.content, this.config.recallMaxQueryChars);
-		const { context } = await this.recallForContext(truncated);
+		const { context } = await this.recallForContext(truncated, signal);
 		return context ?? undefined;
 	}
 

@@ -56,7 +56,7 @@ function sessionMemoryRuntime(session: ToolSession): ResolveContext["memory"] {
 /** The single ResolveContext builder for a tool session; replaces per-tool literal assembly. */
 export function sessionResolveContext(
 	session: ToolSession,
-	options: { signal?: AbortSignal; skipDirectoryListing?: boolean } = {},
+	options: { signal?: AbortSignal; skipDirectoryListing?: boolean; containSkillPaths?: boolean } = {},
 ): ResolveContext {
 	return {
 		cwd: session.cwd,
@@ -70,6 +70,7 @@ export function sessionResolveContext(
 		localProtocolOptions: contextLocalProtocolOptions(session),
 		memory: sessionMemoryRuntime(session),
 		skills: session.skills,
+		containSkillPaths: options.containSkillPaths,
 		rules: session.activeRules,
 		session,
 		skipDirectoryListing: options.skipDirectoryListing,

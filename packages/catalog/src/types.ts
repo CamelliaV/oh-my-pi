@@ -623,8 +623,6 @@ export interface OpenAICompat {
 	clampOutputToModelMax?: boolean;
 	/** Strip image inputs before encoding (text-only serving of a multimodal id). */
 	stripImageInput?: boolean;
-	/** Thinking-loop watchdog guard family applied to streamed reasoning. */
-	thinkingLoopGuard?: "gemini" | "deepseek" | "xai";
 }
 
 /**
@@ -847,8 +845,6 @@ export interface AnthropicCompat {
 	 * contract override it. Default: 10485760.
 	 */
 	maxImagePayloadBytes?: number;
-	/** Thinking-loop watchdog guard family applied to streamed reasoning. */
-	thinkingLoopGuard?: "gemini" | "deepseek" | "xai";
 	/**
 	 * Drop the enabled `thinking` config and replayed thinking blocks when the
 	 * conversation is not thinking-led (a proxy contract for non-interleaved
@@ -1064,8 +1060,6 @@ export interface ResolvedOpenAISharedCompat {
 	toolSchemaFlavor?: OpenAICompat["toolSchemaFlavor"];
 	/** Strip image inputs before encoding (text-only serving of a multimodal id). */
 	stripImageInput: boolean;
-	/** Thinking-loop watchdog guard family applied to streamed reasoning. */
-	thinkingLoopGuard?: OpenAICompat["thinkingLoopGuard"];
 	/** Flatten/reject leftover root `anyOf`/`oneOf` unions in strict tool schemas (xAI's function-calling validator 400s on them). */
 	rejectRootObjectUnion: boolean;
 	/** Retry without strict tools when the host rejects a strict grammar as too large (OpenRouter-Anthropic compiled-grammar overflow). */
@@ -1148,7 +1142,6 @@ export type ResolvedOpenAICompat = ResolvedOpenAISharedCompat &
 			| "supportsConfigurationUpdate"
 			| "supportsSteering"
 			| "stripImageInput"
-			| "thinkingLoopGuard"
 			| "whenThinking"
 		>
 	> & {
@@ -1250,7 +1243,6 @@ export type ResolvedAnthropicCompat = Required<
 	Omit<
 		AnthropicCompat,
 		| "streamIdleTimeoutMs"
-		| "thinkingLoopGuard"
 		| "bedrockMessagesApi"
 		| "effortBeta"
 		| "extendedCacheTtlBeta"
@@ -1285,8 +1277,6 @@ export type ResolvedAnthropicCompat = Required<
 	 * request builder.
 	 */
 	maxImagePayloadBytes?: number;
-	/** Thinking-loop watchdog guard family applied to streamed reasoning. */
-	thinkingLoopGuard?: AnthropicCompat["thinkingLoopGuard"];
 	/**
 	 * Bedrock's Anthropic Messages API (see {@link AnthropicCompat.bedrockMessagesApi}).
 	 * `true` when detected or configured; otherwise unset, so rows baked before
@@ -1388,8 +1378,6 @@ export interface GoogleCompat {
 	 * {@link AnthropicCompat.maxImagePayloadBytes}).
 	 */
 	maxImagePayloadBytes?: number;
-	/** Thinking-loop watchdog guard family applied to streamed reasoning. */
-	thinkingLoopGuard?: "gemini" | "deepseek" | "xai";
 	/** See {@link BedrockCompat.supportsSamplingParams}. */
 	supportsSamplingParams?: boolean;
 }
@@ -1400,7 +1388,6 @@ export type ResolvedGoogleCompat = Required<
 		GoogleCompat,
 		| "streamFirstEventTimeoutMs"
 		| "streamIdleTimeoutMs"
-		| "thinkingLoopGuard"
 		| "antigravityUsageLabel"
 		| "supportsSamplingParams"
 		| "maxImageDimension"
@@ -1409,7 +1396,6 @@ export type ResolvedGoogleCompat = Required<
 > & {
 	streamFirstEventTimeoutMs?: number;
 	streamIdleTimeoutMs?: number;
-	thinkingLoopGuard?: GoogleCompat["thinkingLoopGuard"];
 	antigravityUsageLabel?: string;
 	supportsSamplingParams?: boolean;
 	maxImageDimension?: number;
@@ -1823,8 +1809,9 @@ export interface Model<TApi extends Api = Api> {
 	useResponsesLite?: boolean;
 	/**
 	 * Service-tier ids the provider advertises for this model (Codex discovery
-	 * `service_tiers[].id`, e.g. `priority`, `ultrafast`). Absent when the
-	 * provider publishes no per-model tier list.
+	 * `service_tiers[].id`, or an OpenAI-compatible `/v1/models` row's
+	 * `service_tiers`, e.g. `priority`, `ultrafast`). Absent when the provider
+	 * publishes no per-model tier list.
 	 */
 	serviceTiers?: readonly string[];
 	/** Preferred model to switch to when context promotion is triggered (model id or provider/id). */

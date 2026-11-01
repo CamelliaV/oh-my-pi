@@ -661,6 +661,19 @@ function getUmansWebSearchHeader(
 	return provider ? { [UMANS_WEBSEARCH_PROVIDER_HEADER]: provider } : undefined;
 }
 
+/**
+ * Whether a request to `model` sends the tool `name` for the host to run itself, never dispatching the call to the
+ * client: the same decision `encodeAnthropicToolName` makes on the wire.
+ */
+export function anthropicHostRunsTool(
+	model: Model<"anthropic-messages">,
+	name: string,
+	headers?: Record<string, string>,
+): boolean {
+	const gatewayWebSearch = getUmansWebSearchHeader(model, mergeHeaders(model.headers, headers)) !== undefined;
+	return shouldUseUmansGatewayWebSearch(name, gatewayWebSearch);
+}
+
 function shouldUseUmansGatewayWebSearch(name: string, enabled: boolean): boolean {
 	return enabled && name.toLowerCase() === UMANS_WEBSEARCH_TOOL_NAME;
 }
@@ -933,6 +946,22 @@ const ANTHROPIC_MESSAGE_EVENTS: ReadonlySet<string> = new Set([
 type RawMessagePingEvent = { type: "ping" };
 type AnthropicStreamEvent = RawMessageStreamEvent | RawMessagePingEvent;
 const ANTHROPIC_PING_EVENT: RawMessagePingEvent = { type: "ping" };
+
+/** A content delta that carries no bytes: a stalled relay can repeat these forever, so they are not stream progress. */
+function isEmptyContentDelta(event: AnthropicStreamEvent): boolean {
+	if (event.type !== "content_block_delta") return false;
+	const delta = event.delta;
+	switch (delta.type) {
+		case "text_delta":
+			return delta.text === "";
+		case "thinking_delta":
+			return delta.thinking === "";
+		case "input_json_delta":
+			return delta.partial_json === "";
+		default:
+			return false;
+	}
+}
 
 /**
  * In-stream `error` SSE frames carry an Anthropic error envelope:
@@ -2678,6 +2707,8 @@ const streamAnthropicOnce = (
 						number,
 						{
 							contentIndex: number;
+							/** True once a native signature_delta arrived; a block-start signature is only a fallback. */
+							signatureDeltaStarted?: boolean;
 							kind:
 								| "text"
 								| "thinking"
@@ -2716,7 +2747,9 @@ const streamAnthropicOnce = (
 						onFirstItemTimeout: () => activeAbortTracker.abortLocally(firstEventTimeoutAbortError),
 						abortSignal: options?.signal,
 						isProgressItem: item => {
-							if ((item as AnthropicStreamEvent).type === "ping") {
+							const event = item as AnthropicStreamEvent;
+							if (isEmptyContentDelta(event)) return false;
+							if (event.type === "ping") {
 								if (!sawNonPingEvent) return false;
 								if (pingProgressCapMs === undefined) return true;
 								return Date.now() - lastNonPingProgressAtMs < pingProgressCapMs;
@@ -2873,7 +2906,8 @@ const streamAnthropicOnce = (
 								const block: Block = {
 									type: "thinking",
 									thinking: event.content_block.thinking ?? "",
-									thinkingSignature: "",
+									thinkingSignature:
+										typeof event.content_block.signature === "string" ? event.content_block.signature : "",
 									[kStreamingBlockIndex]: event.index,
 								};
 								output.content.push(block);
@@ -3031,8 +3065,12 @@ const streamAnthropicOnce = (
 									continue;
 								}
 								streamedReplayUnsafeContent = true;
-								block.thinkingSignature = block.thinkingSignature || "";
-								block.thinkingSignature += event.delta.signature;
+								// Some compatible endpoints put the signature on block_start: a fallback that the
+								// first native delta replaces, not a prefix of the delta sequence.
+								block.thinkingSignature = openBlock.signatureDeltaStarted
+									? `${block.thinkingSignature ?? ""}${event.delta.signature}`
+									: event.delta.signature;
+								openBlock.signatureDeltaStarted = true;
 							}
 						} else if (event.type === "content_block_stop") {
 							if (sawTerminalEnvelope) {

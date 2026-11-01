@@ -71,8 +71,8 @@ describe("default web chain", () => {
 
 	it.each([
 		["anthropic", "claude-sonnet-4-5", "claude-haiku-4-5"],
-		["openai", "gpt-6.1-sol", "gpt-5.6-luna"],
-		["openai-codex", "gpt-6.1-sol", "gpt-5.6-luna"],
+		["openai", "gpt-6.1-sol", "gpt-6-luna"],
+		["openai-codex", "gpt-6.1-sol", "gpt-6-luna"],
 	])("keeps hosted search and its fallback on the session's %s provider", async (host, sessionId, searchId) => {
 		await runSearchQuery(
 			{ query: "anything" },
@@ -102,11 +102,10 @@ describe("default web chain", () => {
 
 		await runSearchQuery({ query: "anything" }, { authStorage, modelRegistry, sessionModel: active });
 
-		expect(attempted.slice(0, 3)).toEqual(["web/grok", "web/parallel", "openai-codex/gpt-5.6-luna"]);
-		expect(attempted.filter(selector => !selector.startsWith("web/"))).toEqual([
-			"openai-codex/gpt-5.6-luna",
-			"openai-codex/gpt-6-luna",
-		]);
+		// The session model is already the host's swap target, so the chain skips
+		// the duplicate registry instance instead of retrying it.
+		expect(attempted.slice(0, 3)).toEqual(["web/grok", "web/parallel", "openai-codex/gpt-6-luna"]);
+		expect(attempted.filter(selector => !selector.startsWith("web/"))).toEqual(["openai-codex/gpt-6-luna"]);
 	});
 
 	it("uses the session model as-is when its host does not expose the swap target", async () => {

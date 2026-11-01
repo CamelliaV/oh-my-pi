@@ -21,6 +21,8 @@ export interface SessionPickerHost<T extends SessionSelectorEntry = SessionSelec
 	setSessionPinned?(session: T, pinned: boolean): Promise<void>;
 	loadAllSessions?(): Promise<T[]>;
 	loadHiddenSessions?(): Promise<T[]>;
+	/** Loads every pinned session across projects for the pinned scope; omitted, that tab is not offered. */
+	loadPinnedSessions?(): Promise<T[]>;
 }
 
 /** Presentation and capability controls for the standalone session picker. */
@@ -37,8 +39,8 @@ export interface SessionPickerOptions<T extends SessionSelectorEntry = SessionSe
 	allowGlobalScope?: boolean;
 	historySearch?: boolean;
 	pinnedIds?: ReadonlySet<string>;
-	/** Open the picker on the hidden-sessions scope (e.g. `/hidden`). */
-	initialScope?: "hidden";
+	/** Open the picker on a host-backed scope (e.g. `/hidden`, `/pinned`). */
+	initialScope?: "hidden" | "pinned";
 }
 
 /**
@@ -69,6 +71,7 @@ export function sessionSelectorOptions<T extends SessionSelectorEntry>(
 		// cross-project catalogue on Tab.
 		loadAllSessions: options.allowGlobalScope === false ? undefined : host.loadAllSessions,
 		loadHiddenSessions: host.loadHiddenSessions,
+		loadPinnedSessions: host.loadPinnedSessions,
 		initialScope: options.initialScope,
 		getTerminalRows: context.getTerminalRows,
 		fillHeight: true,
@@ -131,6 +134,7 @@ export async function selectSession<T extends SessionSelectorEntry>(
 					// that has its own sessions. `allowGlobalScope: false` keeps
 					// source-owned pickers (import) pinned to the list they were given.
 					loadAllSessions: options.allowGlobalScope === false ? undefined : host.loadAllSessions,
+					loadPinnedSessions: host.loadPinnedSessions,
 					getTerminalRows: () => ui.terminal.rows,
 					fillHeight: true,
 					standalone: true,

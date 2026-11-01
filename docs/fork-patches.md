@@ -40,8 +40,15 @@ reasoning matters. The per-release upgrade history sits at the bottom
    output-block state=error/pending/running skips bg; default-renderer error
    text red; tool-execution wrapper drops tint (benign-skip keeps pending).
 6. `feat(cli)` fuzzy `--resume <term>` — `fuzzyMatchResumableSessions`
-   (title+firstMessage, substring>subsequence, local>global, dedup); single
-   hit resumes directly, several open prefilled picker; wired in main.ts.
+   (title+firstMessage+stored-prompt index, bucketed rank title>message>content
+   >subsequence, local>global, dedup); one literal title/message hit resumes
+   directly, several candidates open the prefilled picker (content hits and
+   subsequences never auto-resume), non-TTY launches name candidate ids
+   instead of a bare not-found; wired in `createSessionManager` after
+   `resolveResumeTarget` misses, content pass through lazy `HistoryStorage`
+   (`matchingSessionIds`). Lost in the v18.14.0 merge (call site dropped, plus
+   an unused import); restored on top of the continuation-aware
+   `resolveResumeTarget` flow 2026-11-01.
 7. `feat(tui)` turn-level token usage aggregate — work-usage machinery in
    `work-usage.ts` (WorkUsageAccumulator/SessionUsageAccumulator) + dim
    aggregate row (`⏱ turn N req ⤵ in ⤴ out 💾 cache ⚡ span`); flushed on next
@@ -1566,6 +1573,70 @@ corrected probe reports exactly 595 and the block pane now shows the long
 `read` description that was previously invisible (the original renderer
 only printed the schema JSON, which is why the count looked impossible).
 
+## Patch 45: `feat(tui,cli)` Pinned scope in the resume picker (2026-11-01)
+
+Pins (`~/.omp/agent/session-pins.json`, keyed by session id) only floated
+sessions that were already in the list. The picker's folder scope holds one
+project bucket (plus its git worktrees), so a pin made in another project
+showed up nowhere until Tab reached All projects — and was then buried among
+every other session. A pin should mean "find it from anywhere".
+
+The picker now has a fourth scope, **Pinned**, next to Current folder / All
+projects / Hidden. It lists every pinned session across projects, newest
+first — `SessionManager.listPinnedForPicker` → `listPinnedSessions`
+(storage-aware global scan, newest copy per id, hidden ids and deleted files
+skipped, in-memory storages included). The session keeps its normal place in
+its own project's list; a pin is a shortcut, not a move.
+
+Scope plumbing (`overlays/session-selector.ts`): `SessionSelectorScope` gains
+`"pinned"`, and scope availability is now explicit (`SessionScopeAvailability`)
+so Tab cycles only over scopes the host can load — folder → all → pinned →
+hidden → folder, dropping any the host cannot supply. `loadPinnedSessions`
+is refreshed on every entry (like hidden), so pins made in another omp window
+appear without a restart; entering the scope also installs the fresh pin-id
+set, so the marker and the Unpin action are right even for a pin this process
+never saw. Unpinning a row while in the Pinned scope removes it immediately;
+hiding/deleting a session drops it from the cached shelf, and renames mirror
+into it. The native tab strip filters to available scopes, a tab click now
+jumps straight to that scope instead of cycling one step (`handleNativeEvent`
+passes the tab id to `#toggleScope`), the picker placeholder reads "Search
+pinned sessions…", and the empty state says "No pinned sessions — pin one from
+any list".
+
+Host wiring: `SessionPickerHost.loadPinnedSessions` (pi-tui app) is supplied by
+the standalone `omp -r` picker (`main.ts`, native store only — foreign import
+pickers list source-owned sessions) and the in-session `/resume` picker
+(`selector-controller.ts`), both through `SessionManager.listPinnedForPicker`.
+
+`--resume` cancellation now prints `Resume cancelled.` — the old "session was
+not moved" wording described only the missing-directory move prompt and is
+wrong when the picker was Esc'd.
+
+In-conversation entry points: `/pin` (already present) pins or unpins the
+active session — its message now names the Pinned scope and points at
+`/pinned`; new `/pinned` mirrors `/hidden` (TUI opens the picker on the pinned
+scope, text mode lists the ids). Opening a picker on a scope was broken twice
+over: `InteractiveMode.showSessionSelector` declared two parameters and dropped
+the optional `{ initialScope }` it was handed, so `/hidden` and bare `/unhide`
+always opened on Current folder, and the selector only relabelled the folder
+rows instead of loading the scope's list. Both fixed: the third argument is
+forwarded, and the constructor now runs the same load path as a Tab toggle for
+`initialScope: "hidden" | "pinned"` (loading message, then that scope's rows and
+empty-state wording). The same dispatcher rule (`handleTui` wins and never falls
+through to `handle`) meant `/unhide <id>` silently did nothing in the TUI; its id
+path now lives in `handleTui` too, sharing one `unhideSessionByArg` helper with
+the text-mode handler.
+
+Tests: `packages/tui/test/session-picker-native.test.ts` (Tab ring lands on
+Pinned and then Hidden; a tab click jumps straight to Pinned; unpinning the
+selected row leaves the shelf immediately), `test/session/picker-pinned-sessions.test.ts`
+(cross-project pin listed from any project while the project list stays local;
+only pinned rows listed; deleted pin drops; hidden pin stays hidden; empty
+without pins). Verified live in tmux on the rebuilt `omp-patched`: folder with
+no sessions → tab strip shows `Pinned`, Tab cycles Current folder → All
+projects → Pinned, which lists "📌 Pinned cross-project work" from the other
+project with its cwd; Enter resumes it; unpin key drops the row.
+
 ## Upgrade chronicle (v18.3.2 → v18.12.3)
 
 Moved out of `AGENTS.md` on 2026-10-28: it is history, not policy, and cost
@@ -1866,6 +1937,19 @@ stamped 18.14.1. cp → stamp → build order preserved.
 Verification: `check:ts` 0 errors. zh reasoning-fallback driver 6/6.
 web/search suite 221 pass. Binary built + installed (`omp/18.14.1`),
 `--smoke-test: ok`, `gallery` renders.
+
+**Incident, fixed 2026-11-01: patch 6's `--resume <term>` fallback was lost
+in this merge.** Upstream v18.14.0 rewrote resume resolution
+(`resolveResumeTarget` + continuation following); the resolution kept
+`fuzzyMatchResumableSessions`'s import while dropping its call site, so every
+non-prefix term printed `Session "…" not found.` and the matcher became dead
+code (no adjudication recorded it). Restored on top of the new flow, now with
+the stored-prompt pass (`HistoryStorage.matchingSessionIds`, loaded lazily
+after a miss) and bucket ranking title > first message > stored prompt >
+character subsequence; only a single literal title/message hit auto-resumes,
+everything else opens the prefilled picker, and a non-TTY launch names the
+candidate ids instead of a bare not-found. Contract pinned by
+`test/main-resume-fuzzy.test.ts`.
 
 Known fork debt surfaced by the new `agent-session-retry-cap.test.ts` (3
 fails, byte-identical on unmerged fork base `64743b66a4`, NOT a merge

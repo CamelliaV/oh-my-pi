@@ -15,7 +15,7 @@ import type { InjectToolsMode } from "../session/session-tools";
 import { COMPACT_MODES, parseCompactArgs } from "../session/compact-modes";
 import { USER_INTERRUPT_LABEL } from "../session/messages";
 import { resolveResumableSession, resolveResumeTarget } from "../session/session-listing";
-import { toggleSessionPin } from "../session/session-pins";
+import { loadPinnedSessionIds, toggleSessionPin } from "../session/session-pins";
 import { hideSession, loadHiddenSessionIds, unhideSession } from "../session/session-hides";
 import {
 	cleanSourceCheckoutIfConfigured,
@@ -138,6 +138,34 @@ async function relocateHeadlessSession(
 	await runtime.notifyConfigChanged?.();
 	await runtime.notifyTitleChanged?.();
 	return undefined;
+}
+
+/**
+ * Restore one hidden session named by an id prefix or a resolvable resume key.
+ * Returns the user-facing outcome so the text and TUI dispatchers can report it
+ * through their own channel (the TUI dispatcher does not fall through to
+ * `handle` once a `handleTui` exists).
+ */
+async function unhideSessionByArg(
+	sessionArg: string,
+	cwd: string,
+	sessionDir: string | undefined,
+): Promise<{ restored: true } | { restored: false; message: string }> {
+	const hidden = await loadHiddenSessionIds();
+	if (hidden.size === 0) return { restored: false, message: "No hidden sessions." };
+	const match = await resolveResumableSession(sessionArg, cwd, sessionDir, { allowGlobalFallback: true });
+	let sessionId = match && hidden.has(match.session.id) ? match.session.id : undefined;
+	if (!sessionId) {
+		const byPrefix = [...hidden].filter(id => id.toLowerCase().startsWith(sessionArg.toLowerCase()));
+		const [only] = byPrefix;
+		if (byPrefix.length !== 1 || !only) {
+			const lines = [...hidden].map(id => `  ${id}`).join("\n");
+			return { restored: false, message: `Hidden session "${sessionArg}" not found. Hidden:\n${lines}` };
+		}
+		sessionId = only;
+	}
+	await unhideSession(sessionId);
+	return { restored: true };
 }
 
 export const BUILTIN_LIFECYCLE_SLASH_COMMANDS: ReadonlyArray<SlashCommandSpec> = [
@@ -458,7 +486,7 @@ export const BUILTIN_LIFECYCLE_SLASH_COMMANDS: ReadonlyArray<SlashCommandSpec> =
 	{
 		name: "pin",
 		icon: "pin",
-		description: "Pin or unpin a session at the top of the resume list",
+		description: "Pin or unpin a session (pins list in the Pinned scope of every resume picker)",
 		inlineHint: "[session id]",
 		allowArgs: true,
 		handle: async (command, runtime) => {
@@ -482,7 +510,11 @@ export const BUILTIN_LIFECYCLE_SLASH_COMMANDS: ReadonlyArray<SlashCommandSpec> =
 				}
 			}
 			const pinned = await toggleSessionPin(sessionId);
-			await runtime.output(pinned ? "Session pinned to the top of the resume list." : "Session unpinned.");
+			await runtime.output(
+				pinned
+					? "Session pinned. It now leads the resume list and has its own Pinned scope; browse pins with /pinned."
+					: "Session unpinned.",
+			);
 			return commandConsumed();
 		},
 	},
@@ -525,45 +557,34 @@ export const BUILTIN_LIFECYCLE_SLASH_COMMANDS: ReadonlyArray<SlashCommandSpec> =
 		allowArgs: true,
 		handle: async (command, runtime) => {
 			const sessionArg = command.args.trim();
-			const hidden = await loadHiddenSessionIds();
-			if (hidden.size === 0) {
-				return usage("No hidden sessions.", runtime);
-			}
-			let sessionId: string | undefined;
-			if (sessionArg) {
-				const match = await resolveResumableSession(
-					sessionArg,
-					runtime.cwd,
-					runtime.sessionManager.getSessionDir(),
-					{ allowGlobalFallback: true },
-				);
-				if (!match || !hidden.has(match.session.id)) {
-					const candidates = [...hidden];
-					const byPrefix = candidates.filter(id => id.toLowerCase().startsWith(sessionArg.toLowerCase()));
-					if (byPrefix.length === 1) {
-						sessionId = byPrefix[0];
-					} else {
-						const lines = candidates.map(id => `  ${id}`).join("\n");
-						return usage(`Hidden session "${sessionArg}" not found. Hidden:\n${lines}`, runtime);
-					}
-				} else {
-					sessionId = match.session.id;
-				}
-			} else {
+			if (!sessionArg) {
+				const hidden = await loadHiddenSessionIds();
+				if (hidden.size === 0) return usage("No hidden sessions.", runtime);
 				const lines = [...hidden].map(id => `  ${id}`).join("\n");
 				return usage(`Hidden sessions (unhide by id prefix):\n${lines}`, runtime);
 			}
-			await unhideSession(sessionId);
+			const outcome = await unhideSessionByArg(sessionArg, runtime.cwd, runtime.sessionManager.getSessionDir());
+			if (!outcome.restored) return usage(outcome.message, runtime);
 			await runtime.output("Session restored to the resume list.");
 			return commandConsumed();
 		},
 		// In the TUI, a bare /unhide opens the resume picker on its hidden scope
-		// where Ctrl+H restores the selected row; an explicit arg keeps the
-		// direct path above.
+		// where Ctrl+H restores the selected row; an id argument restores that
+		// session directly here, because the dispatcher does not fall through to
+		// `handle` once `handleTui` exists.
 		handleTui: async (command, runtime) => {
-			if (command.args.trim()) return undefined;
-			clearSubmittedText(runtime);
-			runtime.ctx.showSessionSelector(undefined, undefined, { initialScope: "hidden" });
+			const sessionArg = command.args.trim();
+			if (!sessionArg) {
+				clearSubmittedText(runtime);
+				runtime.ctx.showSessionSelector(undefined, undefined, { initialScope: "hidden" });
+				return commandConsumed();
+			}
+			const outcome = await unhideSessionByArg(
+				sessionArg,
+				runtime.ctx.sessionManager.getCwd(),
+				runtime.ctx.sessionManager.getSessionDir(),
+			);
+			runtime.ctx.showStatus(outcome.restored ? "Session restored to the resume list." : outcome.message);
 			return commandConsumed();
 		},
 	},
@@ -585,6 +606,27 @@ export const BUILTIN_LIFECYCLE_SLASH_COMMANDS: ReadonlyArray<SlashCommandSpec> =
 		handleTui: async (_command, runtime) => {
 			clearSubmittedText(runtime);
 			runtime.ctx.showSessionSelector(undefined, undefined, { initialScope: "hidden" });
+			return commandConsumed();
+		},
+	},
+	{
+		name: "pinned",
+		icon: "pin",
+		description: "Browse pinned sessions in the resume picker",
+		handle: async (_command, runtime) => {
+			const pinned = await loadPinnedSessionIds();
+			if (pinned.size === 0) {
+				await runtime.output("No pinned sessions. Pin one with /pin.");
+			} else {
+				const lines = [...pinned].map(id => `  ${id}`).join("\n");
+				await runtime.output(`Pinned sessions:\n${lines}`);
+			}
+			return commandConsumed();
+		},
+		// TUI opens the picker directly on the pinned scope instead of a text dump.
+		handleTui: async (_command, runtime) => {
+			clearSubmittedText(runtime);
+			runtime.ctx.showSessionSelector(undefined, undefined, { initialScope: "pinned" });
 			return commandConsumed();
 		},
 	},

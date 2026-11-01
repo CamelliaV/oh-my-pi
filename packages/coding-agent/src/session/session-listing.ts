@@ -1396,6 +1396,29 @@ export async function findSessionFiles(idPrefix: string, sessionsRoot: string = 
 }
 
 /**
+ * {@link SessionInfo} rows for pinned sessions, newest first. Pins are keyed by
+ * session id; when a session file exists in more than one bucket (moved copies)
+ * the newest copy wins. `hiddenIds` stay hidden, and pins whose files are gone
+ * simply do not appear. The pinned picker scope lists every pin from every
+ * project; each session also keeps its place in its own project's list.
+ */
+export async function listPinnedSessions(
+	pinnedIds: ReadonlySet<string>,
+	hiddenIds: ReadonlySet<string>,
+	storage: SessionStorage = new FileSessionStorage(),
+): Promise<SessionInfo[]> {
+	const wanted = new Set([...pinnedIds].filter(id => !hiddenIds.has(id)));
+	if (wanted.size === 0) return [];
+	const newest = new Map<string, SessionInfo>();
+	for (const session of await listAllSessions(storage)) {
+		if (!wanted.has(session.id)) continue;
+		const current = newest.get(session.id);
+		if (!current || session.modified.getTime() > current.modified.getTime()) newest.set(session.id, session);
+	}
+	return [...newest.values()].sort((a, b) => b.modified.getTime() - a.modified.getTime());
+}
+
+/**
  * Get recent sessions for display in the welcome screen.
  *
  * Deliberately avoids {@link scanSessionDir}'s full-directory content scan
@@ -1454,50 +1477,89 @@ function sessionMatchesResumeArg(session: SessionInfo, sessionArg: string): bool
 	return fileSessionId.startsWith(normalizedArg);
 }
 
+/** Where a fuzzy `--resume` candidate matched. */
+export type FuzzyResumeOrigin = "title" | "message" | "content" | "subsequence";
+
 /** Fuzzy `--resume <term>` candidates ranked best-first. */
 export interface FuzzyResumableSession {
 	session: SessionInfo;
 	scope: "local" | "global";
-	/** 0 = literal substring of title/first message (strong); higher = weaker fuzzy runs. */
+	/** Rank key, smaller first: see the bucket constants below. */
 	score: number;
+	/** Field that produced the hit: literal title, literal first message, stored prompt, or character subsequence. */
+	via: FuzzyResumeOrigin;
 }
 
+export interface FuzzyResumeMatchOptions {
+	/**
+	 * Session ids whose stored prompts match the term (the `history.db` index).
+	 * Stored-prompt hits rank after every title/first-message hit: the session
+	 * listing only carries the first 4KB of a transcript, so a prompt typed deep
+	 * into a long session is reachable only through this index. Best-effort —
+	 * the caller passes nothing when the index is unavailable.
+	 */
+	contentMatch?: (term: string) => readonly string[];
+}
+
+/** Score buckets: every entry in a bucket outranks every entry of the next one. */
+const TITLE_LITERAL_BASE = 0;
+const MESSAGE_LITERAL_BASE = 1000;
+const CONTENT_MATCH_BASE = 2000;
+const SUBSEQUENCE_BASE = 3000;
+/** Position caps (plus the global-scope bump of 1) keep buckets from overlapping. */
+const HAYSTACK_POSITION_CAP = 900;
+const CONTENT_INDEX_CAP = 499;
+
 /**
- * Fuzzy-match `--resume <term>` against session titles and first messages.
- * Local sessions rank above global ones; literal substrings beat character-
- * sequence fuzzy matches. Caller still gets the empty array when nothing
- * matches, so the existing exact-prefix path keeps priority.
+ * Fuzzy-match `--resume <term>` against session titles and first messages, then
+ * (when the caller supplies an index) against stored prompts. Rank order:
+ * title substring, first-message substring, stored-prompt hit, character-
+ * subsequence hit — each earlier position first, local scope above global. The
+ * caller still gets an empty array when nothing matches, so the exact
+ * id/filename-prefix path keeps priority.
  */
 export async function fuzzyMatchResumableSessions(
 	term: string,
 	cwd: string,
 	sessionDir?: string,
 	storage: SessionStorage = new FileSessionStorage(),
+	options: FuzzyResumeMatchOptions = {},
 ): Promise<FuzzyResumableSession[]> {
 	const normalizedTerm = term.trim().toLowerCase();
 	if (normalizedTerm.length === 0) return [];
 	const scopeBoost = (scope: "local" | "global"): number => (scope === "local" ? 0 : 1);
 	const matches: FuzzyResumableSession[] = [];
+	// Every listed session, so stored-prompt ids map back to their listing row.
+	const byId = new Map<string, { session: SessionInfo; scope: "local" | "global" }>();
+	const scoreHaystack = (haystack: string, via: "title" | "message"): number | undefined => {
+		const lower = haystack.toLowerCase();
+		const substringAt = lower.indexOf(normalizedTerm);
+		if (substringAt >= 0) {
+			const base = via === "title" ? TITLE_LITERAL_BASE : MESSAGE_LITERAL_BASE;
+			return base + Math.min(substringAt, HAYSTACK_POSITION_CAP);
+		}
+		return isFuzzySubsequence(normalizedTerm, lower) ? SUBSEQUENCE_BASE : undefined;
+	};
 	const visit = (sessions: SessionInfo[], scope: "local" | "global"): void => {
 		for (const session of sessions) {
-			const haystacks = [session.title, session.firstMessage].filter(
-				(value): value is string => typeof value === "string" && value.length > 0,
-			);
-			let score: number | undefined;
-			for (const haystack of haystacks) {
-				const lower = haystack.toLowerCase();
-				const substringAt = lower.indexOf(normalizedTerm);
-				if (substringAt >= 0) {
-					// Title substring outranks message substring; earlier = better.
-					const literal = substringAt + (haystack === session.title ? 0 : 100);
-					score = score === undefined ? literal : Math.min(score, literal);
-					continue;
-				}
-				if (score === undefined && isFuzzySubsequence(normalizedTerm, lower)) {
-					score = 1000;
+			const id = session.id.toLowerCase();
+			if (!byId.has(id)) byId.set(id, { session, scope });
+			const candidates: Array<{ score: number; via: FuzzyResumeOrigin }> = [];
+			if (session.title) {
+				const score = scoreHaystack(session.title, "title");
+				if (score !== undefined) {
+					candidates.push({ score, via: score >= SUBSEQUENCE_BASE ? "subsequence" : "title" });
 				}
 			}
-			if (score !== undefined) matches.push({ session, scope, score: score + scopeBoost(scope) });
+			if (session.firstMessage) {
+				const score = scoreHaystack(session.firstMessage, "message");
+				if (score !== undefined) {
+					candidates.push({ score, via: score >= SUBSEQUENCE_BASE ? "subsequence" : "message" });
+				}
+			}
+			candidates.sort((a, b) => a.score - b.score);
+			const best = candidates[0];
+			if (best) matches.push({ session, scope, score: best.score + scopeBoost(scope), via: best.via });
 		}
 	};
 	const localSessionDir = sessionDir ?? computeDefaultSessionDir(cwd, storage);
@@ -1512,6 +1574,18 @@ export async function fuzzyMatchResumableSessions(
 		),
 		"global",
 	);
+	const contentIds = options.contentMatch?.(term.trim()) ?? [];
+	contentIds.forEach((rawId, index) => {
+		const hit = byId.get(rawId.toLowerCase());
+		if (!hit || seenPaths.has(hit.session.path)) return;
+		seenPaths.add(hit.session.path);
+		matches.push({
+			session: hit.session,
+			scope: hit.scope,
+			score: CONTENT_MATCH_BASE + Math.min(index, CONTENT_INDEX_CAP) + scopeBoost(hit.scope),
+			via: "content",
+		});
+	});
 	matches.sort((a, b) => a.score - b.score || b.session.modified.getTime() - a.session.modified.getTime());
 	return matches;
 }

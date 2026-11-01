@@ -602,7 +602,7 @@ export interface InteractiveModeContext {
 	showSessionSelector(
 		source?: ForeignSessionSource,
 		onSelect?: SessionPickHandler,
-		options?: { initialScope?: "hidden" },
+		options?: { initialScope?: "hidden" | "pinned" },
 	): void;
 	/** Settle side requests before replacing the session or deleting its artifacts. */
 	prepareSessionSwitch(): Promise<void>;

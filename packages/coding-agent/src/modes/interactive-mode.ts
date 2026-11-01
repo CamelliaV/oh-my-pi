@@ -9230,8 +9230,12 @@ export class InteractiveMode implements InteractiveModeContext {
 		this.#selectorController.showThinkingSelector();
 	}
 
-	showSessionSelector(source?: ForeignSessionSource, onSelect?: SessionPickHandler): void {
-		void this.#selectorController.showSessionSelector(source, onSelect);
+	showSessionSelector(
+		source?: ForeignSessionSource,
+		onSelect?: SessionPickHandler,
+		options?: { initialScope?: "hidden" | "pinned" },
+	): void {
+		void this.#selectorController.showSessionSelector(source, onSelect, options);
 	}
 
 	async handleResumeSession(sessionPath: string, options?: ResumeSessionOptions): Promise<void> {

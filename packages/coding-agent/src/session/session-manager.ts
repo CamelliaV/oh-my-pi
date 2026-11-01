@@ -91,6 +91,7 @@ import {
 	findSessionContinuation,
 	isEmptySession,
 	listAllSessions,
+	listPinnedSessions,
 	listSessions,
 	type SessionContinuation,
 	type SessionInfo,
@@ -4683,6 +4684,18 @@ export class SessionManager {
 		]);
 		const visible = filterOutHiddenSessions(await listSessions(dir, storage, siblingDirs), hidden);
 		return filterSessionsForPicker(visible, pinned);
+	}
+
+	/**
+	 * Picker-facing pinned shelf: every pinned session across projects, newest
+	 * first, hidden sessions and deleted files excluded. The pinned scope lists
+	 * this from any project while each session keeps its place in its own
+	 * project's list, so a pin is a shortcut, not a move.
+	 */
+	static async listPinnedForPicker(storage: SessionStorage = new FileSessionStorage()): Promise<SessionInfo[]> {
+		const [pinned, hidden] = await Promise.all([loadPinnedSessionIds(), loadHiddenSessionIds()]);
+		if (pinned.size === 0) return [];
+		return listPinnedSessions(pinned, hidden, storage);
 	}
 
 	/** Picker-facing cross-project list, same empty-session rule as {@link listForPicker}. */

@@ -1795,7 +1795,7 @@ export class SelectorController {
 	async showSessionSelector(
 		source?: ForeignSessionSource,
 		onSelect?: SessionPickHandler,
-		options?: { initialScope?: "hidden" },
+		options?: { initialScope?: "hidden" | "pinned" },
 	): Promise<void> {
 		let sessions: SessionInfo[];
 		let onSelectSession: (session: SessionInfo) => Promise<boolean>;
@@ -1935,6 +1935,7 @@ export class SelectorController {
 				historyMatcher,
 				loadAllSessions: () => SessionManager.listAllForPicker(),
 				loadHiddenSessions: () => SessionManager.listHiddenForPicker(this.ctx.sessionManager.getSessionDir()),
+				loadPinnedSessions: () => SessionManager.listPinnedForPicker(),
 				pinnedIds,
 				// Live getter so detach/newSession stays accurate; tolerant of partial
 				// contexts and in-memory sessions (undefined file means no marker).

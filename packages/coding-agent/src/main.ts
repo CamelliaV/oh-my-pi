@@ -124,6 +124,8 @@ import {
 	findSessionContinuation,
 	resolveResumeTarget,
 	resolveResumableSession,
+	sessionDisplayName,
+	type FuzzyResumableSession,
 	type SessionContinuation,
 	type SessionInfo,
 } from "./session/session-listing";
@@ -266,6 +268,9 @@ async function loadSessionPicker(init?: { sessionDir?: string; foreign?: boolean
 					}),
 			loadAllSessions: () => SessionManager.listAllForPicker(storage),
 			loadHiddenSessions: () => SessionManager.listHiddenForPicker(init?.sessionDir, storage),
+			// Foreign import pickers list source-owned sessions; native pins and the
+			// pinned scope belong to the native store only.
+			...(init?.foreign ? {} : { loadPinnedSessions: () => SessionManager.listPinnedForPicker(storage) }),
 		});
 	};
 }
@@ -1262,6 +1267,54 @@ function validateSessionPersistenceArgs(parsed: Pick<Args, "continue" | "noSessi
 		throw new SessionResolutionError("--continue requires session persistence");
 	}
 }
+
+/**
+ * Fork patch #6, content half: the stored-prompt index behind `--resume <term>`.
+ * Loaded lazily — only after the exact id/filename-prefix lookup missed — so
+ * ordinary launches never open SQLite. Best-effort: an unavailable or locked
+ * history.db leaves title/first-message matching intact.
+ */
+async function loadPromptHistoryMatcher(): Promise<((term: string) => string[]) | undefined> {
+	try {
+		const { HistoryStorage } = await import("./session/history-storage");
+		const history = HistoryStorage.open();
+		return term => history.matchingSessionIds(term);
+	} catch (error) {
+		logger.warn("Stored prompts unavailable for --resume matching", { error: String(error) });
+		return undefined;
+	}
+}
+
+/**
+ * Fork patch #6, picker half: `--resume <term>` matched several sessions by
+ * title/first message. Show them ranked as the fuzzy matcher ordered them,
+ * prefilled with the term, and let the user pick. Returns undefined when the
+ * picker was cancelled (the caller then reports "Resume cancelled.").
+ * Non-interactive launches never get here: `createSessionManager` names the
+ * candidate ids instead, since a picker needs a terminal.
+ */
+async function selectFuzzyResumeCandidate(
+	matches: FuzzyResumableSession[],
+	term: string,
+	sessionDir: string | undefined,
+): Promise<SessionInfo | undefined> {
+	const selectSession = await loadSessionPicker({ sessionDir });
+	pauseStartupWatchdog();
+	try {
+		const selected = await selectSession(
+			matches.map(match => match.session),
+			{
+				initialQuery: term,
+				title: `Resume Session — "${term}" (${matches.length} ${matches.length === 1 ? "match" : "matches"})`,
+				allowGlobalScope: true,
+			},
+		);
+		return selected ?? undefined;
+	} finally {
+		resumeStartupWatchdog();
+	}
+}
+
 /**
  * Resolves CLI session flags into an existing, forked, in-memory, or cancelled session manager.
  *
@@ -1347,7 +1400,40 @@ export async function createSessionManager(
 			// A copy whose conversation moved to another machine continues as a fork.
 			return await forkIfMovedAway(manager, parsed.sessionDir);
 		}
-		const target = await resolveResumeTarget(sessionArg, cwd, parsed.sessionDir);
+		let target = await resolveResumeTarget(sessionArg, cwd, parsed.sessionDir);
+		// Fork patch #6: exact id/filename prefixes keep priority; a miss falls
+		// through to title/first-message matching, then to prompts stored in the
+		// history index. One literal title/first-message hit resumes directly;
+		// anything else that matched (several literal hits, content-index hits,
+		// character subsequences) opens the picker prefilled with the term. No
+		// candidates keeps the not-found error.
+		if (!target) {
+			const fuzzyMatches = await fuzzyMatchResumableSessions(sessionArg, cwd, parsed.sessionDir, undefined, {
+				contentMatch: await loadPromptHistoryMatcher(),
+			});
+			const literal = fuzzyMatches.filter(match => match.via === "title" || match.via === "message");
+			let chosen = literal.length === 1 ? literal[0]?.session : undefined;
+			if (!chosen && fuzzyMatches.length > 0) {
+				if (process.stdin.isTTY === true) {
+					chosen = await selectFuzzyResumeCandidate(fuzzyMatches, sessionArg, parsed.sessionDir);
+				} else {
+					// No picker without a terminal, but these matches are real:
+					// naming them beats a "not found" the user cannot act on.
+					const named = fuzzyMatches
+						.slice(0, 3)
+						.map(match => `${match.session.id} — ${sessionDisplayName(match.session)}`);
+					throw new SessionResolutionError(
+						`Session "${sessionArg}" matches ${fuzzyMatches.length} session${fuzzyMatches.length === 1 ? "" : "s"}, but this launch has no terminal to pick one.`,
+						`Resume one by id: ${named.join("; ")}`,
+					);
+				}
+			}
+			if (chosen) {
+				// The fuzzy hit may be a copy whose conversation went on elsewhere.
+				const continuation = await findSessionContinuation(chosen.path);
+				target = { session: continuation?.session ?? chosen, continuation };
+			}
+		}
 		if (!target) {
 			throw new SessionResolutionError(`Session "${sessionArg}" not found.`, SESSION_NOT_FOUND_HINT);
 		}
@@ -2246,10 +2332,11 @@ export async function runRootCommand(
 			}
 		}
 
-		// User declined the missing-directory move prompt — exit cleanly instead of
-		// letting the cancellation fall through to a new session.
+		// The user declined the missing-directory move prompt or cancelled the
+		// session picker — exit cleanly instead of letting the cancellation fall
+		// through to a new session.
 		if (typeof parsedArgs.resume === "string" && !sessionManager) {
-			writeStartupNotice(parsedArgs, `${chalk.dim("Resume cancelled: session was not moved.")}\n`);
+			writeStartupNotice(parsedArgs, `${chalk.dim("Resume cancelled.")}\n`);
 			stopStartupWatchdog();
 			process.exit(0);
 		}

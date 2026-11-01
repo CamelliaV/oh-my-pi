@@ -60,7 +60,15 @@ describe("session selector picker", () => {
 	const old = session("c", "Gamma", 40 * 24 * HOUR);
 	const others = session("d", "Delta", 3 * 24 * HOUR, "/work/other");
 
-	function make(opts: { deleted?: string[]; resumed?: string[]; standalone?: boolean } = {}) {
+	function make(
+		opts: {
+			deleted?: string[];
+			resumed?: string[];
+			standalone?: boolean;
+			pinned?: string[];
+			unpinned?: string[];
+		} = {},
+	) {
 		return new SessionSelectorComponent(
 			[today, todayToo, old],
 			s => opts.resumed?.push(s.id),
@@ -73,6 +81,10 @@ describe("session selector picker", () => {
 				},
 				loadAllSessions: async () => [today, todayToo, others, old],
 				loadHiddenSessions: async () => [old, others],
+				loadPinnedSessions: async () => [others, old],
+				onSetPinned: async (s, pinned) => {
+					(pinned ? opts.pinned : opts.unpinned)?.push(s.id);
+				},
 				currentSessionPath: todayToo.path,
 				onHide: async () => true,
 				onUnhide: async s => s.id !== "never",
@@ -154,7 +166,7 @@ describe("session selector picker", () => {
 
 		const loaded = renderedWhen(
 			selector,
-			p => p.state === "ready" && p.actions?.find(a => a.id === "scope")?.label === "Hidden sessions",
+			p => p.state === "ready" && p.actions?.find(a => a.id === "scope")?.label === "Pinned sessions",
 		);
 		selector.handleNativeEvent({ type: "action", key: "", act: "scope", mods: [] });
 		expect(props(selector.describe(withPicker)).state).toBe("loading");
@@ -165,6 +177,18 @@ describe("session selector picker", () => {
 			{ t: "/work/", s: "path dim" },
 			{ t: "other", s: "path" },
 		]);
+
+		// Tab again lands on the pinned shelf, which refreshes on entry.
+		const pinnedLoaded = renderedWhen(
+			selector,
+			p => p.state === "ready" && p.placeholder === "Search pinned sessions…",
+		);
+		selector.handleNativeEvent({ type: "action", key: "", act: "scope", mods: [] });
+		expect(props(selector.describe(withPicker)).state).toBe("loading");
+		await pinnedLoaded;
+		const pinnedScope = props(selector.describe(withPicker));
+		expect(pinnedScope.items?.find(item => item.id === others.path)).toBeTruthy();
+		expect(pinnedScope.actions?.find(a => a.id === "scope")?.label).toBe("Hidden sessions");
 
 		// Tab again cycles into the hidden scope, which re-lists its rows.
 		const hiddenLoaded = renderedWhen(
@@ -177,6 +201,47 @@ describe("session selector picker", () => {
 		const hiddenScope = props(selector.describe(withPicker));
 		expect(hiddenScope.placeholder).toBe("Search hidden sessions…");
 		expect(hiddenScope.items?.find(item => item.id === old.path)).toBeTruthy();
+	});
+
+	it("opens on a host-backed initial scope with that scope's rows", async () => {
+		const selector = new SessionSelectorComponent(
+			[today],
+			() => {},
+			() => {},
+			() => {},
+			{
+				loadPinnedSessions: async () => [others],
+				onSetPinned: async () => {},
+				initialScope: "pinned",
+			},
+		);
+		// The constructor starts the load; the first frame is the loading state.
+		const loaded = renderedWhen(selector, p => p.state === "ready" && p.placeholder === "Search pinned sessions…");
+		await loaded;
+		expect(props(selector.describe(withPicker)).items?.map(item => item.id)).toEqual([others.path]);
+	});
+
+	it("jumps straight to the pinned scope on a tab click and drops an unpinned row", async () => {
+		const unpinned: string[] = [];
+		const selector = make({ unpinned });
+		// A tab click names its scope: no cycling through All projects first.
+		const loaded = renderedWhen(selector, p => p.state === "ready" && p.placeholder === "Search pinned sessions…");
+		selector.handleNativeEvent({ type: "select", key: "scope", item: "pinned" });
+		await loaded;
+		const shelf = props(selector.describe(withPicker));
+		expect(shelf.actions?.find(a => a.id === "pin")?.label).toBe("Unpin");
+
+		const dropped = renderedWhen(selector, p => !p.items?.some(item => item.id === others.path));
+		selector.handleNativeEvent({ type: "action", key: "", act: "pin", mods: [] });
+		await dropped;
+		expect(unpinned).toEqual(["d"]);
+		expect(props(selector.describe(withPicker)).items?.map(item => item.id)).toEqual([old.path]);
+
+		// Emptying the shelf keeps the scope's own wording instead of "No sessions found".
+		const emptied = renderedWhen(selector, p => !p.items?.length);
+		selector.handleNativeEvent({ type: "action", key: "", act: "pin", mods: [] });
+		await emptied;
+		expect(Bun.stripANSI(selector.render(100).join("\n"))).toContain("No pinned sessions");
 	});
 });
 

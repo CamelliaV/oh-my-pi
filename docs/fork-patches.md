@@ -1957,3 +1957,105 @@ regression): fork patch #28's user-retry-rules delay semantics (1 800 000 ms
 hard cap) override upstream's relative/zero-valued usage-limit retry hints —
 upstream now expects ≤100 ms probe delays and 13-minute dual-signal waits.
 Unresolved; needs a patch-#28 semantic update before the next upgrade.
+
+v18.14.1→v18.15.0 (2026-10-31 → 11-01) — two releases chained in one upgrade:
+18.14.2 (257 commits; 270 changed / 19 added / 7 deleted files) and 18.15.0
+(235 commits; 239 changed / 18 added). Headline upstream changes: per-call task
+model approval (`task.perCallModel` + `task/model-approval.ts`, `model` in every
+task schema), the `thinking-loop-guard` catalog axis (`thinkingLoopGuard` removed
+from compat records: `semantic` for Gemini/DeepSeek/Grok, `off` for Claude,
+`isLoopGuardedModel` → `loopGuardLevel`), Anthropic relay connection reuse
+(body drained ≤2.5 s after `message_stop`), credential-aware `retry.fallbackChains`
+switching, `widget`-role background-job captions (15 s threshold, `/jobs full`),
+and the TUI path-style overhaul (`FILE_NAME_COLOR`/`formatStyledPath`/
+`splitReadQuery`, `GroupedLineContext.url`, Grep/AST-* per-file tree branches,
+syntax-highlighted result rows). Synthetic `upstream/v18.14.2` = `6ebba219aa`
+parented on `cc8a6df813`; `upstream/v18.15.0` = `5b85505c39` parented on
+`6ebba219aa` (incremental conflict exit: only new deltas meet the patch series).
+Merge `d5acef3f49` on `upgrade/v18.15.0`, fast-forwarded to master
+`8e867be6d2`; the CHANGELOGs auto-merged this time (no fork-side section edits).
+
+Six conflicts — three source, three generated:
+
+1. `tui/tools/lsp.ts` — import union (`classifyGroupedLines` + upstream
+   `isHighlightLanguage`) and BOTH detection mechanisms kept: upstream's
+   `parseLspLocations` anchoring (`codeBlockMatch = locations ? null : …`) plus
+   the fork's `parseDiagnosticSummary`/status-color diagnostics detection.
+   Upstream's raw `N error(s)`/`N warning(s)` scans dropped — the fork's summary
+   replaced them; nothing else referenced them.
+2. `tui/chat/read-tool-group.ts` — import union only (`formatIntentText` +
+   `FILE_NAME_COLOR`/`formatStyledPath`/`TRUNCATE_LENGTHS`). Upstream's new
+   `PathPaint`/`splitReadQuery` painting auto-merged underneath the fork's
+   `#appendIntentRows`/`#intentsForTargets` intent rows, and the fork's
+   `#formatPathValue(entry.path, …)` call site picked up upstream's
+   `HEADER_PATH_PAINT` argument.
+3. `coding-agent/task/index.ts` — import union (fork execution-progress/
+   execution-state + upstream model-approval). Upstream's perCallModel
+   advertisement plumbing, `validateSpawnParams(params, batch, file,
+   defaultAgent, …)` and the task-schema `model` field auto-merged around the
+   fork's execution-state cards; `hasModelMentions` prompt block intact.
+4. `catalog/src/compat/rules.json` — took upstream, recompiled from the merged
+   KDL tree: `gen:compat` → 1118 rules / 21 classes / 90 catalog providers.
+   `providers.web.seed.models` verified to lead with `hosted, parallel, grok,
+   …`; the new `modular` provider (auth + provider KDL) compiles in.
+5. `catalog/src/models.json` — upstream 18.15.0 bake **plus** the 103 fork-only
+   rows re-injected through `model-catalog-format` (`encodeModelCatalog`);
+   `thinkingLoopGuard` stripped from 10 of them (the key died in 18.14.2).
+   Diffing must decode via `openModelCatalog`/`getCatalogProvider` — master's
+   pre-merge bake still carried `thinkingLoopGuard` on 763 rows, which is why
+   taking upstream's bake is mandatory, not optional. Follow-up `d8921b5f0d`
+   bakes the fork engine's `extraBetas`/`usageInputIncludesCache` defaults
+   additively into the 693 Anthropic-wire rows the upstream bake lacks them on
+   (mutation is safe: the decoder interns equal compat objects, so 108 distinct
+   objects cover 693 rows) and re-derives the five injected drift rows that
+   still disagreed with the engine (`mistral-large-4-0-8`,
+   `opencode-go/gemini-4-argon`, `umans-glm-5.3{,-flash}`,
+   `yolo-auto/qwen3.8-flash`). End state: 80 providers / 6056 rows, `web`
+   keeps 23 models with `webSearchModel: grok-4.5`, `modular` ships 4.
+   **compat-parity is now green (0 diffs) — master was at 127.**
+6. `export/html/viewer.generated.json` — regenerated via
+   `bun run gen:export-viewer --write` (content-addressed asset
+   `export-viewer-2dd500234c5e…`); needed because the merged collab-web sources
+   moved.
+
+Upstream deletions adopted: `packages/coding-agent/{auth,models,skill-descriptions}.db`
++ `-shm`/`-wal` (7 tracked runtime artifacts) were dropped by the release; the
+merge removes them from the fork tree. `GroupedLineContext.isUrl` → `url` is
+untouched fork territory (`grep.ts`/`grouped-file-output.ts` carry no fork
+edits). `.github/workflows` and `bun.lock` came in clean; `bun install` picks up
+the new lock.
+
+Fork-owned test re-targeted (`8e867be6d2`): the default web chain test pinned
+the hosted `web-search-model` at `gpt-5.6-luna`, but 18.15 moved both first-party
+OpenAI lanes to `gpt-6-luna` (`classes/openai.kdl`). Adopted the new id and
+upstream's dedupe expectation for a session already sitting on the swap target;
+the fork's `web/grok`-first chain assertion is unchanged. `web/search`: 221 pass.
+
+Natives: ABI grew at 18.14.2 (`listWorkspace`'s `pruneExcludedDirs`; `index.d.ts`
+md5 `75f1279d…` → `957b7762…`, unchanged through 18.15.0) and the Rust graph
+moved at 18.15.0 (brush-core shell `openfiles`/descriptor-limit wording,
+`pi-iso/overlayfs.rs` fusermount3→fusermount fallback, `pi-builtins` host/stdio,
+Markdown.sublime-syntax comment). Tokenizer data
+(`crates/pi-natives/tools/cache/*`, 10 files) is byte-identical, so token counts
+are unchanged. Materialized from the official v18.15.0 binary's extraction
+(modern only — official builds ship one variant), copied to BOTH slots and
+stamped 18.15.0 in master and the trial worktree (cp → stamp → build order).
+
+Verification: `check:ts` 0 errors on the merged tree (warnings unchanged).
+`packages/catalog` 1307 pass / 0 fail (compat-parity included — better than
+master's 6). zh reasoning-fallback driver 6/6. Upstream's new coding-agent test
+files (task model-approval + exact-model, eval kernel-restart/out-replies,
+async-result renderer, IRC visibility, session-bucket isolation, read-repeat
+hint, browser stealth wait, server-side fallback) 96 pass / 0 fail. Fork suites
+(slash-commands, session, task, prompt-viewer, partial-stream-death,
+user-retry-rules, read-tool-group, subagent HUD) 2118 pass / 1 fail
+(`subagent HUD lines … falls back to the description`, byte-identical on
+unmerged master). Anthropic suites: 9 failures, identical set on master
+(image-resize/first-event-timeout debt). `packages/tui` 7 failures, identical
+set on master. `packages/mnemopi`: 13 vs master's 17, every trial-only name
+passes when its file runs alone (suite-order flakes). Binary built and installed
+(`omp/18.15.0`), `--smoke-test: ok`, marker probe (uri-list 5,
+fuzzyMatchResumableSessions 4, listPinnedForPicker 4, formatIntentText 3,
+getPromptSnapshot 10, resume=1, wasmGrammarFor 4, CJK escapes 14),
+`gallery --surface tool --tool read` renders 8.3 KB, a live `-p` turn answers,
+and the TUI boots to the v18.15.0 what's-new card.

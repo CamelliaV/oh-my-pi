@@ -57,8 +57,8 @@ describe("resume picker — pinned scope", () => {
 		expect(pinned[0]?.path).toBe(path.resolve(b.path));
 
 		// The project list stays local: the pin is a shortcut, not a move.
-		expect((await SessionManager.listForPicker(projA)).map(session => session.id)).toEqual([a.id]);
-		expect((await SessionManager.listForPicker(projB)).map(session => session.id)).toEqual([b.id]);
+		expect((await SessionManager.listForPicker(projA)).sessions.map(session => session.id)).toEqual([a.id]);
+		expect((await SessionManager.listForPicker(projB)).sessions.map(session => session.id)).toEqual([b.id]);
 	}, 20_000);
 
 	it("keeps only pinned sessions, and drops a pin whose file is gone", async () => {

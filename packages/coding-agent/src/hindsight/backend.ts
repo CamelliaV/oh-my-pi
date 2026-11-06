@@ -154,13 +154,12 @@ export const hindsightBackend: MemoryBackend = {
 	},
 
 	async save({ session }, input) {
-		if (input.scope !== undefined)
-			throw new Error("Hindsight does not support per-save scope; its configured bank scope is unchanged.");
 		const state = session?.getHindsightSessionState();
 		if (!state) throw new Error("Hindsight backend is not initialised for this session.");
+		if (input.scope === "global") state.assertGlobalRetainAvailable();
 		if (!input.content.trim()) return { backend: "hindsight", stored: 0, message: "Memory content is empty." };
 		// Queue ownership, redaction, batching, and eventual UI-only failure notices remain in the state.
-		state.enqueueRetain(input.content, input.context);
+		state.enqueueRetain(input.content, input.context, input.scope);
 		return { backend: "hindsight", stored: 0, queued: true };
 	},
 

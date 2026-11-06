@@ -1,9 +1,10 @@
 import { logger } from "@oh-my-pi/pi-utils";
 import {
 	SessionSelectorComponent,
-	type SessionSelectorEntry,
 	type SessionSelectorOptions,
 	type SessionHistoryMatcher,
+	type SessionListing,
+	type SessionSelectorEntry,
 } from "../overlays/session-selector";
 import { runStandaloneTui } from "./standalone-picker";
 
@@ -19,7 +20,7 @@ export interface SessionPickerHost<T extends SessionSelectorEntry = SessionSelec
 	/** Rename the session and resolve with the title as stored, or null when it did not happen. */
 	renameSession?(session: T, title: string): Promise<string | null>;
 	setSessionPinned?(session: T, pinned: boolean): Promise<void>;
-	loadAllSessions?(): Promise<T[]>;
+	loadAllSessions?(): Promise<SessionListing<T>>;
 	loadHiddenSessions?(): Promise<T[]>;
 	/** Loads every pinned session across projects for the pinned scope; omitted, that tab is not offered. */
 	loadPinnedSessions?(): Promise<T[]>;
@@ -27,7 +28,9 @@ export interface SessionPickerHost<T extends SessionSelectorEntry = SessionSelec
 
 /** Presentation and capability controls for the standalone session picker. */
 export interface SessionPickerOptions<T extends SessionSelectorEntry = SessionSelectorEntry> {
-	allSessions?: T[];
+	/** Complete listing replacing the preliminary `sessions` once it settles. */
+	completeSessions?: Promise<T[]>;
+	allSessions?: SessionListing<T>;
 	/** Prefill the search box. Fuzzy `--resume` uses this to disambiguate. */
 	initialQuery?: string;
 	title?: string;
@@ -128,6 +131,7 @@ export async function selectSession<T extends SessionSelectorEntry>(
 					onRename: options.onRename ?? host.renameSession,
 					onSetPinned: host.setSessionPinned,
 					historyMatcher,
+					completeSessions: options.completeSessions,
 					allSessions: options.allSessions,
 					// Without the lazy loader, scope could only toggle when a caller
 					// preloaded `allSessions` — i.e. never from `omp -r` in a folder

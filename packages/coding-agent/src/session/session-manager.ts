@@ -86,14 +86,16 @@ import {
 import { currentRuntimeIdentity, type RuntimeIdentity } from "./runtime-identity";
 import {
 	filterOutHiddenSessions,
-	filterSessionsForPicker,
 	findMostRecentNonEmptySession,
 	findRecentSessionContinuation,
 	findSessionContinuation,
 	isEmptySession,
 	listAllSessions,
+	listAllSessionsForPicker,
 	listPinnedSessions,
 	listSessions,
+	listSessionsForPicker,
+	type PickerListing,
 	type SessionContinuation,
 	type SessionInfo,
 } from "./session-listing";
@@ -3660,6 +3662,7 @@ export class SessionManager {
 		systemPrompt: string[];
 		task: string;
 		tools: string[];
+		mountedTools?: string[];
 		agent?: string;
 		modelRole?: string;
 		resolvedModel?: string;
@@ -4674,25 +4677,30 @@ export class SessionManager {
 	/**
 	 * Picker-facing project list in recency order (the picker floats pins),
 	 * untitled empties dropped and hidden sessions excluded. Titled empties stay
-	 * because a title is user intent worth resuming. By default this includes
-	 * the same folder in the repository's other git worktrees, so a session
-	 * moved from `/wt` stays reachable from its original checkout. Directory
-	 * scope limits the picker to its own session bucket.
+	 * because a title is user intent worth resuming. Arrives in two passes: rows
+	 * for history.db-indexed titles first, the full scan in `complete` (see
+	 * {@link listSessionsForPicker}). By default this includes the same folder in
+	 * the repository's other git worktrees, so a session moved from `/wt` stays
+	 * reachable from its original checkout. Directory scope limits the picker to
+	 * its own session bucket.
 	 */
 	static async listForPicker(
 		cwd: string,
 		sessionDir?: string,
 		storage: SessionStorage = new FileSessionStorage(),
 		worktreeScope: "directory" | "repo" = "repo",
-	): Promise<SessionInfo[]> {
+	): Promise<PickerListing> {
 		const dir = sessionDir ?? SessionManager.getDefaultSessionDir(cwd, undefined, storage);
 		const [pinned, hidden, siblingDirs] = await Promise.all([
 			loadPinnedSessionIds(),
 			loadHiddenSessionIds(),
 			worktreeScope === "repo" ? worktreeSessionDirs(cwd, dir) : [],
 		]);
-		const visible = filterOutHiddenSessions(await listSessions(dir, storage, siblingDirs), hidden);
-		return filterSessionsForPicker(visible, pinned);
+		const listing = await listSessionsForPicker(dir, storage, pinned, siblingDirs);
+		return {
+			sessions: filterOutHiddenSessions(listing.sessions, hidden),
+			complete: listing.complete.then(scanned => filterOutHiddenSessions(scanned, hidden)),
+		};
 	}
 
 	/**
@@ -4707,11 +4715,14 @@ export class SessionManager {
 		return listPinnedSessions(pinned, hidden, storage);
 	}
 
-	/** Picker-facing cross-project list, same empty-session rule as {@link listForPicker}. */
-	static async listAllForPicker(storage: SessionStorage = new FileSessionStorage()): Promise<SessionInfo[]> {
+	/** Picker-facing cross-project listing, same rules and passes as {@link listForPicker}. */
+	static async listAllForPicker(storage: SessionStorage = new FileSessionStorage()): Promise<PickerListing> {
 		const [pinned, hidden] = await Promise.all([loadPinnedSessionIds(), loadHiddenSessionIds()]);
-		const visible = filterOutHiddenSessions(await listAllSessions(storage), hidden);
-		return filterSessionsForPicker(visible, pinned);
+		const listing = await listAllSessionsForPicker(storage, pinned);
+		return {
+			sessions: filterOutHiddenSessions(listing.sessions, hidden),
+			complete: listing.complete.then(scanned => filterOutHiddenSessions(scanned, hidden)),
+		};
 	}
 
 	/**
@@ -4752,6 +4763,7 @@ export interface PersistedSessionInit {
 	systemPrompt: string[];
 	task: string;
 	tools: string[];
+	mountedTools?: string[];
 	agent?: string;
 	modelRole?: string;
 	resolvedModel?: string;
@@ -4783,6 +4795,7 @@ export function extractSessionInit(entries: readonly FileEntry[]): PersistedSess
 			systemPrompt: typeof entry.systemPrompt === "string" ? [entry.systemPrompt] : entry.systemPrompt,
 			task: entry.task,
 			tools: entry.tools,
+			mountedTools: entry.mountedTools,
 			agent: entry.agent,
 			modelRole: entry.modelRole,
 			resolvedModel: entry.resolvedModel,

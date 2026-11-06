@@ -10,8 +10,8 @@ import learnDescription from "../prompts/tools/learn.md" with { type: "text" };
 import type { ToolSession } from ".";
 
 import { cfgAutolearnEnabled } from "../autolearn/settings";
+import { isGlobalMemoryScopeAvailable } from "../memory-backend/global-scope";
 import { cfgMemoryBackend } from "../memory-backend/settings";
-import { isGlobalMemoryScopeAvailable } from "../mnemopi/settings";
 import { getMnemopiSessionState } from "../mnemopi/state";
 
 const learnSkillSchema = type({
@@ -27,7 +27,7 @@ const learnSchemaBase = type({
 	"skill?": learnSkillSchema,
 });
 
-/** Offered only where a shared bank exists; see {@link isGlobalMemoryScopeAvailable}. */
+/** Offered only where every project recalls a global item; see {@link isGlobalMemoryScopeAvailable}. */
 const learnSchemaWithScope = type({
 	memory: type("string").describe("the durable, self-contained lesson to remember (what, when, why)"),
 	"context?": type("string").describe("optional source context for the lesson"),
@@ -56,10 +56,10 @@ export class LearnTool implements AgentTool<LearnSchema> {
 	};
 	readonly label = "Learn";
 	get description(): string {
-		return prompt.render(learnDescription, { globalScope: isGlobalMemoryScopeAvailable(this.session.settings) });
+		return prompt.render(learnDescription, { globalScope: isGlobalMemoryScopeAvailable(this.session) });
 	}
 	get parameters(): LearnSchema {
-		return isGlobalMemoryScopeAvailable(this.session.settings) ? learnSchemaWithScope : learnSchemaBase;
+		return isGlobalMemoryScopeAvailable(this.session) ? learnSchemaWithScope : learnSchemaBase;
 	}
 	readonly strict = true;
 	readonly loadMode = "essential" as const;
@@ -82,12 +82,17 @@ export class LearnTool implements AgentTool<LearnSchema> {
 				"This memory backend requires verified or manually approved skill candidates. Use /memory skill propose; the lesson and skill were not saved.",
 			);
 		}
+		const backend = cfgMemoryBackend.get(this.session.settings);
 		if (params.scope === "global") {
-			if (cfgMemoryBackend.get(this.session.settings) !== "mnemopi") {
-				throw new Error("Global memory scope is only available with the Mnemopi backend.");
+			// Resolve the destination before writing, so an unsupported scoping mode is not reported as a storage failure.
+			if (backend === "mnemopi") {
+				const owner = this.session.getMemoryContext?.()?.session;
+				getMnemopiSessionState(owner)?.getGlobalRetainTarget();
+			} else if (backend === "hindsight") {
+				this.session.getHindsightSessionState?.()?.assertGlobalRetainAvailable();
+			} else {
+				throw new Error(`Global memory scope is not available with the ${backend} memory backend.`);
 			}
-			const owner = this.session.getMemoryContext?.()?.session;
-			getMnemopiSessionState(owner)?.getGlobalRetainTarget();
 		}
 		const result = await createToolMemoryRuntimeContext(this.session).save({
 			content: params.memory,

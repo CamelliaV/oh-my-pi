@@ -86,11 +86,7 @@ describe("edit native views", () => {
 			done,
 			{ path: "/tmp/a.ts", i: "  修正测试断言  " },
 		);
-		expect(view.tool?.title).toEqual([
-			{ t: "Edit" },
-			{ t: " · ", s: "dim" },
-			{ t: "修正测试断言", s: "muted" },
-		]);
+		expect(view.tool?.title).toEqual([{ t: "Edit" }, { t: " · ", s: "dim" }, { t: "修正测试断言", s: "muted" }]);
 		expect(view.tool?.meta).toEqual(["+1 −1"]);
 	});
 

@@ -8,8 +8,8 @@ import { memoryBackendCapabilities } from "../memory-backend/types";
 import retainDescription from "../prompts/tools/retain.md" with { type: "text" };
 import type { ToolSession } from ".";
 
+import { isGlobalMemoryScopeAvailable } from "../memory-backend/global-scope";
 import { cfgMemoryBackend } from "../memory-backend/settings";
-import { isGlobalMemoryScopeAvailable } from "../mnemopi/settings";
 import { getMnemopiSessionState } from "../mnemopi/state";
 
 const memoryRetainSchemaBase = type({
@@ -22,7 +22,7 @@ const memoryRetainSchemaBase = type({
 		.describe("memories to retain"),
 });
 
-/** Offered only where a shared bank exists; see {@link isGlobalMemoryScopeAvailable}. */
+/** Offered only where every project recalls a global item; see {@link isGlobalMemoryScopeAvailable}. */
 const memoryRetainSchemaWithScope = type({
 	items: type({
 		content: type("string").describe("information to remember"),
@@ -46,10 +46,10 @@ export class MemoryRetainTool implements AgentTool<MemoryRetainSchema, MemoryRet
 		(args as Partial<MemoryRetainParams>).items?.some(item => item.scope === "global") ? "write" : "read";
 	readonly label = "Retain";
 	get description(): string {
-		return prompt.render(retainDescription, { globalScope: isGlobalMemoryScopeAvailable(this.session.settings) });
+		return prompt.render(retainDescription, { globalScope: isGlobalMemoryScopeAvailable(this.session) });
 	}
 	get parameters(): MemoryRetainSchema {
-		return isGlobalMemoryScopeAvailable(this.session.settings) ? memoryRetainSchemaWithScope : memoryRetainSchemaBase;
+		return isGlobalMemoryScopeAvailable(this.session) ? memoryRetainSchemaWithScope : memoryRetainSchemaBase;
 	}
 	readonly strict = true;
 	readonly loadMode = "discoverable";
@@ -67,10 +67,15 @@ export class MemoryRetainTool implements AgentTool<MemoryRetainSchema, MemoryRet
 	async execute(_id: string, params: MemoryRetainParams): Promise<AgentToolResult<MemoryRetainDetails>> {
 		const backend = cfgMemoryBackend.get(this.session.settings);
 		if (params.items.some(item => item.scope === "global")) {
-			if (backend !== "mnemopi") throw new Error("Global memory scope is only available with the Mnemopi backend.");
 			// Resolve before any write so an unsupported scoping mode rejects the whole batch.
-			const owner = this.session.getMemoryContext?.()?.session;
-			getMnemopiSessionState(owner)?.getGlobalRetainTarget();
+			if (backend === "mnemopi") {
+				const owner = this.session.getMemoryContext?.()?.session;
+				getMnemopiSessionState(owner)?.getGlobalRetainTarget();
+			} else if (backend === "hindsight") {
+				this.session.getHindsightSessionState?.()?.assertGlobalRetainAvailable();
+			} else {
+				throw new Error(`Global memory scope is not available with the ${backend} memory backend.`);
+			}
 		}
 		const memory = createToolMemoryRuntimeContext(this.session);
 		let stored = 0;

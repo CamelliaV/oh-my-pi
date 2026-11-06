@@ -52,6 +52,17 @@ export interface SessionSelectorEntry {
 	/** Path to the parent session when this one was forked. */
 	parentSessionPath?: string;
 }
+
+/**
+ * One picker scope's rows, possibly in two passes: `sessions` show at once
+ * (e.g. rows built from a title index), and `complete` settles with the full
+ * listing that replaces them, keeping the query, the selected session, and
+ * deletes/renames made meanwhile.
+ */
+export interface SessionListing<T extends SessionSelectorEntry = SessionSelectorEntry> {
+	sessions: T[];
+	complete?: Promise<T[]>;
+}
 import { shortenPath } from "../render/render-utils";
 import { formTheme } from "../chrome/form-theme";
 import { HookSelectorComponent } from "./hook-selector";
@@ -356,6 +367,17 @@ function sessionTextLower(session: SessionSelectorEntry): string {
 		tagged[kSearchTextLower] = textLower;
 	}
 	return textLower;
+}
+
+/**
+ * Set a session's title and drop the caches built from the old one: the
+ * native row embeds it and the search haystack holds it, so the next describe
+ * rebuilds the row and search matches the new title.
+ */
+function retitle(session: SessionSelectorEntry, title: string): void {
+	session.title = title;
+	delete (session as NativeSessionInfo)[kNativeItem];
+	delete (session as SearchableSessionInfo)[kSearchTextLower];
 }
 
 function tokenizeSessionQuery(query: string): string[] {
@@ -700,6 +722,22 @@ class SessionList<T extends SessionSelectorEntry> implements Component {
 		this.#itemsVersion++;
 	}
 
+	/**
+	 * Swap in the complete listing of the shown scope (a scan that finished
+	 * after the picker opened), keeping the query and the selected session:
+	 * rows arriving above the cursor never move it onto another session.
+	 */
+	refreshSessions(sessions: T[], showCwd: boolean): void {
+		const selected = this.#menu.selectedItem?.path;
+		const moved = this.#selectionMoved;
+		this.#datasetVersion++;
+		this.#allSessions = sessions;
+		this.#showCwd = showCwd;
+		this.#filterSessions(this.#searchInput.getValue());
+		if (selected !== undefined) this.#menu.setSelectedKey(selected);
+		this.#selectionMoved = moved;
+	}
+
 	/** Replace the visible dataset, e.g. when toggling folder/all-projects scope. */
 	setSessions(sessions: T[], showCwd: boolean, pinnedIds?: ReadonlySet<string>): void {
 		this.#datasetVersion++;
@@ -899,14 +937,9 @@ class SessionList<T extends SessionSelectorEntry> implements Component {
 		const entry = this.#allSessions.find(s => s.path === sessionPath);
 		if (!entry) return;
 		this.#datasetVersion++;
-		entry.title = title;
-		// The cached native item embeds the old title, and the search haystack
-		// caches it too: drop both so the next describe rebuilds the row and
-		// the literal/fuzzy search paths match the new title. Selection is
-		// path-keyed, so the same-query refilter keeps the cursor on the
-		// renamed session.
-		delete (entry as NativeSessionInfo)[kNativeItem];
-		delete (entry as SearchableSessionInfo)[kSearchTextLower];
+		// Selection is path-keyed, so the same-query refilter keeps the cursor
+		// on the renamed session.
+		retitle(entry, title);
 		this.#filterSessions(this.#searchInput.getValue());
 	}
 
@@ -1509,8 +1542,13 @@ export interface SessionSelectorOptions<T extends SessionSelectorEntry = Session
 	/** Prefill the search query for fuzzy resume disambiguation. */
 	initialQuery?: string;
 	historyMatcher?: SessionHistoryMatcher;
+	/**
+	 * Complete folder listing when the constructor's `sessions` are a
+	 * preliminary subset; replaces them once it settles (see {@link SessionListing}).
+	 */
+	completeSessions?: Promise<T[]>;
 	/** Loads sessions across all projects for the all-projects scope toggle (Tab). */
-	loadAllSessions?: () => Promise<T[]>;
+	loadAllSessions?: () => Promise<SessionListing<T>>;
 	/** Loads hidden sessions for the hidden scope (Tab); refreshed on entry. */
 	loadHiddenSessions?: () => Promise<T[]>;
 	/**
@@ -1519,8 +1557,8 @@ export interface SessionSelectorOptions<T extends SessionSelectorEntry = Session
 	 * pinned scope is not offered.
 	 */
 	loadPinnedSessions?: () => Promise<T[]>;
-	/** Preloaded all-projects list; cached so the first Tab toggle is instant. */
-	allSessions?: T[];
+	/** Preloaded all-projects listing; cached so the first Tab toggle is instant. */
+	allSessions?: SessionListing<T>;
 	/** Open the picker on this scope instead of the current folder. */
 	initialScope?: SessionSelectorScope;
 	/** Picker heading; defaults to "Resume Session". */
@@ -1583,14 +1621,22 @@ export class SessionSelectorComponent<T extends SessionSelectorEntry = SessionSe
 	#onRename?: (session: T, title: string) => Promise<string | null>;
 	#onSetPinned?: (session: T, pinned: boolean) => Promise<void>;
 	#onRequestRender?: () => void;
-	readonly #loadAllSessions?: () => Promise<T[]>;
+	readonly #loadAllSessions?: () => Promise<SessionListing<T>>;
 	readonly #loadHiddenSessions?: () => Promise<T[]>;
 	readonly #loadPinnedSessions?: () => Promise<T[]>;
 	#folderSessions: T[];
-	readonly #folderShowCwd: boolean;
+	readonly #showCwdOption: boolean | undefined;
 	#globalSessions: T[] | null = null;
 	#hiddenSessions: T[] | null = null;
 	#pinnedSessions: T[] | null = null;
+	/** Paths deleted in this picker: a listing scanned before the delete must not bring them back. */
+	readonly #deletedPaths = new Set<string>();
+	/** Titles renamed in this picker, by path: a listing scanned before the rename must not revert them. */
+	readonly #renamedTitles = new Map<string, string>();
+	/** The picker resolved (select, cancel, exit) or was disposed; {@link unlockInput} reopens it after a failed resume. */
+	#closed = false;
+	/** The shown scope's complete listing landed while closed; {@link unlockInput} shows it. */
+	#refreshPending = false;
 	#scope: SessionSelectorScope;
 	#toggling = false;
 	#inputLocked = false;
@@ -1664,10 +1710,8 @@ export class SessionSelectorComponent<T extends SessionSelectorEntry = SessionSe
 		this.#loadHiddenSessions = options.loadHiddenSessions;
 		this.#loadPinnedSessions = options.loadPinnedSessions;
 		this.#folderSessions = sessions;
-		// Storage directory, not recorded cwd: one folder's sessions may record
-		// symlink aliases of the same path, which must not turn the column on.
-		this.#folderShowCwd = options.showCwd ?? new Set(sessions.map(session => path.dirname(session.path))).size > 1;
-		this.#globalSessions = options.allSessions ?? null;
+		this.#showCwdOption = options.showCwd;
+		this.#globalSessions = options.allSessions?.sessions ?? null;
 		this.#getTerminalRows = options.getTerminalRows ?? (() => 24);
 		this.#fillHeight = options.fillHeight ?? false;
 		this.#title = options.title ?? "Resume Session";
@@ -1688,7 +1732,7 @@ export class SessionSelectorComponent<T extends SessionSelectorEntry = SessionSe
 		// projects' history (issue #3099).
 		this.#sessionList = new SessionList(
 			sessions,
-			this.#folderShowCwd,
+			this.#folderShowCwd(),
 			options.historyMatcher,
 			options.getTerminalRows,
 			options.pinnedIds,
@@ -1701,14 +1745,17 @@ export class SessionSelectorComponent<T extends SessionSelectorEntry = SessionSe
 		// Every exit path cancels the list's pending history merge, so a stale
 		// debounce timer can never run its SQLite lookup after the picker closed.
 		this.#sessionList.onSelect = session => {
+			this.#closed = true;
 			this.#sessionList.dispose();
 			onSelect(session);
 		};
 		this.#sessionList.onCancel = () => {
+			this.#closed = true;
 			this.#sessionList.dispose();
 			onCancel();
 		};
 		this.#sessionList.onExit = () => {
+			this.#closed = true;
 			this.#sessionList.dispose();
 			onExit();
 		};
@@ -1749,6 +1796,65 @@ export class SessionSelectorComponent<T extends SessionSelectorEntry = SessionSe
 		if ((initialScope === "hidden" || initialScope === "pinned") && this.#scopeAvailability()[initialScope]) {
 			void this.#toggleScope(initialScope);
 		}
+		this.#awaitComplete("folder", { sessions, complete: options.completeSessions });
+		if (options.allSessions) this.#awaitComplete("all", options.allSessions);
+	}
+
+	/**
+	 * Whether folder rows show their directory: when the caller did not say,
+	 * when they span storage directories (e.g. merged worktrees). Storage
+	 * directory, not recorded cwd: one folder's sessions may record symlink
+	 * aliases of the same path, which must not turn the column on.
+	 */
+	#folderShowCwd(): boolean {
+		return this.#showCwdOption ?? new Set(this.#folderSessions.map(session => path.dirname(session.path))).size > 1;
+	}
+
+	/**
+	 * Replace `scope`'s preliminary rows with `listing.complete` once it
+	 * settles. A failed scan keeps the preliminary rows and reports the error.
+	 */
+	#awaitComplete(scope: "folder" | "all", listing: SessionListing<T>): void {
+		void listing.complete?.then(
+			sessions => {
+				// Settled to the preliminary rows themselves: nothing new to show.
+				if (sessions === listing.sessions) return;
+				const next = this.#withEdits(sessions);
+				if (scope === "folder") this.#folderSessions = next;
+				else this.#globalSessions = next;
+				if (scope !== this.#scope) return;
+				if (this.#closed) this.#refreshPending = true;
+				else this.#refreshShownScope();
+			},
+			(err: unknown) => {
+				if (this.#closed) return;
+				this.#showError(err instanceof Error ? err.message : String(err));
+				this.#onRequestRender?.();
+			},
+		);
+	}
+
+	#refreshShownScope(): void {
+		this.#refreshPending = false;
+		if (this.#scope === "folder") this.#sessionList.refreshSessions(this.#folderSessions, this.#folderShowCwd());
+		else if (this.#scope === "all" && this.#globalSessions)
+			this.#sessionList.refreshSessions(this.#globalSessions, true);
+		else if (this.#scope === "hidden" && this.#hiddenSessions)
+			this.#sessionList.refreshSessions(this.#hiddenSessions, true);
+		else if (this.#scope === "pinned" && this.#pinnedSessions)
+			this.#sessionList.refreshSessions(this.#pinnedSessions, true);
+		this.#onRequestRender?.();
+	}
+
+	/** `sessions` with this picker's deletes and renames applied. */
+	#withEdits(sessions: T[]): T[] {
+		if (this.#deletedPaths.size === 0 && this.#renamedTitles.size === 0) return sessions;
+		const kept = sessions.filter(session => !this.#deletedPaths.has(session.path));
+		for (const session of kept) {
+			const title = this.#renamedTitles.get(session.path);
+			if (title !== undefined) retitle(session, title);
+		}
+		return kept;
 	}
 
 	#headerLabel(): string {
@@ -1784,15 +1890,18 @@ export class SessionSelectorComponent<T extends SessionSelectorEntry = SessionSe
 				this.#messageContainer.addChild(new Text(theme.fg("muted", "Loading all projects…"), 0, 0));
 				this.#message = { kind: "loading", text: "Loading all projects…" };
 				this.#onRequestRender?.();
+				let listing: SessionListing<T>;
 				try {
-					global = await this.#loadAllSessions();
+					listing = await this.#loadAllSessions();
 				} catch (err) {
 					this.#showError(err instanceof Error ? err.message : String(err));
 					this.#toggling = false;
 					this.#onRequestRender?.();
 					return;
 				}
+				global = this.#withEdits(listing.sessions);
 				this.#globalSessions = global;
+				this.#awaitComplete("all", listing);
 				this.#messageContainer.clear();
 				this.#message = undefined;
 				this.#toggling = false;
@@ -1851,7 +1960,7 @@ export class SessionSelectorComponent<T extends SessionSelectorEntry = SessionSe
 		} else {
 			this.#scope = "folder";
 			this.#sessionList.setEmptyHint(undefined);
-			this.#sessionList.setSessions(this.#folderSessions, this.#folderShowCwd);
+			this.#sessionList.setSessions(this.#folderSessions, this.#folderShowCwd());
 		}
 		this.title = this.#headerLabel();
 		this.#onRequestRender?.();
@@ -1867,6 +1976,8 @@ export class SessionSelectorComponent<T extends SessionSelectorEntry = SessionSe
 	/** Re-enable input after a failed resume so the user can pick again. */
 	unlockInput(): void {
 		this.#inputLocked = false;
+		this.#closed = false;
+		if (this.#refreshPending) this.#refreshShownScope();
 	}
 
 	/**
@@ -1875,6 +1986,7 @@ export class SessionSelectorComponent<T extends SessionSelectorEntry = SessionSe
 	 * child-walking dispose would miss its pending history-merge timer.
 	 */
 	override dispose(): void {
+		this.#closed = true;
 		this.#sessionList.dispose();
 		clearTimeout(this.#previewTimer);
 		super.dispose();
@@ -1911,6 +2023,7 @@ export class SessionSelectorComponent<T extends SessionSelectorEntry = SessionSe
 				try {
 					const deleted = await this.#onDelete(session);
 					if (deleted) {
+						this.#deletedPaths.add(session.path);
 						this.#sessionList.removeSession(session.path);
 						this.#folderSessions = this.#folderSessions.filter(s => s.path !== session.path);
 						if (this.#globalSessions) {
@@ -1989,13 +2102,10 @@ export class SessionSelectorComponent<T extends SessionSelectorEntry = SessionSe
 
 	/** Mirror a renamed title into every scope cache. */
 	#syncScopeTitles(sessionPath: string, title: string): void {
+		this.#renamedTitles.set(sessionPath, title);
 		for (const cache of [this.#folderSessions, this.#globalSessions, this.#hiddenSessions, this.#pinnedSessions]) {
-			if (!cache) continue;
-			const entry = cache.find(s => s.path === sessionPath);
-			if (!entry) continue;
-			entry.title = title;
-			delete (entry as NativeSessionInfo)[kNativeItem];
-			delete (entry as SearchableSessionInfo)[kSearchTextLower];
+			const entry = cache?.find(s => s.path === sessionPath);
+			if (entry) retitle(entry, title);
 		}
 	}
 

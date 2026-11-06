@@ -1,4 +1,4 @@
-import { extractHttpStatusFromError } from "@oh-my-pi/pi-utils";
+import { extractHttpStatusFromError, isRecord } from "@oh-my-pi/pi-utils";
 import type { CapturedHttpErrorResponse } from "../utils/http-inspector";
 
 /**
@@ -71,10 +71,6 @@ export function createOpenAIReasoningEffortFallbackKey(
 	wireModelId: string | undefined,
 ): string {
 	return `${endpoint}:${baseUrl ?? ""}:${wireModelId ?? ""}`;
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-	return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 /** @internal */
@@ -247,7 +243,7 @@ function parseEffortRejectionSignal(
 ): EffortRejectionSignal {
 	const namesFieldInMessage = EFFORT_FIELD_PATTERN.test(message);
 	const param = capturedStringField(captured, "param") ?? "";
-	const quoted = `["'\`]${escapeRegExp(currentEffort)}["'\`]`;
+	const quoted = `["'\`]${RegExp.escape(currentEffort)}["'\`]`;
 	return {
 		field:
 			namesFieldInMessage || EFFORT_FIELD_PATTERN.test(param)
@@ -286,7 +282,7 @@ function isInvalidReasoningEffortError(
 	// named beside a Chinese verdict qualifies even without a field mention.
 	if (
 		new RegExp(
-			`(?:不支持|仅支持|只支持)[^\\n]{0,20}?${escapeRegExp(currentEffort)}|${escapeRegExp(currentEffort)}[^\\n]{0,20}?(?:不支持|请使用)`,
+			`(?:不支持|仅支持|只支持)[^\\n]{0,20}?${RegExp.escape(currentEffort)}|${RegExp.escape(currentEffort)}[^\\n]{0,20}?(?:不支持|请使用)`,
 			"i",
 		).test(message)
 	) {
@@ -294,10 +290,6 @@ function isInvalidReasoningEffortError(
 	}
 	if (currentEffort.toLowerCase() !== "none" && !signal.namesFieldInMessage && !signal.listsLevels) return false;
 	return signal.rejectedMatches;
-}
-
-function escapeRegExp(value: string): string {
-	return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
 function parseKnownReasoningValues(text: string): Set<string> {

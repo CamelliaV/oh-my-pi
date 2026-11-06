@@ -2376,3 +2376,137 @@ The branch also carries the author's uncommitted worktree as `9308e42109`
 clean tree; the 9 pre-existing TUI failures live in that work (usage-row span
 shape, user-bubble emergency rows, markdown link fragments, web-search elapsed
 row, agent-hub snapshot aging), not in the merge.
+
+v18.16.0→v18.17.0 (2026-11-06) — one release, 2591 tracked files
+(1012 changed / 1164 added / 418 deleted), all five packages bumped to
+18.17.0. Headline upstream changes: the pi-shell Bash 5.3 engine with a
+`RunTrace`/`ShellVisualization` execution trace (`parseShell()` removed),
+`omp zsh`/`omp bash`/`omp sh` running the built-in shell with the real
+`$HISTFILE`, Anthropic message threads (`supports-message-threads` compat
+axis, `statefulResponses`), opt-in Responses WebSockets, background
+auto-update (`update.auto`, skipped on source checkouts), the `cache`
+status-line segment, colorful Markdown on by default (`MarkdownTheme.heading`
+now takes a depth), `tui.motion`/`spinnerInterval`/`maxFps`, worker-thread
+subagents (`task.workerThreads`), pinned-session UI with `/unpin`,
+`^model:level` effort mentions (`ModelMentionRegistry.resolve()` replaces
+`modelMentionLabel`), extension transcript presenters, the fullscreen link
+browser, and `web_search details.failures`.
+
+Synthetic `upstream/v18.17.0` = `a95fa16cc0` parented on `60ada52bad`;
+`trial/v18.17.0` merge `cd7bfbfb00` cut from master `dd367f6ddf` (patch 49
+landed first). 45 conflicted files / ~57 hunks, resolved by five parallel
+workers plus the generated artifacts.
+
+Adjudications / incidents:
+
+1. **`tui/tools/lsp.ts` — upstream's rewrite taken wholesale.** 18.17
+   replaces the card (per-file diagnostics, reference source previews with
+   syntax highlighting, `renderStatusLine`/`plainToolCard`); every fork
+   helper (`parseDiagnosticItems`, `classifyGroupedLines`, tree rendering)
+   is dead under it. Upstream's own `lsp-*.test.ts` files (same paths as the
+   fork's) came in clean, so no test rewrite was needed.
+
+2. **`components/markdown.ts` — fork patches 32/33 kept under colorful
+   Markdown.** Heading depth is threaded into `theme.heading(text, depth)`
+   so the palette ladder applies, while the fork's marker-stripping (no `#`
+   at any depth) and code-block boxes stay. Two upstream
+   `colorful-markdown.test.ts` assertions pinned `###### Six`; retargeted to
+   `Six` (the fork renders without markers). `markdown.test.ts`'s
+   symbol-preset test leaked an ASCII theme into later files and made
+   `context-viewer` fail on `+---+` borders; it now restores the previous
+   theme instance in `finally`.
+
+3. **`session/session-tools.ts` — upstream's routed-device suppression
+   fixed for prompts that render no routes.** 18.17 computes
+   `#basePromptRoutedXdevNames` from the *live* projection, so a custom
+   prompt (or any prompt that omits the `xd://` section) suppresses mount
+   notices for devices it never rendered — the model learned nothing. The
+   set is now intersected with `built.xdevCatalogNames` (undefined for a
+   custom prompt ⇒ no suppression). This is what makes patch 40's
+   "routes ride the mount notice" contract hold; `agent-session-tool-rebuild-
+   skip.test.ts` 51 pass.
+
+4. **`session/model-mentions.ts` — upstream supersedes the fork's
+   `^model:level`.** `ModelMentionRegistry.resolve()` implements level
+   pinning (plus `AUTO_THINKING`, supported-level validation and the
+   canonical-selector collision guard). Fork `mentionDisplayName` +
+   `splitThinkingSuffix` deleted as dead; the two fork test cases are
+   covered by upstream's broader ones.
+
+5. **Pinned sessions: upstream + fork both ship.** Upstream added the
+   status-line pin icon, `setSessionPinned` and `/unpin`; the fork keeps
+   patch 45's Pinned scope tab, `/pin` wording and `/unhide`. `/pin` now
+   also calls `runtime.notifySessionPinChanged`.
+
+6. **Worker-thread subagents vs patch 30.** `subagentRunRequest` ships the
+   whole `ExecutorOptions` (including `execution`), so the fork's
+   execution-phase seeding/persistence survives worker placement;
+   `recordSubagentExecution` widened to `AgentRegistryApi` and the
+   transcript write goes through the optional
+   `AgentSessionManagerHandle.appendCustomEntry` (absent on a worker
+   mirror).
+
+7. **Auth worker RPC grew the fork's pool methods.** `RemoteKeys` (new
+   upstream worker proxy) implements the fork's `KeysApi`
+   `setConfigPool`/`pruneConfigPools`, with `keys.setConfigPool` /
+   `keys.pruneConfigPools` protocol entries and main-thread handlers.
+
+8. **`ai/providers/openai-codex-responses.ts`** — upstream now sends
+   `OpenAI-Beta: responses=websockets-v2` only on the WebSocket handshake
+   and drops `responses=experimental`; the fork's set-if-absent
+   `originator` (patch 27) is kept so models.yml header pins still win. The
+   fork's duplicate WebSocket request block was dead under upstream's
+   refactor and was dropped. `retryBudget` uses the fork's
+   `codexWebsocketRetryBudget()` (patch 28).
+
+9. **`ai/error/retryable.ts`** — `x-should-retry` verdict first, then the
+   fork's `[1210]` misrouted-relay rescue. `ai/utils/openai-http.ts` keeps
+   the fork's `AIError.openaiHttpMaxAttempts()` budget.
+
+10. **`ai/providers/openai-reasoning-fallback.ts`** — upstream's rewrite
+    dropped the `extractHttpStatusFromError` import the fork's
+    `isAlwaysThinkingRejection` needs; restored.
+
+11. **`catalog/src/compat/rules.json`** — took upstream, recompiled from the
+    merged KDL tree (`gen:compat`: 1150 rules / 21 classes / 91 catalog
+    providers / 102 auth providers / 245 files); `providers.web.seed.models`
+    (24 incl. `grok`) and `role-defaults "web"` (`web/grok` first) verified.
+
+12. **`catalog/src/models.json`** — upstream 18.17 bake + the 103 fork-only
+    rows re-injected through `model-catalog-format`
+    (`openModelCatalog`/`encodeModelCatalog`, round-trip byte-identical on
+    upstream's file) + the fork engine's `extraBetas`/
+    `usageInputIncludesCache` re-applied. Seven fork-only rows were missing
+    upstream's new `supportsMessageThreads` leaf; set to `false` from
+    `resolveModelPolicy`. compat-parity green (0 diffs).
+
+13. **RPC wire** — upstream added `LineRange`, the fork keeps
+    `CompactionRequestUsage`; `gen:rpc` regenerated the schema, generated
+    types and the Python/Rust/Go clients. The MCP worker tests upstream now
+    carries needed `lazyConfigs`/`lazySources` in their `LoadMCPConfigsResult`
+    stubs (fork-only fields).
+
+14. **`export/html/viewer.generated.json`** — regenerated
+    (`export-viewer-504c4e98…`, 775.1 KiB) with `--write`; the committed
+    upstream manifest does not match a local Bun build.
+
+Natives: ABI grew (`RunTrace`, `ShellVisualization`, `parseShell()` removed)
+and the Rust graph moved. Materialized from the official v18.17.0 binary's
+extraction (modern only), copied to BOTH slots and stamped 18.17.0.
+
+Verification: `check:ts` 0 errors, formatting clean. `packages/catalog` 1323
+pass / 0 fail. `packages/tui` 4436 pass / 9 fail and `packages/agent` 851
+pass / 1 fail — every failure byte-identical on master. `packages/ai`
+Anthropic suites 639 pass / 9 fail (identical on master); zh
+reasoning-fallback driver 6/6. `packages/mnemopi` full-suite failures are
+order flakes (isolated: 2 pre-existing beam-recall failures, identical on
+master). coding-agent: memory tools + message pipeline + session suites 1240
+pass; web/search 221; slash-commands/pin/inject/explain + context-view 54;
+thread 110; fork-patch regression files (uri-list, resume-fuzzy, pinned
+picker, usage rows) 27; subagent/hub 149 pass / 4 fail (identical on master);
+extensions-runner 105 pass / 1 pre-existing timeout. `mcp-manager-initial-
+connection-cleanup` and `mcp-http-transport` time out identically on master
+(environment, not the merge). Binary built (`omp/18.17.0`), `--smoke-test:
+ok`, marker probe (uri-list 5, fuzzyMatchResumableSessions 4, wasmGrammarFor
+4, resume=1, CJK escapes 14, skillCatalogPolicy 12, installSqliteLockShim 6,
+setEmptyHint 6), and `gallery --surface tool` renders.

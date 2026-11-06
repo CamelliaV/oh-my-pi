@@ -25,7 +25,6 @@ import {
 	COMPACTION_RECOVERY_BAND,
 	compact,
 	compactionContextTokens,
-	computeFileLists,
 	countResponsesHistoryTokens,
 	createCompactionSummaryMessage,
 	DEFAULT_SHAKE_CONFIG,
@@ -46,7 +45,6 @@ import {
 	type SummaryOptions,
 	shouldCompact,
 	shouldUseProviderNativeCompaction,
-	upsertFileOperations,
 } from "@oh-my-pi/pi-agent-core/compaction";
 import {
 	DEFAULT_PRUNE_CONFIG,
@@ -70,7 +68,7 @@ import { sendsImageInputOnWire } from "@oh-my-pi/pi-ai/providers/vision-guard";
 import { resolvePromptCacheLookback } from "@oh-my-pi/pi-catalog/compat/prompt-cache-lookback";
 import { modelsAreEqual } from "@oh-my-pi/pi-catalog/models";
 import type { CatalogPolicyInputs } from "@oh-my-pi/pi-catalog/types";
-import { isRecord, logger, prompt, Snowflake } from "@oh-my-pi/pi-utils";
+import { isRecord, logger, prompt, Snowflake, toError } from "@oh-my-pi/pi-utils";
 import * as snapcompact from "@oh-my-pi/snapcompact";
 import { writeArtifact } from "./artifacts";
 import type { ModelRegistry } from "../config/model-registry";
@@ -380,9 +378,9 @@ function handoffSummaryFromDocument(
 	document: string,
 	preparation: CompactionPreparation,
 ): { summary: string; details: CompactionDetails } {
-	const { readFiles, modifiedFiles } = computeFileLists(preparation.fileOps);
+	const { readFiles, modifiedFiles } = snapcompact.computeFileLists(preparation.fileOps);
 	return {
-		summary: upsertFileOperations(document, readFiles, modifiedFiles, preparation.fileOps.read),
+		summary: snapcompact.upsertFileOperations(document, readFiles, modifiedFiles, preparation.fileOps.read),
 		details: { readFiles, modifiedFiles },
 	};
 }
@@ -600,6 +598,9 @@ export class SessionMaintenance {
 	readonly #withoutFramesViews = new WeakMap<CompactionEntry, Map<string, snapcompact.ArchiveView | null>>();
 	/** The compaction entry behind each archive summary message, once found. */
 	readonly #summaryEntries = new WeakMap<CompactionSummaryMessage, CompactionEntry>();
+	/** Whether each legendless archive summary message may replay reasoning ({@link #mayReplayThinking}), or the
+	 *  branch view on which no archive backed it. */
+	readonly #replaysThinking = new WeakMap<CompactionSummaryMessage, boolean | readonly SessionEntry[]>();
 	/** Reader copies that read an archive as text in place of its frames. */
 	readonly #textCopies = new WeakSet<AgentMessage>();
 	/** Reader copies of archive summary messages keyed by the original message, then by {@link ArchiveReader.key},
@@ -1611,7 +1612,7 @@ export class SessionMaintenance {
 			return finish(compactionResult);
 		} catch (error) {
 			manualCompactionError = error;
-			const err = error instanceof Error ? error : new Error(String(error));
+			const err = toError(error);
 			if (error instanceof ManualCompactionNoOpError) rejectedAsNoOp = true;
 			if (
 				methodAttempted &&
@@ -4811,14 +4812,37 @@ export class SessionMaintenance {
 				if (message.role !== "compactionSummary" || replacements.has(message)) continue;
 				const original = this.#originalSummaries.get(message) ?? message;
 				const wanted =
-					(reader.excludeThinking && snapcompact.summaryIncludesThinking(original.summary)) ||
-					(reader.withoutFrames && mayHoldArchive(original))
+					(reader.withoutFrames && mayHoldArchive(original)) ||
+					(reader.excludeThinking && this.#mayReplayThinking(original))
 						? await this.#readerSummary(original, model, reader)
 						: original;
 				if (wanted !== message) replacements.set(message, wanted);
 			}
 		}
 		return replacements;
+	}
+
+	/**
+	 * Whether `message` may replay reasoning: its summary declares `¶think:` scopes, or the archive behind it
+	 * keeps them ({@link snapcompact.archiveIncludesThinking}). Decided once per message; a summary no archive
+	 * backs is looked up again only once the branch changes.
+	 */
+	#mayReplayThinking(message: CompactionSummaryMessage): boolean {
+		if (snapcompact.summaryIncludesThinking(message.summary)) return true;
+		if (!mayHoldArchive(message)) return false;
+		const known = this.#replaysThinking.get(message);
+		if (typeof known === "boolean") return known;
+		const branch = this.#host.sessionManager.getBranchView();
+		if (known === branch) return false;
+		const entry = this.#archiveEntry(message, branch);
+		const archive = entry && snapcompact.getPreservedArchive(entry.preserveData);
+		if (!archive) {
+			this.#replaysThinking.set(message, branch);
+			return false;
+		}
+		const replays = snapcompact.archiveIncludesThinking(message.summary, archive);
+		this.#replaysThinking.set(message, replays);
+		return replays;
 	}
 
 	/**
@@ -5008,7 +5032,7 @@ export class SessionMaintenance {
 					: undefined,
 			);
 		const archiveText = snapcompact.archiveSourceText(archive);
-		if (archive.withoutThinking || !snapcompact.summaryIncludesThinking(entry.summary) || !archiveText) {
+		if (archive.withoutThinking || !snapcompact.archiveIncludesThinking(entry.summary, archive) || !archiveText) {
 			return readableView();
 		}
 		let view: snapcompact.ArchiveView;
@@ -5016,7 +5040,8 @@ export class SessionMaintenance {
 			const result = await this.#rerenderSnapcompactArchive(entry, archiveText, model, archive.frames.length);
 			const rendered = snapcompact.getPreservedArchive(result.preserveData);
 			if (!rendered) throw new Error("The re-render produced no archive");
-			view = { summary: result.summary, archive: rendered };
+			// A summary an extension wrote keeps its own words, without reasoning.
+			view = { summary: snapcompact.viewSummary(entry.summary, result.summary, true), archive: rendered };
 		} catch (error) {
 			logger.warn("Snapcompact archive render without reasoning failed; reading its text without frames", {
 				error: error instanceof Error ? error.message : String(error),

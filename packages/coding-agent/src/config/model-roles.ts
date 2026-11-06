@@ -15,6 +15,9 @@ import type { Settings } from "./settings";
 
 import { cfgCycleOrder, cfgModelTags } from "./model-settings";
 
+/** Model role used by the explainer session and `/explain` agent. */
+export const EXPLAINER_MODEL_ROLE = "explainer";
+
 /** Canonical prefix for a configured model role selector. */
 export const MODEL_ROLE_ALIAS_PREFIX = "@";
 
@@ -63,6 +66,7 @@ export const MODEL_ROLES: Record<ModelRole, ModelRoleInfo> = {
 	tiny: { tag: "TINY", name: "Tiny", color: "dim", section: "chat", accepts: acceptsTinyOrChat },
 	memory: { tag: "MEMORY", name: "Memory", color: "dim", section: "chat", accepts: acceptsTinyOrChat },
 	task: { tag: "TASK", name: "Subtask", color: "muted", section: "chat", accepts: acceptsChat },
+	explainer: { tag: "EXPLAIN", name: "Explainer", color: "accent", section: "chat", accepts: acceptsChat },
 	advisor: { tag: "ADVISOR", name: "Advisor", color: "accent", section: "chat", accepts: acceptsChat },
 	widget: { tag: "WIDGET", name: "Job widgets", color: "dim", section: "chat", accepts: acceptsChat },
 	image: {

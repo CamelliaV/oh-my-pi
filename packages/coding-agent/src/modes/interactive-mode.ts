@@ -169,6 +169,7 @@ import type { ShakeMode } from "../session/shake-types";
 import { sessionBashCommands } from "../session/shell-history";
 import { BUILTIN_SLASH_COMMAND_RESERVED_NAMES, buildTuiBuiltinSlashCommands } from "../slash-commands/builtin-registry";
 import { buildStaticInlineHint } from "../slash-commands/builtin-completions";
+import { explainBlockedReason } from "../slash-commands/helpers/explain";
 import { formatCoarseDuration } from "@oh-my-pi/pi-tui/chrome/format";
 import { type DictationTarget, MicCursor, type SttCallbacks, STTController, type SttState } from "../stt";
 import type { SpaceHoldHandler } from "@oh-my-pi/pi-tui/space-hold";
@@ -8919,6 +8920,20 @@ export class InteractiveMode implements InteractiveModeContext {
 		await this.handleClearCommand();
 		if (this.sessionManager.getSessionId() === previousSessionId) return;
 		await this.#applyPlanModeDefault();
+	}
+
+	/** `/explain`: start a new session seeded with the current transcript tail, then run the explainer turn. */
+	async handleExplainCommand(focus?: string): Promise<void> {
+		if (this.#vibeSessionTransitionBlocked()) return;
+		// Guard before prepareSessionSwitch(): a refused explain must not tear
+		// down BTW/omfg/cleanse surfaces for a switch that never happens.
+		const blocked = explainBlockedReason(this.session);
+		if (blocked) {
+			this.showWarning(blocked);
+			return;
+		}
+		await this.prepareSessionSwitch();
+		await this.#commandController.handleExplainCommand(focus ?? "");
 	}
 
 	handleFreshCommand(): Promise<void> {

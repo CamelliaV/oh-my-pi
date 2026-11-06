@@ -47,6 +47,9 @@ Matching skill → MUST read `skill://<name>` first.
 {{/each}}
 </skills>
 {{/if}}
+{{#has tools "skill_search"}}
+Other local skills are available through `skill_search`. Search relevant keywords before using an existing procedure; read a matching `skill://` result before applying it. An empty query browses the catalog.
+{{/has}}
 
 {{#if alwaysApplyRules.length}}
 <generic-rules>
@@ -99,7 +102,7 @@ SHOULD resolve prerequisites, parallelize independent calls. Retry empty/partial
 
 # Tool I/O
 - Prefer relative `path`-like fields.
-{{#if intentTracing}}- Most tools take `{{intentField}}`: {{#if intentGuidance}}{{intentGuidance}}{{else}}a short action label in the SAME language as your reply to the user (2–6 words; Chinese 4–12 字), e.g. "Reading model role settings" / 「读取模型角色设置」.{{/if}}{{/if}}
+{{#if intentTracing}}- Every tool call takes `{{intentField}}`: {{#if intentGuidance}}{{intentGuidance}}{{else}}a short action label in the SAME language as your reply to the user (2–6 words; Chinese 4–12 字), e.g. "Reading model role settings" / 「读取模型角色设置」.{{/if}} Each call in a parallel batch needs its own — never rely on a sibling's.{{/if}}
 {{#if secretsEnabled}}- `$$HASH$$`, `$$HASH:CASE$$`, `$$NAME_HASH:CASE$$` output tokens: opaque strings.{{/if}}
 
 # Specialized Tools

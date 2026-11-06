@@ -28,7 +28,7 @@ import { wrapTextWithAnsi } from "../utils";
 import { canonicalizeMessage } from "./thinking-display";
 import { internalUrlSchemeSpec, splitUrlScheme } from "../tools/url-scheme-host";
 import type { ToolExecutionHandle } from "./tool-execution";
-import { formatUsageRow } from "../overlays/usage-row";
+import { formatUsageRow, usageRowSpecs } from "../overlays/usage-row";
 import { formatCount, isUrlLikePath, sanitizeText, sanitizeTextDeep } from "@oh-my-pi/pi-utils";
 import type { TspCardStatus, TspSpan, TspText } from "@oh-my-pi/pi-wire";
 import type { NativeToolHead } from "../tools/renderer";
@@ -923,8 +923,14 @@ export class ReadToolGroupComponent extends Container implements ToolExecutionHa
 	}
 
 	#nativeUsage(usage: ReadUsageRow, key: string): NativeNode {
-		const line = formatUsageRow(usage.usage, usage.durationMs, usage.ttftMs, usage.timestamp, usage.turnElapsedMs);
-		return text([span(plainText(line), "dim")], { wrap: "word", key, role: "omp.usage" });
+		const specs = usageRowSpecs(usage.usage, usage.durationMs, usage.ttftMs, usage.timestamp, usage.turnElapsedMs);
+		const spans: TspSpan[] = [];
+		for (const [index, spec] of specs.entries()) {
+			if (index > 0) spans.push(span("  ", "dim"));
+			if (spec.leading) spans.push(span(spec.leading, "dim"), span(spec.separator ?? " ", "dim"));
+			if (spec.value !== undefined) spans.push(span(spec.value, "dim"));
+		}
+		return text(spans, { wrap: "word", key, role: "omp.usage" });
 	}
 
 	#updateDisplay(): void {

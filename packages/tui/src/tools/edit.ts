@@ -6,6 +6,7 @@ import { type EditInspection, editInspect } from "@oh-my-pi/pi-natives";
 import type { Component } from "../tui";
 import { sliceWithWidth, visibleWidth, wrapTextWithAnsi } from "../utils";
 import { sanitizeText } from "@oh-my-pi/pi-utils";
+import { INTENT_FIELD } from "@oh-my-pi/pi-wire";
 import type { NativeToolHead, NativeToolView, RenderResultOptions, ToolRenderer } from "./renderer";
 import { code, compact, node, span } from "../native/describe";
 import type { NativeChild, NativeNode } from "../native/node";
@@ -142,6 +143,8 @@ type InspectedInput = { mode: EditMode; input: string } & (
 );
 
 interface EditRenderArgs {
+	/** Harness intent (`i`), when present; used for the head's leading label. */
+	i?: unknown;
 	path?: unknown;
 	file_path?: unknown;
 	oldText?: string;
@@ -1225,7 +1228,13 @@ export const editToolRenderer = {
 					),
 				);
 			}
-			tool = editToolHead({ op, files: Math.max(fileCount, multi.length), added, removed });
+			tool = editToolHead({
+				intent: editCallIntent(args),
+				op,
+				files: Math.max(fileCount, multi.length),
+				added,
+				removed,
+			});
 		} else {
 			let diffText: string | undefined;
 			let firstChangedLine: number | undefined;
@@ -1245,6 +1254,7 @@ export const editToolRenderer = {
 			}
 			const stats = diffText ? getDiffStats(diffText) : undefined;
 			tool = editToolHead({
+				intent: editCallIntent(args),
 				op,
 				path: rawPath,
 				files: fileCount,
@@ -1300,6 +1310,7 @@ export const editToolRenderer = {
 			const failed = perFileResults.some(file => file.isError);
 			return {
 				tool: editToolHead({
+					intent: editCallIntent(args),
 					files: Math.max(totalFiles, perFileResults.length),
 					added,
 					removed,
@@ -1311,7 +1322,12 @@ export const editToolRenderer = {
 		}
 		const file = editFileParts(result, options, args);
 		return {
-			tool: editToolHead({ ...file, href: fileHref(file.resolvedPath), diagnostics: [file.fileDiagnostics] }),
+			tool: editToolHead({
+				...file,
+				intent: editCallIntent(args),
+				href: fileHref(file.resolvedPath),
+				diagnostics: [file.fileDiagnostics],
+			}),
 			body: file.body,
 			tone: file.isError ? "error" : undefined,
 		};
@@ -1333,6 +1349,14 @@ export const editToolRenderer = {
 	},
 } satisfies ToolRenderer<EditRenderArgs, EditToolDetails>;
 
+/** The model's intent line (`i` arg), whitespace-trimmed; undefined when absent. */
+function editCallIntent(args: unknown): string | undefined {
+	if (!args || typeof args !== "object") return undefined;
+	const value = (args as Record<string, unknown>)[INTENT_FIELD];
+	if (typeof value !== "string") return undefined;
+	return sanitizeText(value).trim() || undefined;
+}
+
 /** Facts behind a native edit head: one file (path, first changed line, rename) or a file count. */
 interface EditHeadFacts {
 	op?: Operation;
@@ -1342,6 +1366,8 @@ interface EditHeadFacts {
 	line?: number;
 	href?: string;
 	rename?: string;
+	/** The model's intent line (`i` arg); shown in the head's meta when present. */
+	intent?: string;
 	added: number;
 	removed: number;
 	diagnostics?: readonly (FileDiagnosticsResult | undefined)[];
@@ -1363,8 +1389,11 @@ function editToolHead(facts: EditHeadFacts): NativeToolHead {
 		: facts.path
 			? `${displayPath(sanitizeText(facts.path))}${facts.line ? `:${facts.line}` : ""}`
 			: undefined;
+	const title = multi ? "Edit" : getOperationTitle(facts.op);
 	return {
-		title: multi ? "Edit" : getOperationTitle(facts.op),
+		// The intent leads the head, before the path, rather than riding the
+		// right-aligned meta cluster where Tern's chat reader puts facts.
+		title: facts.intent ? [span(title), span(" · ", "dim"), span(facts.intent, "muted")] : title,
 		target,
 		targetKind: multi ? "text" : "path",
 		href: multi ? undefined : facts.href,

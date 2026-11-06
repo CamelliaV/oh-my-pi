@@ -17,6 +17,7 @@ import type {
 	PreparedExtension,
 } from "../extensibility/extensions/types";
 import type { Skill, SkillRediscoveryHost } from "../extensibility/skills";
+import type { SkillCatalogPolicy } from "../extensibility/skill-search";
 import type { GoalModeState, GoalRuntime } from "../goals";
 import { GoalTool } from "../goals/tools/goal-tool";
 import type { HindsightSessionState } from "../hindsight/state";
@@ -64,6 +65,7 @@ import { isIrcEnabled } from "../irc/messaging";
 import { FindTool, isFindEnabled } from "./jfind";
 import { LearnTool } from "./learn";
 import { ManageSkillTool } from "./manage-skill";
+import { isSkillSearchEnabled, SkillSearchTool } from "./skill-search";
 import { MemoryEditTool } from "./memory-edit";
 import { MemoryRecallTool } from "./memory-recall";
 import { MemoryReflectTool } from "./memory-reflect";
@@ -142,6 +144,7 @@ export type { AgentActivitySnapshot, CoordinationDetails, JobSnapshot } from "@o
 export * from "./image-gen";
 export * from "./learn";
 export * from "./manage-skill";
+export * from "./skill-search";
 export * from "./memory-edit";
 export * from "./memory-recall";
 export * from "./memory-reflect";
@@ -253,6 +256,8 @@ export interface ToolSession {
 	workspaceTree?: WorkspaceTree;
 	/** Pre-loaded skills */
 	skills?: readonly Skill[];
+	/** Discovery presentation snapshotted for this logical session. */
+	skillCatalogPolicy?: SkillCatalogPolicy;
 	/**
 	 * Frozen skill-URI hint visibility: snapshot taken at the last system-prompt
 	 * rebuild. Tools with a provider-side `skill://` hint read this instead of
@@ -601,6 +606,7 @@ export const BUILTIN_TOOLS: Record<BuiltinToolName, ToolFactory> = {
 	reflect: MemoryReflectTool.createIf,
 	learn: LearnTool.createIf,
 	manage_skill: ManageSkillTool.createIf,
+	skill_search: SkillSearchTool.createIf,
 };
 
 export const HIDDEN_TOOLS: Record<HiddenToolName, ToolFactory> = {
@@ -703,6 +709,13 @@ export async function resolveBuiltinToolPlan(session: ToolSession, toolNames?: s
 	// Restricted callers own the active list and must not have it widened.
 	if (requestedTools && !restrictToolNames) {
 		if (
+			requestedTools.includes("read") &&
+			isSkillSearchEnabled(session) &&
+			!requestedTools.includes("skill_search")
+		) {
+			requestedTools.push("skill_search");
+		}
+		if (
 			cfgCompactionExperimentalContextManagement.get(session.settings) &&
 			requestedTools.includes("read") &&
 			requestedTools.includes("grep")
@@ -758,6 +771,7 @@ export async function resolveBuiltinToolPlan(session: ToolSession, toolNames?: s
 			return goalState === undefined || goalState.enabled === true || goalState.goal.status === "dropped";
 		}
 		if (name === "lsp") return enableLsp && cfgLspEnabled.get(session.settings);
+		if (name === "skill_search") return isSkillSearchEnabled(session);
 		if (name === "bash") return cfgBashEnabled.get(session.settings);
 		if (name === "eval") return allowEval;
 		if (name === "debug") return cfgDebugEnabled.get(session.settings);

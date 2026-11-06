@@ -9,7 +9,11 @@ import {
 	type ContextViewData,
 	type ContextViewEntry,
 } from "@oh-my-pi/pi-tui/chrome/context-view-model";
-import { type ContextBreakdown, toolSchemaFragments } from "@oh-my-pi/pi-tui/status-line/context-usage";
+import {
+	type ContextBreakdown,
+	estimateSkillsTokens,
+	toolSchemaFragments,
+} from "@oh-my-pi/pi-tui/status-line/context-usage";
 import { stringifyJson } from "@oh-my-pi/pi-utils";
 import type { AgentSession } from "./agent-session";
 import { computeSessionContextBreakdown } from "./context-usage-runtime";
@@ -116,12 +120,38 @@ function appendSystemPromptEntries(session: AgentSession, state: SnapshotBuildSt
 			tokens: session.agent.tokenizer.countTokens(block),
 		});
 	}
+	appendSkillEntries(session, state, skillListingTokens);
+}
+
+/**
+ * Skills shows the provider-facing catalog lines frozen when block 0 was built.
+ * Entry text reconstructs `- name: description`; opening one asks the host to
+ * load the skill body, so no file I/O happens while the snapshot is sampled.
+ */
+function appendSkillEntries(session: AgentSession, state: SnapshotBuildState, skillListingTokens: number): void {
 	const skillsCategory = state.categoriesById.get("skills")!;
 	skillsCategory.tokens = skillListingTokens;
 	const systemPromptCategory = state.categoriesById.get("system-prompt")!;
 	// Skills estimates the prompt's skill listing, not full skill files or additional context.
 	// Subtract it only from the category weight; entries retain complete blocks and unscaled estimates.
 	systemPromptCategory.tokens = Math.max(0, systemPromptCategory.tokens - skillListingTokens);
+
+	// The weight is an estimate over block 0's `<skills>` section. A template that
+	// omits the section, or `skillful: false`, leaves nothing the model can open.
+	if (skillListingTokens <= 0 || !(session.systemPrompt[0] ?? "").includes("<skills>")) return;
+	if (!session.agent.state.tools.some(tool => tool.name === "read")) return;
+	for (const skill of session.renderedSkills) {
+		if (skill.hide === true) continue;
+		skillsCategory.entries.push({
+			id: `skills/${skill.name}`,
+			label: skill.name,
+			text: `- ${skill.name}: ${skill.description ?? ""}`,
+			tokens: estimateSkillsTokens([skill], session.agent.tokenizer),
+			path: skill.filePath,
+			info: skill.source ? `skill · ${skill.source}` : "skill",
+			loadOnOpen: true,
+		});
+	}
 }
 
 function appendToolDefinitionEntries(session: AgentSession, state: SnapshotBuildState): void {

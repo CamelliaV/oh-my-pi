@@ -350,6 +350,12 @@ export class SkillDescriptionCatalog {
 	readonly #store: SkillDescriptionStore | undefined;
 	readonly #compress?: SkillDescriptionCompressor;
 	readonly #snapshot = new Map<string, string>();
+	#rendered: readonly Skill[] = [];
+
+	/** The exact catalog selected for the last prompt render (before any later rediscovery). */
+	get rendered(): readonly Skill[] {
+		return this.#rendered;
+	}
 
 	/** `store` defaults to {@link sharedSkillDescriptionStore}; without one, prompts keep previews. */
 	constructor(options: { store?: SkillDescriptionStore; compress?: SkillDescriptionCompressor } = {}) {
@@ -366,9 +372,8 @@ export class SkillDescriptionCatalog {
 	}
 
 	render(skills: readonly Skill[]): Array<Skill & { description: string }> {
-		if (skills.length === 0) return [];
 		const store = this.#store;
-		return skills.map(skill => {
+		const rendered = skills.map(skill => {
 			const key = keyFor(skill);
 			let description = this.#snapshot.get(key);
 			if (description === undefined) {
@@ -385,6 +390,8 @@ export class SkillDescriptionCatalog {
 			}
 			return { ...skill, description };
 		});
+		this.#rendered = rendered;
+		return rendered;
 	}
 
 	/** Await background writes already scheduled by this catalog (for shutdown or tests). */

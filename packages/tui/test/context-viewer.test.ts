@@ -56,7 +56,11 @@ function lineWith(text: string, needle: string): string {
 	return line;
 }
 
-function fixture(firstOutput?: ContextViewEntry, secondOutput?: ContextViewEntry): ContextViewData {
+function fixture(
+	firstOutput?: ContextViewEntry,
+	secondOutput?: ContextViewEntry,
+	skillEntry?: ContextViewEntry,
+): ContextViewData {
 	const output: ContextViewCategory = {
 		id: "tool-output",
 		label: "Tool Output",
@@ -118,7 +122,7 @@ function fixture(firstOutput?: ContextViewEntry, secondOutput?: ContextViewEntry
 				id: "skills",
 				label: "Skills",
 				tokens: 10000,
-				entries: [{ id: "skill/0", label: "fixture skill", tokens: 10000, text: "skill hint" }],
+				entries: [skillEntry ?? { id: "skill/0", label: "fixture skill", tokens: 10000, text: "skill hint" }],
 			},
 			{
 				id: "built-in-tools",
@@ -138,10 +142,18 @@ function fixture(firstOutput?: ContextViewEntry, secondOutput?: ContextViewEntry
 	};
 }
 
-function harness(data = fixture()) {
+function harness(
+	data = fixture(),
+	options: { loadContent?: (entry: ContextViewEntry) => Promise<{ text: string } | undefined> } = {},
+) {
 	let rows = 24;
 	let closed = 0;
-	const viewer = new ContextViewer(data, { onClose: () => closed++, requestRender: () => {}, getRows: () => rows });
+	const viewer = new ContextViewer(data, {
+		onClose: () => closed++,
+		requestRender: () => {},
+		getRows: () => rows,
+		...options,
+	});
 	viewers.push(viewer);
 	const render = (width = 100) => viewer.render(width).map(line => Bun.stripANSI(line));
 	return { viewer, render, closed: () => closed, resize: (height: number) => (rows = height) };
@@ -198,7 +210,7 @@ describe("ContextViewer keybindings", () => {
 				h.viewer.handleInput(key);
 				// Down skips the empty Custom Tools row, which has nothing to open.
 				expect(selected(h.viewer.describe(cx))).toBe(
-					key === up ? "system-prompt" : key === down ? "user-messages" : "built-in-tools",
+					key === up ? "skills" : key === down ? "user-messages" : "built-in-tools",
 				);
 			}
 		});
@@ -261,8 +273,25 @@ describe("ContextViewer keybindings", () => {
 });
 
 describe("ContextViewer navigation", () => {
-	it("keeps Skills token totals visible while native and keyboard navigation cannot focus or open them", () => {
-		const h = harness();
+	it("opens Skills and loads a skill body only when the entry is activated", async () => {
+		let loads = 0;
+		const { promise: pending, resolve: release } = Promise.withResolvers<{ text: string }>();
+		const h = harness(
+			fixture(undefined, undefined, {
+				id: "skills/fixture",
+				label: "fixture",
+				tokens: 100,
+				text: "- fixture: catalog summary",
+				path: "/nonexistent/SKILL.md",
+				loadOnOpen: true,
+			}),
+			{
+				loadContent: () => {
+					loads++;
+					return pending;
+				},
+			},
+		);
 		expect(
 			h
 				.render()
@@ -270,26 +299,27 @@ describe("ContextViewer navigation", () => {
 				?.match(/\d+K|\d+\.\d%/g),
 		).toEqual(["11K", "5.3%"]);
 		for (const context of [cx, meterCx]) {
-			const root = h.viewer.describe(context);
-			const skills = nodes(root).find(node => node.key === "skills");
+			const skills = nodes(h.viewer.describe(context)).find(node => node.key === "skills");
 			expect(usageColumns(skills)).toEqual(["11K", "5.3%"]);
-			for (const activate of [false, true]) {
-				select(h.viewer, "skills", activate);
-				const unchanged = h.viewer.describe(context);
-				expect(selected(unchanged)).toBe("system-prompt");
-				expect(nodes(unchanged).some(node => node.key === "overview")).toBe(true);
-				expect(nodes(unchanged).some(node => node.key === "entry-skill/0")).toBe(false);
-			}
 		}
+		select(h.viewer, "skills", false);
+		expect(selected(h.viewer.describe(cx))).toBe("skills");
+		expect(loads).toBe(0);
+
+		// A single-entry category opens straight into the entry; the loader fills it.
+		select(h.viewer, "skills", true);
+		expect(h.render().join("\n")).toContain("Loading…");
+		release({ text: "# Fixture body\n\ninstructions" });
+		await pending;
+		expect(loads).toBe(1);
+		const body = h.render().join("\n");
+		expect(body).toContain("Fixture body");
+		expect(body).not.toContain("catalog summary");
+
+		h.viewer.handleInput("\x1b");
+		expect(selected(h.viewer.describe(cx))).toBe("skills");
 		h.viewer.handleInput("\x1b[B");
 		expect(selected(h.viewer.describe(cx))).toBe("built-in-tools");
-		h.viewer.handleInput("\r");
-		expect(nodes(h.viewer.describe(cx)).some(node => node.key === "entry-tool/0")).toBe(true);
-		h.viewer.handleInput("\x1b");
-		h.viewer.handleInput("\x1b[A");
-		expect(selected(h.viewer.describe(cx))).toBe("system-prompt");
-		h.viewer.handleInput("\r");
-		expect(nodes(h.viewer.describe(cx)).some(node => node.key === "entry-system/0")).toBe(true);
 	});
 
 	it("opens a single-entry category directly and returns to its overview selection", () => {
@@ -393,7 +423,7 @@ describe("ContextViewer preview and scrolling", () => {
 				.map(op => op[2]);
 		edgeReveals();
 		h.viewer.handleInput("\x1b[B");
-		expect(selected(h.viewer.describe(cx))).toBe("built-in-tools");
+		expect(selected(h.viewer.describe(cx))).toBe("skills");
 		expect(edgeReveals()).toEqual([]);
 		select(h.viewer, "tool-output/bash", false);
 		edgeReveals();

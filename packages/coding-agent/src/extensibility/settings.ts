@@ -28,6 +28,34 @@ export const cfgSkillsRegistryUrl = register({
 // Skills
 export const cfgSkillsEnabled = register({ id: "skills.enabled", type: "boolean", default: true });
 
+// Kept outside cfgSkills: these are snapshotted at session creation, not live discovery inputs.
+export const cfgSkillsOnDemand = register({
+	id: "skills.onDemand",
+	type: "boolean",
+	default: false,
+	ui: {
+		tab: "tasks",
+		group: "Commands & Skills",
+		label: "On-Demand Managed Skills",
+		description:
+			"Search managed skills instead of listing them all in the system prompt. Off restores the ordinary catalog. Applies on /new or the next launch.",
+	},
+});
+
+export const cfgSkillsPinned = register({
+	id: "skills.pinned",
+	type: "array",
+	default: EMPTY_STRING_ARRAY,
+	ui: {
+		tab: "tasks",
+		group: "Commands & Skills",
+		label: "Pinned Managed Skills",
+		editor: "json",
+		description:
+			"Exact skill names kept in the prompt when on-demand discovery is on. Applies on /new or the next launch; /skills pin and /skills unpin also edit this list.",
+	},
+});
+
 export const cfgSkillsEnableSkillCommands = register({
 	id: "skills.enableSkillCommands",
 	type: "boolean",

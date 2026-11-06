@@ -139,6 +139,7 @@ import {
 	SkillDescriptionCatalog,
 } from "./extensibility/skill-descriptions";
 import { resolvePath } from "./extensibility/utils";
+import { snapshotSkillCatalogPolicy } from "./extensibility/skill-search";
 import {
 	type LoadSkillsOptions,
 	loadSkills as loadSkillsInternal,
@@ -1472,7 +1473,7 @@ const TOOL_DEFINITION_MARKER = Symbol("__isToolDefinition");
 /** Matches the truncation applied to per-server instructions inside `rebuildSystemPrompt`. */
 const MAX_MCP_INSTRUCTIONS_LENGTH = 4000;
 /** Built-ins `createTools` force-includes into explicit tool lists; the active set mirrors them. */
-const SESSION_MANAGED_BUILTIN_TOOL_NAMES = ["manage_skill", "learn", "context_notes", "new_context"];
+const SESSION_MANAGED_BUILTIN_TOOL_NAMES = ["manage_skill", "learn", "context_notes", "new_context", "skill_search"];
 
 let sshCleanupRegistered = false;
 
@@ -2445,6 +2446,7 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 
 	let skills: Skill[];
 	let skillWarnings: SkillWarning[];
+	const initialSkillCatalogPolicy = snapshotSkillCatalogPolicy(settings);
 	if (options.skills !== undefined) {
 		skills = options.skills;
 		skillWarnings = [];
@@ -2684,6 +2686,9 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 			},
 			get skills() {
 				return session?.skills ?? skills;
+			},
+			get skillCatalogPolicy() {
+				return session?.skillCatalogPolicy ?? initialSkillCatalogPolicy;
 			},
 			refreshSkills: () => session.refreshSkills(),
 			skillRediscoveryHost: () => session.skillRediscoveryHost(),
@@ -4473,6 +4478,7 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 				systemPromptTemplate: options.systemPromptTemplate,
 				skills: cfgSkillful.get(settings) ? (session?.skills ?? skills) : [],
 				skillDescriptions,
+				skillCatalogPolicy: toolSession.skillCatalogPolicy,
 				contextFiles,
 				tools: promptTools,
 				toolNames,

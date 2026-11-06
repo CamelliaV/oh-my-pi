@@ -70,6 +70,19 @@ export interface SkillWarning {
 	message: string;
 }
 
+// Discovery already reads bodies for validation and collision resolution. Keep
+// that text local to the object instead of serializing it into SDK skill lists.
+const skillSearchBodies = new WeakMap<Skill, string>();
+
+export function skillSearchBody(skill: Skill): string {
+	return skillSearchBodies.get(skill) ?? "";
+}
+
+function withSearchBody(skill: Skill, body: string): Skill {
+	skillSearchBodies.set(skill, body);
+	return skill;
+}
+
 export interface LoadSkillsResult {
 	skills: Skill[];
 	warnings: SkillWarning[];
@@ -271,16 +284,22 @@ export async function loadSkillsFromDir(options: LoadSkillsFromDirOptions): Prom
 	);
 
 	return {
-		skills: result.items.map(capSkill => ({
-			name: capSkill.name,
-			description: typeof capSkill.frontmatter?.description === "string" ? capSkill.frontmatter.description : "",
-			filePath: capSkill.path,
-			baseDir: capSkill.path.replace(/[\\/]SKILL\.md$/, ""),
-			source: options.source,
-			...(capSkill.containRoot !== undefined && { containRoot: capSkill.containRoot }),
-			hide: capSkill.frontmatter?.hide === true || capSkill.frontmatter?.disableModelInvocation === true,
-			_source: capSkill._source,
-		})),
+		skills: result.items.map(capSkill =>
+			withSearchBody(
+				{
+					name: capSkill.name,
+					description:
+						typeof capSkill.frontmatter?.description === "string" ? capSkill.frontmatter.description : "",
+					filePath: capSkill.path,
+					baseDir: capSkill.path.replace(/[\\/]SKILL\.md$/, ""),
+					source: options.source,
+					...(capSkill.containRoot !== undefined && { containRoot: capSkill.containRoot }),
+					hide: capSkill.frontmatter?.hide === true || capSkill.frontmatter?.disableModelInvocation === true,
+					_source: capSkill._source,
+				},
+				capSkill.content,
+			),
+		),
 		warnings: (result.warnings ?? []).map(message => ({ skillPath: options.dir, message })),
 	};
 }
@@ -479,6 +498,7 @@ export async function loadSkills(options: LoadSkillsOptions = {}): Promise<LoadS
 			hide: capSkill.frontmatter?.hide === true || capSkill.frontmatter?.disableModelInvocation === true,
 			_source: capSkill._source,
 		};
+		withSearchBody(skill, capSkill.content);
 		if (admit(skill, capSkill.content, capSkill.frontmatter, skillNamespace(capSkill)) !== undefined)
 			realPathSet.add(resolvedPath);
 	}
@@ -545,6 +565,7 @@ export async function loadSkills(options: LoadSkillsOptions = {}): Promise<LoadS
 		const { skill, body, frontmatter, namespace } = allCustomSkills[i];
 		const resolvedPath = customRealPaths[i];
 		if (realPathSet.has(resolvedPath)) continue;
+		withSearchBody(skill, body);
 		if (admit(skill, body, frontmatter, namespace) !== undefined) realPathSet.add(resolvedPath);
 	}
 
@@ -598,16 +619,22 @@ export async function loadSkills(options: LoadSkillsOptions = {}): Promise<LoadS
 		if (skillMap.has(capSkill.name)) continue;
 		const rawDescription =
 			typeof capSkill.frontmatter?.description === "string" ? capSkill.frontmatter.description : "";
-		skillMap.set(capSkill.name, {
-			name: capSkill.name,
-			description: sanitizeManagedDescription(rawDescription),
-			filePath: capSkill.path,
-			baseDir: capSkill.path.replace(/[\\/]SKILL\.md$/, ""),
-			source: `${capSkill._source.provider}:${capSkill.level}`,
-			...(capSkill.containRoot !== undefined && { containRoot: capSkill.containRoot }),
-			hide: capSkill.frontmatter?.hide === true || capSkill.frontmatter?.disableModelInvocation === true,
-			_source: capSkill._source,
-		});
+		skillMap.set(
+			capSkill.name,
+			withSearchBody(
+				{
+					name: capSkill.name,
+					description: sanitizeManagedDescription(rawDescription),
+					filePath: capSkill.path,
+					baseDir: capSkill.path.replace(/[\\/]SKILL\.md$/, ""),
+					source: `${capSkill._source.provider}:${capSkill.level}`,
+					...(capSkill.containRoot !== undefined && { containRoot: capSkill.containRoot }),
+					hide: capSkill.frontmatter?.hide === true || capSkill.frontmatter?.disableModelInvocation === true,
+					_source: capSkill._source,
+				},
+				capSkill.content,
+			),
+		);
 		realPathSet.add(resolvedPath);
 	}
 
@@ -689,7 +716,10 @@ async function rediscoverHostSkills(host: SkillRediscoveryHost): Promise<readonl
 		}
 		const fresh = findStaleSkillStandIn(skill, discovered.skills);
 		// Under the name this list (and the prompt built from it) already gives it, if a collision renamed it.
-		if (fresh) repointed.push(fresh.name === skill.name ? fresh : { ...fresh, name: skill.name });
+		if (fresh)
+			repointed.push(
+				fresh.name === skill.name ? fresh : withSearchBody({ ...fresh, name: skill.name }, skillSearchBody(fresh)),
+			);
 	}
 	await host.replaceSkills?.(repointed);
 	return repointed;

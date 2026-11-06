@@ -11,6 +11,7 @@ import agentFrontmatterTemplate from "../prompts/agents/frontmatter.md" with { t
 import reviewerMd from "../prompts/agents/reviewer.md" with { type: "text" };
 import scoutMd from "../prompts/agents/scout.md" with { type: "text" };
 import securityReviewerMd from "../prompts/agents/security-reviewer.md" with { type: "text" };
+import explainerMd from "../prompts/agents/explainer.md" with { type: "text" };
 import seanceMd from "../prompts/agents/seance.md" with { type: "text" };
 import taskMd from "../prompts/agents/task.md" with { type: "text" };
 import { AUTO_THINKING } from "@oh-my-pi/pi-tui/thinking";
@@ -36,6 +37,9 @@ interface EmbeddedAgentDef {
 	template: string;
 }
 
+/** Bundled role used by `/explain` to render its session-seeding prompt. */
+export const EXPLAINER_AGENT_NAME = "explainer";
+
 function buildAgentContent(def: EmbeddedAgentDef): string {
 	const body = prompt.render(def.template);
 	if (!def.frontmatter) return body;
@@ -47,6 +51,7 @@ const EMBEDDED_AGENT_DEFS: EmbeddedAgentDef[] = [
 	{ fileName: "reviewer.md", template: reviewerMd },
 	{ fileName: "security-reviewer.md", template: securityReviewerMd },
 	{ fileName: "seance.md", template: seanceMd },
+	{ fileName: "explainer.md", template: explainerMd },
 	{
 		fileName: "task.md",
 		frontmatter: {

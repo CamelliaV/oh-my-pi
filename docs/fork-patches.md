@@ -1637,6 +1637,183 @@ no sessions → tab strip shows `Pinned`, Tab cycles Current folder → All
 projects → Pinned, which lists "📌 Pinned cross-project work" from the other
 project with its cwd; Enter resumes it; unpin key drops the row.
 
+## Patch 46: `feat(cli)` `/explain` — persisted explainer session over a bounded transcript tail (2026-11-02)
+
+After a long debugging turn, the user needs the causal story — where the
+problem actually was, what changed, and why that fixed it — not another pass
+over the whole session. `/btw` answers in an ephemeral side panel, and
+`/seance` forks the source transcript in full, which is the wrong shape for a
+session already hundreds of messages deep: the consult pays to re-read
+everything and still has to find the tail.
+
+`/explain [focus]` instead starts a **new persisted session** linked to the
+source through the header's `parentSession`, names it `Explain · <source title
+(or id prefix)>`, and seeds one synthetic (hidden developer) turn containing:
+
+- the source session id, title, and file path;
+- the optional `/explain <focus>` request, capped at 2k characters;
+- the first real user message as a `<session-goal>` plus the latest compaction
+  summary, so older context survives the window;
+- the tail of the resolved LLM context (`buildSessionContext().messages`):
+  up to 3 **complete** turns (a user message plus its assistant/tool replies),
+  bounded to 36k rendered characters. A trailing turn with no reply is skipped;
+  selection walks backward so the newest work wins. Per-message caps
+  (user/assistant 4k, tool args 500, tool result 1.8k/2.8k on error) and a
+  head/tail clip keep the opening ask and the final conclusion when one turn
+  alone exceeds the budget. Thinking blocks are omitted; tool calls and error
+  results stay.
+
+The new session is trimmed to an explainer base before the first request:
+`setActiveToolsByName([])` drops every tool schema and rebuilds the roster,
+then `setSessionSystemPrompt([...])` installs a session-scoped minimal system
+prompt (`prompts/system/explain-session.md`) that replaces the generated omp
+work prompt for this transcript. The override lives in `SessionTools` above the
+base prompt, survives base rebuilds and memory injection, and is cleared by
+`#clearSessionScopedToolState` on `/new`, session switches, and tree
+navigation. The turn-start commit had to change from `agent.setSystemPrompt(
+baseSystemPrompt)` to the effective-base helper: the raw base is the generated
+work prompt, so the old code silently replaced the override right before the
+provider request (the request-level test in
+`agent-session-system-prompt-override.test.ts` locks this down). This is
+deliberately leaner than `--lightweight`, which keeps project rules and context
+files: this repo's AGENTS.md alone would dwarf the excerpt, while the explainer
+needs none of the build rules. The session remains an in-place `/new` (the TUI
+cannot swap SDK options), so `/inject --all` restores tools for follow-up work.
+
+The bundled `explainer` role (`prompts/agents/explainer.md`, `tools: []`,
+`model: @explainer`) then answers in the source conversation's language in
+under 250 words: crux first, then what was done and why it works, using concrete
+paths/symbols/errors from the evidence. It explicitly bans analogies and
+metaphors, forbids tool use/re-investigation, and requires marking unsupported
+leaps as inference. `/resume` returns to the working session, which remains
+untouched.
+
+`explainer` is a first-class **model role**, not just an agent name: it is in
+`MODEL_ROLE_IDS`/`MODEL_ROLES` (tag `EXPLAIN`, name `Explainer`) so `/model`
+lists it, and its catalog default chain
+(`runtime/behavior.kdl` → `role-defaults "explainer"`) starts at
+`aistudio/gemini-3.8-flash`, then `google-antigravity/gemini-3.8-flash`, then
+the bare `gemini-3.8-flash` selector. A user-assigned `modelRoles.explainer`
+always wins. The `/explain` transition resolves the role and calls
+`setModel(..., "explainer", { persist: false })`, so reading an explanation
+uses the explainer model without rewriting the global/default model; the same
+role is used when the `explainer` task agent is spawned directly.
+
+Guards: `/explain` refuses while the source is streaming or compacting, and
+reports "The latest turn has no reply to explain yet" instead of opening an
+empty session. The transition reuses `#runNewSessionFlow`, so focused subagent
+views are returned to main and transcript anchors reset exactly like `/new`.
+An extension's `session_before_switch` cancel leaves the source active and
+skips the seed.
+
+Files: `prompts/agents/explainer.md`, `task/agents.ts` (registration +
+`EXPLAINER_AGENT_NAME`), `prompts/system/explain-command.md`,
+`prompts/system/explain-session.md`, `session/session-tools.ts` +
+`session/agent-session.ts` (session-scoped system prompt override),
+`config/model-roles.ts` + `config/model-resolver.ts` +
+`packages/tui/src/overlays/model-browser.ts` (the `explainer` model role),
+`packages/catalog/src/compat/rules/runtime/behavior.kdl` + generated
+`rules.json` (default chain),
+`slash-commands/helpers/explain.ts` (selection/render/prepare + blocked
+reason), `slash-commands/explain.ts`,
+`slash-commands/builtin-lifecycle.ts`, `modes/controllers/command-controller.ts`,
+`modes/interactive-mode.ts`, `modes/types.ts`.
+
+Tests: `test/slash-commands/explain.test.ts` (tail selection, trailing
+unanswered turn, oversized-turn clip, thinking omission, synthetic boundaries,
+prompt metadata/goal/coverage), `test/slash-commands/explain-session.test.ts`
+(linked new session, title, tool clearing, minimal base prompt order, synthetic
+seed, streaming refusal, no-reply refusal), and
+`test/agent-session-system-prompt-override.test.ts` (override replaces the
+effective prompt, survives base rebuilds, clears on `newSession`).
+
+## Patch 47: `feat(skills)` optional local managed-skill discovery (2026-11-05)
+
+`skills.onDemand` defaults off. On keeps authored skills and `skills.pinned`
+managed names in the system catalog, with the remaining managed skills reachable
+through the essential, read-only `skill_search` tool. Turning it off restores
+the ordinary catalog and removes that tool on `/new` or the next launch. Both
+settings are deliberately outside the live `cfgSkills` discovery group and are
+snapshotted by SessionTools; neither a preference edit nor a search result
+rewrites an existing conversation's system/tool prefix.
+
+The shared TUI `FuzzyCorpus` ranks local names and full descriptions, with exact
+names first. When metadata finds nothing it uses bodies already read by skill
+discovery, retained in a WeakMap rather than serialized into SDK skill metadata.
+Search returns five names/descriptions/URIs per page, never body text. Empty
+queries browse and `nextOffset` paginates. `/skills local [query] [--page N]` uses
+the same matcher; `/skills pin` and `/skills unpin` change the next session's
+catalog. Restricted sessions without the search tool retain the full catalog.
+
+The dedicated terminal and native renderers show full descriptions even when
+collapsed, wrap to terminal width, and sanitize raw control characters and
+embedded paths. `SkillDescriptionCatalog.rendered` records the committed subset
+for `/prompt` and context accounting. In on-demand mode, skill URI rediscovery
+updates resolver state without rebuilding the system prompt. Ordinary mode
+retains its prior refresh behavior; the separate `manage_skill` no-refresh
+patch remains intact.
+
+Verification uses a local mock provider for search → read → response: the
+provider-visible system and serialized tools stay equal, full descriptions
+arrive as tool results, and prompt accounting stays unchanged. Regression
+coverage also exercises off → on → off across `/new`, pinned/authored catalog
+precedence, restricted rosters, hidden entries, paging, Chinese body-only
+queries, stale resolver replacement, and collapsed/restored/native rendering.
+No real completion, stream, or vision requests are part of verification.
+
+Local verification: `check:ts` passes; the eight skill/discovery/cache/TUI
+regression files passed 161 tests, plus the subsequently added local-command
+pin/unpin contract passes in its eight-test file. Standalone collapsed rendering
+uses `amethyst-glass`; the 191-skill local inventory measured 5,720 catalog
+tokens normally versus 73 authored-skill tokens with no managed pins, plus
+about 253 estimated search-tool tokens. These counts exclude task-specific
+search results and skill reads. Linux binary build succeeds. Root `bun check`
+also attempted Rust because this synthetic-history checkout has no fetched
+main baseline; its Rust formatter reports existing workspace-wide differences
+under the installed stable toolchain. No Rust files were changed.
+
+## Patch 48: `feat(tui)` `/context` Skills entries open the skill body (2026-11-05)
+
+The built-in `/context` modal listed `Skills` as a token weight with no
+entries (`openable: false`); the catalog lines were readable only by opening
+`System Block 1` and scrolling into its `<skills>` section. Snapshot sampling
+stays I/O-free: `buildSessionContextView` now materializes one entry per
+rendered skill from `session.renderedSkills`, with the same filters as
+`estimateSkillTokens` (`read` tool present, `hide !== true`) plus a new gate
+on the literal `<skills>` section in block 0 (a custom template that omits it,
+or `skillful: false`, therefore produces no entries). Entry text is the
+provider-facing line `- <name>: <description>`; tokens come from
+`estimateSkillsTokens([skill])`; `path` names `SKILL.md` and `info` carries
+`skill · <source>`, so the entry header identifies the target before opening.
+
+Activation is lazy: the TUI model gains `loadOnOpen`, and `ContextViewer`
+gains an optional `loadContent(entry)` host callback. Opening such an entry
+renders `Loading…`, replaces the body with the callback's text, or shows a
+`Failed to load content:` line; Back/Close and a re-open invalidate in-flight
+loads via a token counter. `handleContextCommand` supplies
+`loadSkillPrompt(skill, session)` — the same rediscovery-aware reader used by
+`/skill:<name>` — and strips frontmatter via the loader, so what the viewer
+shows is the instruction body the model would read. Double-click/Enter on the
+entry opens it; the catalog preview still shows the summary line.
+
+Accounting is unchanged: the category still reports the shared
+`estimateSkillsTokens` weight (subtracted from System Prompt), while entry
+totals are the per-skill sum of the same estimate. Measured on the 190-skill
+local catalog: category 5,678 tokens, entries 5,678, literal `<skills>`
+section 6,167 (the 489-token framing delta), block 0 9,057. The viewer already
+states that entries need not add up to category weights.
+
+Verification: `bun test packages/tui/test/context-viewer.test.ts` (27 pass;
+lazy load driven by a controlled promise, no wall-clock sleep),
+`bun test packages/coding-agent/test/modes/context-view.test.ts` (19 pass;
+entries built only with the `<skills>` section + `read` tool, hidden skills
+dropped, `loadOnOpen`/path/text asserted), `tsc --noEmit` for both packages,
+`oxfmt --check` and `oxlint` clean. Live smoke with `bun run dev`: `/context`
+→ Skills listed all 190 skills with summaries and `skill · omp-managed:user ·
+~/.omp/agent/managed-skills/<name>/SKILL.md`; Enter on
+`aistudio2api-linux-login` rendered its `SKILL.md` body (frontmatter omitted);
+Esc returned to the list with the selection preserved.
+
 ## Upgrade chronicle (v18.3.2 → v18.12.3)
 
 Moved out of `AGENTS.md` on 2026-10-28: it is history, not policy, and cost

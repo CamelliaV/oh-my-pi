@@ -80,6 +80,20 @@ describe("edit native views", () => {
 		expect(heads[1]).toContain("−1");
 	});
 
+	it("leads the head with the model's intent", () => {
+		const view = editToolRenderer.describeResult(
+			{ content: [{ type: "text", text: "ok" }], details: { path: "/tmp/a.ts", diff: "-old\n+new" } },
+			done,
+			{ path: "/tmp/a.ts", i: "  修正测试断言  " },
+		);
+		expect(view.tool?.title).toEqual([
+			{ t: "Edit" },
+			{ t: " · ", s: "dim" },
+			{ t: "修正测试断言", s: "muted" },
+		]);
+		expect(view.tool?.meta).toEqual(["+1 −1"]);
+	});
+
 	it("uses the original path as the native href while sanitizing the displayed edit path", () => {
 		const rawPath = "/tmp/edit-\x1b[31mfile\x01.ts";
 		const safePath = "/tmp/edit-file.ts";

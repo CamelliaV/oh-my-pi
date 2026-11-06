@@ -272,6 +272,13 @@ export interface ComposerFacts {
 	readonly extras: NativeNode;
 	/** `text` (role `omp.composer.usage`): the session cost (empty when there is none). */
 	readonly usage: NativeNode;
+	/**
+	 * `text` (role `omp.composer.session-usage`) on its own wrapping row: the
+	 * cumulative session metrics (time, in/out, ctx, cache, tok/s). The
+	 * composer's status strip is one row and too narrow for them, so Tern drops
+	 * the whole segment; this row keeps the totals visible.
+	 */
+	readonly sessionUsage?: NativeNode;
 }
 
 /** Supplies {@link ComposerFacts} and takes the clicks on them (`status.*` actions). */

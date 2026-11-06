@@ -8,6 +8,55 @@ Skills are file-backed capability packs discovered at startup and exposed to the
 
 This document covers current runtime behavior in `packages/coding-agent/src/extensibility/skills.ts`, `packages/coding-agent/src/discovery/builtin.ts`, `packages/coding-agent/src/internal-urls/skill-protocol.ts`, and `packages/coding-agent/src/discovery/agents-md.ts`.
 
+## Optional on-demand managed skills
+
+`skills.onDemand` defaults to `false`, preserving the ordinary catalog and tool roster.
+Enable **Settings → Tasks → Commands & Skills → On-Demand Managed Skills**, or set:
+
+```yaml
+skills:
+  onDemand: true
+  pinned:
+    - silent-testing-no-foreground-windows
+```
+
+The mode and pinned names are snapshotted at startup and on `/new`. Changing them
+does not rewrite the current conversation's system prompt or tool definitions.
+To return to ordinary behavior, turn the switch off and use `/new` or restart.
+
+With the mode enabled:
+
+- Authored skills and explicitly pinned managed skills remain in the prompt.
+- Other managed skills stay readable and appear in local search instead of the
+  system catalog. Hidden and disabled skills remain excluded from search.
+- `skill_search` searches names and full descriptions using the shared local
+  fuzzy matcher, falling back to bodies already read by discovery when metadata
+  has no matches. Bodies are indexed locally and not returned by search. It returns at most five results with complete descriptions and
+  `skill://` addresses. Exact names rank first; keywords can be in Chinese or
+  English. An empty query browses the catalog and `nextOffset` paginates it.
+- Search and `read skill://...` append ordinary tool results; they never promote
+  a matched skill into the system prompt. Recovery of a moved skill file refreshes
+  URI resolution without rebuilding the prompt in this mode.
+- Search descriptions are visible in the collapsed terminal result and native
+  result body, including replayed transcripts. Long descriptions wrap; terminal
+  control characters are sanitized. Results carry full descriptions, not the
+  compressed hints used by the ordinary system catalog.
+- Restricted sessions that do not expose `skill_search` keep the ordinary
+  catalog, so hiding metadata cannot strand an unreadable search capability.
+
+Interactive commands:
+
+```text
+/skills local KWin          Search this session's local skills
+/skills local --page 2      Browse the second page
+/skills pin <exact-name>    Keep a managed skill in the next session's prompt
+/skills unpin <exact-name>  Remove that pin for the next session
+```
+
+`/skills search` continues to search the remote registry. Local discovery does
+not call a model or a remote search service. The pinned list is configurable in
+Settings; there is no automatic pinning or silent token-budget truncation.
+
 ## What a skill is in this codebase
 
 A discovered skill is represented as:

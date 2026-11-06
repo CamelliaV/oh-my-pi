@@ -30,6 +30,7 @@ import { type LoadedCustomShare, loadCustomShare } from "../../export/custom-sha
 import { parseExportArgs } from "../../export/html/args";
 import { shareSession } from "../../export/share";
 import type { CompactOptions } from "../../extensibility/extensions/types";
+import { loadSkillPrompt } from "../../extensibility/skills";
 import {
 	diffMentalModelContent,
 	type HindsightApi,
@@ -43,6 +44,7 @@ import {
 import { memoryStatsUnavailableMessage, resolveMemoryBackend } from "../../memory-backend";
 import { BashExecutionComponent, bashPtyViewport } from "@oh-my-pi/pi-tui/chat/bash-execution";
 import { appKey } from "@oh-my-pi/pi-tui/chrome/keybinding-hints";
+import { sanitizeErrorLine } from "@oh-my-pi/pi-tui/chrome/error-block";
 import { BorderedLoader } from "@oh-my-pi/pi-tui/overlays/bordered-loader";
 import { EvalExecutionComponent } from "@oh-my-pi/pi-tui/chat/eval-execution";
 import { MoveOverlay, type MoveOverlayResult } from "@oh-my-pi/pi-tui/overlays/move-overlay";
@@ -85,6 +87,16 @@ import {
 	limitMatchesActiveAccount,
 } from "../../slash-commands/helpers/active-oauth-account";
 import { formatProviderName } from "@oh-my-pi/pi-tui/chrome/format";
+import { EXPLAINER_MODEL_ROLE, formatModelRoleAlias, roleCandidatePool } from "../../config/model-roles";
+import { resolveModelRoleValue } from "../../config/model-resolver";
+import explainSessionSystemPrompt from "../../prompts/system/explain-session.md" with { type: "text" };
+import { EXPLAINER_AGENT_NAME, getBundledAgent } from "../../task/agents";
+import {
+	type PrepareExplainResult,
+	explainBlockedReason,
+	explainSessionTitle,
+	prepareExplainRequest,
+} from "../../slash-commands/helpers/explain";
 import { formatCompactQuota } from "@oh-my-pi/pi-tui/overlays/advisor-config";
 import { resolveTernPane } from "../../tools/browser/tern/kind";
 import { TernError, type TernErrorKind, TernSocketClient } from "../../tools/browser/tern/wire";
@@ -1000,6 +1012,18 @@ export class CommandController {
 			onClose: () => this.#closeReportSheet(),
 			requestRender: () => this.ctx.ui.requestRender(),
 			getRows: () => this.ctx.ui.terminal.rows,
+			loadContent: async entry => {
+				const name = entry.id.startsWith("skills/") ? entry.id.slice("skills/".length) : undefined;
+				const skill = name ? session.renderedSkills.find(candidate => candidate.name === name) : undefined;
+				if (!skill) return { text: `Skill ${name ?? entry.label} is no longer loaded in this session.` };
+				try {
+					const { body } = await loadSkillPrompt(skill, session);
+					return { text: body.length > 0 ? body : `(empty skill body: ${skill.filePath})` };
+				} catch (error) {
+					const message = error instanceof Error ? error.message : String(error);
+					return { text: `Failed to read ${skill.filePath}\n\n${message}` };
+				}
+			},
 		});
 		this.#showFullscreenSheet(viewer);
 		this.ctx.ui.requestRender();
@@ -1372,6 +1396,96 @@ export class CommandController {
 
 	async handleClearCommand(): Promise<void> {
 		await this.#runNewSessionFlow();
+	}
+
+	/**
+	 * `/explain`: open a persisted explainer session whose first turn receives
+	 * the tail of this transcript plus the bundled explainer role. The new
+	 * header keeps `parentSession` so the pair stays discoverable, while the
+	 * seeded prompt carries the source id for the reader.
+	 */
+	async handleExplainCommand(focus = ""): Promise<void> {
+		const blocked = explainBlockedReason(this.ctx.session);
+		if (blocked) {
+			this.ctx.showWarning(blocked);
+			return;
+		}
+
+		const manager = this.ctx.sessionManager;
+		const sourceSessionId = manager.getSessionId();
+		const sourceSessionFile = manager.getSessionFile();
+		const sourceSessionTitle = manager.getSessionName();
+		const role = getBundledAgent(EXPLAINER_AGENT_NAME)?.systemPrompt;
+		if (!role) {
+			this.ctx.showError("The bundled explainer role is unavailable.");
+			return;
+		}
+
+		let prepared: PrepareExplainResult;
+		try {
+			prepared = prepareExplainRequest({
+				sourceSessionId,
+				sourceSessionTitle,
+				sourceSessionFile,
+				messages: manager.buildSessionContext().messages,
+				focus,
+				role,
+			});
+		} catch (error) {
+			this.ctx.showError(sanitizeErrorLine(error));
+			return;
+		}
+		if (!prepared.ok) {
+			this.ctx.showWarning(prepared.reason);
+			return;
+		}
+
+		await this.#runNewSessionFlow(
+			sourceSessionFile ? { parentSession: sourceSessionFile } : undefined,
+			"Explainer session started — /resume to return",
+		);
+		// An extension hook can cancel the transition; the old id then survives.
+		if (this.ctx.sessionManager.getSessionId() === sourceSessionId) return;
+
+		const title = explainSessionTitle(sourceSessionTitle, sourceSessionId);
+		await this.ctx.sessionManager.setSessionName(title, "user");
+		this.ctx.statusLine.invalidate();
+		setSessionTerminalTitle(title, this.ctx.sessionManager.getCwd());
+
+		// The explainer has its own `/model` role. Unconfigured, it inherits the
+		// task role; a configured `@explainer` wins. Keep it session-local so
+		// reading an explanation never rewrites the user's global defaults.
+		try {
+			const resolved = resolveModelRoleValue(
+				formatModelRoleAlias(EXPLAINER_MODEL_ROLE),
+				roleCandidatePool(EXPLAINER_MODEL_ROLE, this.ctx.settings, this.ctx.session.modelRegistry),
+				{ settings: this.ctx.settings },
+			);
+			if (resolved.model && resolved.model !== this.ctx.session.model) {
+				await this.ctx.session.setModel(resolved.model, EXPLAINER_MODEL_ROLE, { persist: false });
+			}
+		} catch (error) {
+			logger.warn("Failed to apply explainer model role", { err: error });
+		}
+
+		// An explainer needs no work surface: drop every tool schema and rebuild
+		// the prompt before the first request. The session stays a normal one
+		// (in-place /new cannot swap SDK options), so `/inject --all` can restore
+		// the tools if the reader wants to follow up with real work.
+		try {
+			await this.ctx.session.setActiveToolsByName([]);
+		} catch (error) {
+			logger.warn("Failed to clear explainer session tools", { err: error });
+		}
+		// Replace the generated work prompt with the minimal explainer base. The
+		// next prompt rebuild (model/settings/tool change) restores the normal one.
+		this.ctx.session.setSessionSystemPrompt([explainSessionSystemPrompt.trim()]);
+
+		try {
+			await this.ctx.session.prompt(prepared.prompt, { synthetic: true });
+		} catch (error) {
+			this.ctx.showError(sanitizeErrorLine(error));
+		}
 	}
 
 	async handleFreshCommand(): Promise<void> {

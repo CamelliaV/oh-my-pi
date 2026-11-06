@@ -65,6 +65,48 @@ describe("native composer facts", () => {
 		expect(priority.hostname!).toBeGreaterThan(priority.session!);
 	});
 
+	it("moves the cumulative session usage out of the strip onto its own wrapping row", () => {
+		setNativeRendering(true);
+		const line = statusLine({ preset: "custom", leftSegments: ["session_usage"], rightSegments: [] });
+		// The private session field is the only way to replay a branch into this component; cast once, named.
+		type ReplayLine = { session: { sessionManager: { getBranch: () => unknown[] } } };
+		const replay = line as unknown as ReplayLine;
+		replay.session.sessionManager.getBranch = () => [
+			{ type: "message", message: { role: "user", content: "go", timestamp: 1_789_000_000_000 } },
+			{
+				type: "message",
+				message: {
+					role: "assistant",
+					content: [],
+					api: "anthropic-messages",
+					provider: "anthropic",
+					model: "claude-sonnet-4-6",
+					stopReason: "stop",
+					timestamp: 1_789_000_002_000,
+					duration: 45_000,
+					usage: {
+						input: 1_000,
+						output: 2_000,
+						cacheRead: 7_000,
+						cacheWrite: 0,
+						totalTokens: 10_000,
+						cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+					},
+				},
+			},
+		];
+		const described = line.describeComposerFacts();
+		// The one-row strip would collapse the segment to nothing; it is not sent there.
+		expect(facts(line)).toEqual([]);
+		const usage = described.sessionUsage!;
+		expect(usage.k).toBe("text");
+		expect(usage.p).toMatchObject({ role: "omp.composer.session-usage", wrap: "word" });
+		if (!usage.p || !("spans" in usage.p)) throw new Error("session usage row has no spans");
+		const text = (usage.p.spans ?? []).map(part => part.t).join("");
+		expect(text).toContain("in Σ");
+		expect(text).toContain("tok/s");
+	});
+
 	it("reorders priorities when the configured order changes", () => {
 		setNativeRendering(true);
 		const segs = facts(statusLine({ preset: "custom", leftSegments: ["session", "hostname"], rightSegments: [] }));

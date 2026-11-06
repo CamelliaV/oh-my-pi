@@ -4,8 +4,9 @@ import { Spacer } from "../components/spacer";
 import { formatDuration, formatNumber } from "@oh-my-pi/pi-utils";
 import { theme } from "../theme/theme";
 import { formatMetricRow, MetricRow, type MetricSpec } from "../components/metric";
-import { node, row, span, text } from "../native/describe";
-import type { DescribeContext, NativeChild, NativeNode } from "../native/node";
+import { row, span, text } from "../native/describe";
+import type { DescribeContext, NativeNode } from "../native/node";
+import type { TspSpan } from "@oh-my-pi/pi-wire";
 
 /** Below this the rate is nonsense (cached/instant responses yield absurd tok/s). */
 const MIN_DURATION_MS = 100;
@@ -151,7 +152,7 @@ function usageRowBaseSpecs(
 	return specs;
 }
 
-function usageRowSpecs(
+export function usageRowSpecs(
 	usage: Usage,
 	durationMs?: number,
 	ttftMs?: number,
@@ -207,32 +208,27 @@ class UsageRowBlock extends Container {
 		if (this.#nativeNode && this.#nativeHour12 === hour12) return this.#nativeNode;
 		this.#nativeHour12 = hour12;
 		const usage = this.#usage;
-		const parts: string[] = [];
 		const timestamp = this.#timestamp;
 		const stamped = timestamp !== undefined && Number.isFinite(timestamp) && timestamp > 0;
+		const spans: TspSpan[] = [];
 		// Only a 12-hour clock goes through the locale; 24-hour keeps the tooltip's own `HH:mm`.
 		if (stamped) {
-			parts.push(
-				hour12
-					? new Date(timestamp).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", hour12 })
-					: formatUsageTimestamp(timestamp).slice(11, 16),
+			spans.push(
+				span(
+					hour12
+						? new Date(timestamp).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", hour12 })
+						: formatUsageTimestamp(timestamp).slice(11, 16),
+					"dim",
+				),
 			);
 		}
-		if (this.#turnElapsedMs !== undefined && this.#turnElapsedMs > 0) {
-			parts.push(`Δ ${formatDuration(Math.round(this.#turnElapsedMs))}`);
+		const specs = usageRowSpecs(usage, this.#durationMs, this.#ttftMs, undefined, this.#turnElapsedMs);
+		for (const spec of specs) {
+			if (spans.length > 0) spans.push(span("  ", "dim"));
+			if (spec.leading) spans.push(span(`${spec.leading}${spec.separator ?? " "}`, "dim"));
+			if (spec.value !== undefined) spans.push(span(spec.value, "dim"));
 		}
-		parts.push(`in ${formatNumber(usage.input + usage.cacheWrite)}`, `out ${formatNumber(usage.output)}`);
-		if (usage.cacheRead > 0) parts.push(`cache ${formatNumber(usage.cacheRead)}`);
-		if (this.#ttftMs && this.#ttftMs > 0) parts.push(`ttft ${(this.#ttftMs / 1000).toFixed(1)}s`);
-		const children: NativeChild[] = [text([span(parts.join(" · "), "dim")])];
-		const tokPerSec = usageThroughput(usage, this.#durationMs);
-		if (tokPerSec !== undefined) {
-			children.push(
-				text([span(" · ", "dim")]),
-				node("rate", { value: Math.round(tokPerSec * 10) / 10, unit: "tok/s" }),
-			);
-		}
-		this.#nativeNode = row(children, {
+		this.#nativeNode = row([text(spans, { wrap: "word" })], {
 			role: "omp.usage.turn",
 			gap: "none",
 			align: "baseline",

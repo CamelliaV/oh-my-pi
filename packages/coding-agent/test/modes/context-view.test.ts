@@ -165,10 +165,20 @@ describe("context snapshot system prompt and skills", () => {
 		expect(text).toContain("Use <T> & {{literal}} without expansion");
 		const shared = computeSessionContextBreakdown(session).categories.find(category => category.id === "skills")!;
 		expect(shared.tokens).toBeGreaterThan(0);
-		expect(category(data, "skills")).toMatchObject({ entries: [], tokens: shared.tokens });
+		const skillsCategory = category(data, "skills");
+		expect(skillsCategory.tokens).toBe(shared.tokens);
+		expect(skillsCategory.entries).toHaveLength(1);
+		expect(skillsCategory.entries[0]).toMatchObject({
+			id: "skills/fixture",
+			label: "fixture",
+			text: "- fixture: Use <T> & {{literal}} without expansion",
+			path: "/nonexistent/SKILL.md",
+			loadOnOpen: true,
+		});
+		expect(skillsCategory.entries[0]!.tokens).toBeGreaterThan(0);
 		const fullPromptTokens = system.entries.reduce((sum, entry) => sum + entry.tokens, 0);
 		expect(system.tokens).toBe(fullPromptTokens - shared.tokens);
-		expect(system.tokens + category(data, "skills").tokens).toBe(fullPromptTokens);
+		expect(system.tokens + skillsCategory.tokens).toBe(fullPromptTokens);
 		expect(totalTokens(data)).toBe(fullPromptTokens + category(data, "built-in-tools").tokens);
 		expect(file).not.toHaveBeenCalled();
 		file.mockRestore();
@@ -195,6 +205,56 @@ describe("context snapshot system prompt and skills", () => {
 			tokens: 0,
 			entries: [{ id: "system-prompt/0", text: "", tokens: 0 }],
 		});
+	});
+
+	it("lists only skills rendered into block 0 and drops hidden ones", async () => {
+		const visible: Skill = {
+			name: "visible",
+			description: "Visible summary",
+			filePath: "/nonexistent/visible/SKILL.md",
+			baseDir: "/nonexistent/visible",
+			source: "user",
+		};
+		const hidden: Skill = {
+			name: "hidden",
+			description: "Hidden summary",
+			filePath: "/nonexistent/hidden/SKILL.md",
+			baseDir: "/nonexistent/hidden",
+			source: "user",
+			hide: true,
+		};
+		const built = await buildSystemPrompt({
+			cwd: import.meta.dir,
+			personality: "none",
+			activeRepoContext: null,
+			contextFiles: [],
+			skills: [visible, hidden],
+		});
+		const session = sessionWith({
+			prompt: [...built.systemPrompt],
+			skills: [visible, hidden],
+			tools: [tool("read")],
+		});
+		const entries = category(buildSessionContextView(session), "skills").entries;
+		expect(entries.map(entry => entry.label)).toEqual(["visible"]);
+		expect(entries[0]?.text).toBe("- visible: Visible summary");
+	});
+
+	it("omits Skills entries when no read tool can load a skill body", () => {
+		const session = sessionWith({
+			prompt: ["<skills>\n- fixture: summary\n</skills>"],
+			skills: [
+				{
+					name: "fixture",
+					description: "summary",
+					filePath: "/nonexistent/SKILL.md",
+					baseDir: "/nonexistent",
+					source: "user",
+				},
+			],
+			tools: [],
+		});
+		expect(category(buildSessionContextView(session), "skills")).toMatchObject({ tokens: 0, entries: [] });
 	});
 });
 

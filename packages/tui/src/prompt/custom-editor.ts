@@ -1231,7 +1231,7 @@ export class CustomEditor extends Editor {
 		const layout: NativeEditorLayout = {
 			role: shell ? `omp.editor.${shell.kind}` : "omp.editor",
 			tone: state.running ? "pending" : undefined,
-			children: compact([facts?.context, controls.focus, chips, line, bar]),
+			children: compact([facts?.context, facts?.sessionUsage, controls.focus, chips, line, bar]),
 			caret: "line/input",
 		};
 		this.#nativeComposer = { key, facts, chips, input, rate, controls, bar, layout };

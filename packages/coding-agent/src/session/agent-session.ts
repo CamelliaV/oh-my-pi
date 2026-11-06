@@ -168,6 +168,7 @@ import { createExtensionModelQuery } from "../extensibility/extensions/model-api
 import type { CompactOptions, ContextUsage } from "../extensibility/extensions/types";
 import type { CustomCommandContext } from "../extensibility/custom-commands/types";
 import { SkillDescriptionCatalog } from "../extensibility/skill-descriptions";
+import { selectPromptSkills, type SkillCatalogPolicy } from "../extensibility/skill-search";
 import {
 	type BuiltSkillPromptMessage,
 	loadSkillPrompt,
@@ -7232,6 +7233,16 @@ export class AgentSession implements SettingsScope {
 		return this.#tools.setActiveToolsByName(toolNames);
 	}
 
+	/**
+	 * Installs a session-scoped system prompt override (e.g. a minimal explainer
+	 * session), replacing the generated work prompt for every turn of the current
+	 * transcript. `undefined` restores the generated base. Cleared by `/new`,
+	 * session switches, and tree navigation via `#clearSessionScopedToolState`.
+	 */
+	setSessionSystemPrompt(prompt: string[] | undefined): void {
+		this.#tools.setSessionSystemPromptOverride(prompt);
+	}
+
 	/** Restores an exact top-level versus `xd://` tool partition. */
 	setActiveToolPresentation(
 		toolNames: string[],
@@ -7738,6 +7749,7 @@ export class AgentSession implements SettingsScope {
 
 	/** Drop mutable tool decisions and directives owned by the previous logical session. */
 	#clearSessionScopedToolState(): void {
+		this.#tools.setSessionSystemPromptOverride(undefined);
 		this.agent.clearDeferredToolDirectives();
 		this.#toolChoiceQueue.clear();
 		this.#tools.clearAcpPermissionDecisions();
@@ -8834,7 +8846,10 @@ export class AgentSession implements SettingsScope {
 						this.#tools.setTurnSystemPromptOverride(result.systemPrompt, basePreparation.systemPrompt);
 					} else {
 						this.#tools.clearTurnSystemPromptOverride();
-						this.agent.setSystemPrompt(this.#tools.baseSystemPrompt);
+						// Apply the effective base, not the raw generated prompt: a
+						// session-scoped override (minimal explainer base) or a
+						// committed memory injection must survive the turn start.
+						this.#tools.applyBaseSystemPrompt();
 					}
 					return messages;
 				},
@@ -10709,12 +10724,17 @@ export class AgentSession implements SettingsScope {
 
 	/** Descriptions frozen when this session's system prompt was built. */
 	get renderedSkills(): readonly Skill[] {
+		if (this.skillCatalogPolicy.onDemand) return this.#skillDescriptions.rendered;
 		const skills = this.skills;
 		if (skills !== this.#promptSkillsSource) {
 			this.#promptSkillsSource = skills;
 			this.#promptSkills = this.#skillDescriptions.snapshot(skills);
 		}
 		return this.#promptSkills;
+	}
+
+	get skillCatalogPolicy(): SkillCatalogPolicy {
+		return this.#tools.skillCatalogPolicy;
 	}
 
 	/** Frozen skill-URI hint visibility snapshot (see {@link SessionTools.skillHintVisible}). */
@@ -11530,6 +11550,11 @@ export class AgentSession implements SettingsScope {
 			// directory set, not the previous session's — refresh before the next
 			// turn goes out.
 			resetCapabilities();
+			const skillPolicyChanged = this.#tools.resetSkillCatalogPolicy();
+			if (skillPolicyChanged || this.skillCatalogPolicy.onDemand) {
+				await this.refreshSkills();
+				await this.reconcileBuiltinTools({ refreshPrompt: false });
+			}
 			await this.refreshBaseSystemPrompt();
 
 			this.#reseedCostGate();
@@ -12007,7 +12032,11 @@ export class AgentSession implements SettingsScope {
 			// which the model can still reach a reader.
 			const hasSkillReader = this.getEnabledToolNames().some(name => toolReadsSkillUris(this.getToolByName(name)));
 			const renderedSkills = this.#skillDescriptions.render(
-				hasSkillReader ? this.skills.filter(skill => skill.hide !== true) : [],
+				selectPromptSkills(
+					hasSkillReader ? this.skills.filter(skill => skill.hide !== true) : [],
+					this.skillCatalogPolicy,
+					this.getActiveToolNames().includes("skill_search"),
+				),
 			);
 			// Hidden-only sessions have no catalog rows, but the notice template
 			// still carries the `skill://<name>` syntax the model needs: hidden

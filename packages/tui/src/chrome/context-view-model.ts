@@ -6,16 +6,14 @@ interface ContextCategoryDescriptor {
 	readonly label: string;
 	/** Overview row label when the Overview weight differs from the category's content. */
 	readonly overviewLabel?: string;
-	/** Listed with its weight but never opened. */
-	readonly openable?: false;
 }
 
 /** Context categories in display order. */
 export const CONTEXT_CATEGORIES = [
 	// The Overview weight excludes the Skills listing; content views keep complete system blocks.
 	{ id: "system-prompt", label: "System Prompt", overviewLabel: "System Prompt (excluding Skills)" },
-	// An estimate of the prompt's skill listing, without entries of its own.
-	{ id: "skills", label: "Skills", openable: false },
+	// Entries carry each rendered `- name: description` line; opening one loads its skill body.
+	{ id: "skills", label: "Skills" },
 	{ id: "built-in-tools", label: "Built-in Tools" },
 	{ id: "custom-tools", label: "Custom Tools" },
 	{ id: "user-messages", label: "User / Developer Messages" },
@@ -31,7 +29,7 @@ const DESCRIPTORS_BY_ID = new Map<ContextCategoryId, ContextCategoryDescriptor>(
 	CONTEXT_CATEGORIES.map(descriptor => [descriptor.id, descriptor]),
 );
 
-/** Descriptor of a category id: its label, optional Overview label, and whether it can be opened. */
+/** Descriptor of a category id: its label and optional Overview label. */
 export function contextCategoryDescriptor(id: ContextCategoryId): ContextCategoryDescriptor {
 	return DESCRIPTORS_BY_ID.get(id)!;
 }
@@ -55,6 +53,11 @@ export interface ContextViewEntry {
 	readonly info?: string;
 	readonly timestamp?: number;
 	readonly callId?: string;
+	/**
+	 * Activation asks the viewer's host loader for the full content instead of
+	 * opening `text`. The entry preview stays `text` (the catalog line).
+	 */
+	readonly loadOnOpen?: boolean;
 }
 
 export interface ContextViewCategory {

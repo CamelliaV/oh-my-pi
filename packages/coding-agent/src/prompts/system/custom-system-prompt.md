@@ -13,6 +13,9 @@ If a skill applies, you MUST read `skill://<name>` before proceeding.
 {{/list}}
 </skills>
 {{/if}}
+{{#has tools "skill_search"}}
+Other local skills are available through `skill_search`. Search relevant keywords before using an existing procedure; read a matching `skill://` result before applying it. An empty query browses the catalog.
+{{/has}}
 {{#if hasSkillUriAccess}}
 {{#unless skills.length}}
 Loaded skills remain addressable as `skill://<name>`.

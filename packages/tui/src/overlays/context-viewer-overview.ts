@@ -110,14 +110,13 @@ export function buildOverviewRows(
 ): OverviewRow[] {
 	const rows: Omit<OverviewRow, "tokenColumn" | "shareColumn">[] = [];
 	for (const category of data.categories) {
-		const openable = contextCategoryDescriptor(category.id).openable !== false;
 		rows.push({
 			key: category.id,
 			id: category.id,
 			label: overviewLabel(category),
 			tokens: allocation?.get(category),
 			// Empty categories have nothing to open.
-			category: openable && category.entries.length > 0 ? category : undefined,
+			category: category.entries.length > 0 ? category : undefined,
 		});
 		for (const child of category.children ?? [])
 			rows.push({
@@ -125,7 +124,7 @@ export function buildOverviewRows(
 				id: category.id,
 				label: child.label,
 				tokens: allocation?.get(child),
-				category: openable ? child : undefined,
+				category: child,
 				child: true,
 			});
 	}

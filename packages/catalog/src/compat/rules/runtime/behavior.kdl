@@ -468,6 +468,11 @@ behavior {
 		model "opus-4-8"
 		model "opus-4.8"
 	}
+	role-defaults "explainer" {
+		model "aistudio/gemini-3.8-flash"
+		model "google-antigravity/gemini-3.8-flash"
+		model "gemini-3.8-flash"
+	}
 	role-defaults "image" {
 		model "openai/gpt-image-2"
 		model "openai-codex/gpt-image-2"

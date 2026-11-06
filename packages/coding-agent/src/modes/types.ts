@@ -541,6 +541,8 @@ export interface InteractiveModeContext {
 	handleClearCommand(): Promise<void>;
 	/** User-initiated `/new`: {@link handleClearCommand} plus the `plan.defaultOnStartup` default. */
 	handleNewCommand(): Promise<void>;
+	/** `/explain`: start a persisted explainer session seeded with the current transcript tail. */
+	handleExplainCommand(focus?: string): Promise<void>;
 	handleFreshCommand(): Promise<void>;
 	handleResetContextCommand(): Promise<void>;
 	handleDeleteCommand(): Promise<void>;

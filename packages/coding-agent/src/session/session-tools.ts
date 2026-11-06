@@ -16,6 +16,7 @@ import { type EvalPreludeDefinition, evalPreludeSummary } from "../eval/preludes
 import { isEvalBridgeToolCallable } from "../eval/tool-bridge-policy";
 import { ExtensionToolWrapper } from "../extensibility/extensions/wrapper";
 import { loadSkills, type Skill, type SkillWarning, setActiveSkills } from "../extensibility/skills";
+import { snapshotSkillCatalogPolicy, type SkillCatalogPolicy } from "../extensibility/skill-search";
 import { type LocalProtocolOptions } from "../internal-urls";
 import { stripXdUrlPrefix, XD_URL_PREFIX } from "@oh-my-pi/pi-tui/tools/xd-url";
 import { deduplicateMCPToolsByName, resolveMCPToolAlias } from "../mcp/tool-bridge";
@@ -426,6 +427,12 @@ export class SessionTools {
 	#runtimeSelectedToolNames: ReadonlySet<string> | undefined;
 	#baseSystemPrompt: string[];
 	/**
+	 * Session-scoped system prompt override (e.g. a minimal explainer base).
+	 * Takes precedence over the generated base for every turn in the current
+	 * transcript, and is cleared by the session-scoped reset paths.
+	 */
+	#sessionSystemPromptOverride: string[] | undefined;
+	/**
 	 * Per-turn system prompt returned by a `before_agent_start` extension hook
 	 * ("replace the system prompt for this turn"). While set, base-prompt
 	 * rebuilds keep this override on the agent instead of the rebuilt base, so a
@@ -496,6 +503,7 @@ export class SessionTools {
 	#listInjectableBuiltinToolNames: SessionToolsOptions["listInjectableBuiltinToolNames"];
 	#reconcileSettingsGatedTools: SessionToolsOptions["reconcileSettingsGatedTools"];
 	#skills: Skill[];
+	#skillCatalogPolicy: SkillCatalogPolicy;
 	#skillWarnings: SkillWarning[];
 	#skillsSettings: SkillsSettings | undefined;
 	#skillsReloadable: boolean;
@@ -557,6 +565,7 @@ export class SessionTools {
 				? { reply: restoredReply, promptDigest: restoredPromptDigest }
 				: undefined;
 		this.#skills = options.skills ?? [];
+		this.#skillCatalogPolicy = snapshotSkillCatalogPolicy(host.settings);
 		this.#skillWarnings = options.skillWarnings ?? [];
 		this.#skillsSettings = options.skillsSettings;
 		this.#skillsReloadable = options.skillsReloadable ?? true;
@@ -588,6 +597,11 @@ export class SessionTools {
 		this.#baseSystemPrompt = prompt;
 	}
 
+	/** Applies the current base prompt to the agent, preserving an active per-turn override. */
+	applyBaseSystemPrompt(): void {
+		this.#applyAgentSystemPrompt(this.#baseSystemPrompt);
+	}
+
 	/**
 	 * Pushes `base` to the agent as the effective system prompt, unless an active
 	 * per-turn {@link #turnSystemPromptOverride} takes precedence. Every base
@@ -595,7 +609,17 @@ export class SessionTools {
 	 * override.
 	 */
 	#applyAgentSystemPrompt(base: string[]): void {
-		this.#host.agent.setSystemPrompt(this.#turnSystemPromptOverride ?? base);
+		this.#host.agent.setSystemPrompt(this.#turnSystemPromptOverride ?? this.#sessionSystemPromptOverride ?? base);
+	}
+
+	/**
+	 * Installs a session-scoped system prompt override; `undefined` restores the
+	 * generated base. Unlike the per-turn hook override this survives turns and
+	 * base rebuilds until the next session-scoped reset.
+	 */
+	setSessionSystemPromptOverride(prompt: string[] | undefined): void {
+		this.#sessionSystemPromptOverride = prompt;
+		this.#applyAgentSystemPrompt(this.#baseSystemPrompt);
 	}
 
 	/**
@@ -614,7 +638,8 @@ export class SessionTools {
 	 * per-turn override, else the prompt itself, since every other prompt applied to the agent is a base.
 	 */
 	baseOfSystemPrompt(prompt: string[]): string[] {
-		return prompt === this.#lastTurnSystemPromptOverride?.prompt ? this.#lastTurnSystemPromptOverride.base : prompt;
+		if (prompt === this.#lastTurnSystemPromptOverride?.prompt) return this.#lastTurnSystemPromptOverride.base;
+		return prompt;
 	}
 
 	/** Drops the active per-turn override; later rebuilds fall back to the base prompt. */
@@ -625,6 +650,18 @@ export class SessionTools {
 	/** Skills currently rendered into the system prompt. */
 	get skills(): Skill[] {
 		return this.#skills;
+	}
+
+	get skillCatalogPolicy(): SkillCatalogPolicy {
+		return this.#skillCatalogPolicy;
+	}
+
+	/** Called only for /new; settings edits cannot rewrite an existing request prefix. */
+	resetSkillCatalogPolicy(): boolean {
+		const next = snapshotSkillCatalogPolicy(this.#host.settings);
+		if (Bun.deepEquals(next, this.#skillCatalogPolicy)) return false;
+		this.#skillCatalogPolicy = next;
+		return true;
 	}
 
 	/** Whether {@link refreshSkills} rediscovers the list; false when it was fixed at creation (a subagent's). */
@@ -638,7 +675,7 @@ export class SessionTools {
 		if (this.#host.agentKind() === "main") {
 			setActiveSkills(this.#skills);
 		}
-		await this.refreshBaseSystemPrompt();
+		if (!this.#skillCatalogPolicy.onDemand) await this.refreshBaseSystemPrompt();
 		this.#host.notifyCommandMetadataChanged();
 	}
 
@@ -2112,7 +2149,9 @@ export class SessionTools {
 					setActiveSkills(this.#skills);
 				}
 			}
-			await this.refreshBaseSystemPrompt();
+			// A stale skill:// read may rediscover files. In on-demand mode this must
+			// never rewrite the cached catalog or tool definitions.
+			if (!this.#skillCatalogPolicy.onDemand) await this.refreshBaseSystemPrompt();
 			this.#host.notifyCommandMetadataChanged();
 		});
 	}
@@ -2489,6 +2528,10 @@ export class SessionTools {
 		isCurrent: () => boolean,
 		signal?: AbortSignal,
 	): Promise<SystemPromptPreparation> {
+		// A session-scoped override is the whole provider-visible prompt for this
+		// transcript. Skip memory injection and base refreshes so they cannot
+		// reintroduce the generated work prompt underneath it.
+		if (this.#sessionSystemPromptOverride) return { systemPrompt: this.#sessionSystemPromptOverride };
 		const backend = await resolveMemoryBackend(this.#host.settings);
 		if (!isCurrent() || !backend.beforeAgentStartPrompt) return { systemPrompt: this.#baseSystemPrompt };
 

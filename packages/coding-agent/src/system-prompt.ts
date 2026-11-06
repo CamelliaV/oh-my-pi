@@ -27,6 +27,7 @@ import { type ContextFile, loadCapability, type SystemPrompt as SystemPromptFile
 import { expandAtImports } from "./discovery/at-imports";
 import type { EvalPreludeDefinition } from "./eval/preludes";
 import { SkillDescriptionCatalog } from "./extensibility/skill-descriptions";
+import { selectPromptSkills, type SkillCatalogPolicy } from "./extensibility/skill-search";
 import { loadSkills, type Skill } from "./extensibility/skills";
 import { InternalUrlRouter } from "./internal-urls/router";
 import type { SchemeHost } from "./internal-urls/types";
@@ -543,6 +544,8 @@ export interface BuildSystemPromptOptions {
 	skills?: readonly Skill[];
 	/** Session-scoped description snapshot; background cache writes apply only to the next session. */
 	skillDescriptions?: SkillDescriptionCatalog;
+	/** Session-frozen opt-in policy; omitted preserves the ordinary skill catalog. */
+	skillCatalogPolicy?: SkillCatalogPolicy;
 	/** Pre-loaded rulebook rules (descriptions, excluding TTSR and always-apply). */
 	rules?: Array<{ name: string; description?: string; path: string; globs?: string[] }>;
 	/** Intent field name injected into every tool schema. If set, explains the field in the prompt. */
@@ -970,7 +973,11 @@ export async function buildSystemPrompt(options: BuildSystemPromptOptions = {}):
 		outReplies,
 	};
 	const filteredSkills = (options.skillDescriptions ?? new SkillDescriptionCatalog()).render(
-		hasSkillReader ? skills.filter(skill => skill.hide !== true) : [],
+		selectPromptSkills(
+			hasSkillReader ? skills.filter(skill => skill.hide !== true) : [],
+			options.skillCatalogPolicy,
+			toolNames.includes("skill_search"),
+		),
 	);
 
 	const effectiveSystemPromptCustomization = dedupePromptSource(systemPromptCustomization, [

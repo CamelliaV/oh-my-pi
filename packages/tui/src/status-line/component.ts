@@ -3775,11 +3775,30 @@ export class StatusLineComponent<TSession extends StatusLineSession = StatusLine
 
 		const dim = this.#focusedAgentId !== undefined;
 		const facts: NativeNode[] = [];
+		let sessionUsage: NativeNode | undefined;
 		const collect = (side: "left" | "right", ids: readonly StatusLineSegmentId[]): void => {
 			ids.forEach((id, index) => {
 				if (COMPOSER_HOMED_SEGMENTS[id]) return;
 				const view = describeSegment(id, ctx);
 				if (!view) return;
+				// The strip is one row: the cumulative metrics are far wider than its
+				// space next to the model chip, and Tern collapses the whole segment to
+				// zero instead of truncating. Give them their own wrapping row.
+				if (id === "session_usage") {
+					const parts = view.spans.map(part => (dim ? { ...part, s: part.s ? `${part.s} dim` : "dim" } : part));
+					sessionUsage ??= node(
+						"text",
+						{
+							role: "omp.composer.session-usage",
+							spans: parts.flatMap((part, partIndex) => (partIndex === 0 ? [part] : [span("  "), part])),
+							wrap: "word",
+							...(view.title ? { title: view.title } : {}),
+						},
+						undefined,
+						"session-usage",
+					);
+					return;
+				}
 				const props: TspProps<"seg"> = {
 					role: "omp.composer.fact",
 					priority:
@@ -3885,6 +3904,7 @@ export class StatusLineComponent<TSession extends StatusLineSession = StatusLine
 			model: describeSegment("model", modelCtx) ?? { spans: [] },
 			extras: node("status", { role: "omp.composer.extras", transparent: true, grow: 1 }, facts, "extras"),
 			usage,
+			...(sessionUsage ? { sessionUsage } : {}),
 		};
 	}
 

@@ -59,6 +59,11 @@ import {
 
 type ViewState = "overview" | "category" | "entry";
 
+/** Full content the host loads when a `loadOnOpen` entry is activated. */
+export interface ContextEntryContent {
+	readonly text: string;
+}
+
 /** Rows of one entry inside the ANSI category preview. */
 interface EntryRange {
 	start: number;
@@ -81,6 +86,8 @@ export class ContextViewer implements Component {
 	readonly #close: () => void;
 	readonly #requestRender: () => void;
 	readonly #getRows: () => number;
+	/** Host loader for entries whose content lives outside the snapshot (skill bodies). */
+	readonly #loadContent: ((entry: ContextViewEntry) => Promise<ContextEntryContent | undefined>) | undefined;
 	/** Attributed usage when it can be drawn against the window (meter and map). */
 	readonly #drawableAllocation: ReadonlyMap<ContextViewCategory, number> | undefined;
 	readonly #meter: readonly NativeNode[] | undefined;
@@ -99,6 +106,10 @@ export class ContextViewer implements Component {
 	#entry: ContextViewEntry | undefined;
 	/** Back target of the entry state; single-entry categories open straight from Overview. */
 	#entryParent: "overview" | "category" = "overview";
+	/** Loaded body for a `loadOnOpen` entry; the static text is used when absent. */
+	#loadedEntry: { entry: ContextViewEntry; loading: boolean; text?: string; error?: string } | undefined;
+	/** Discards in-flight loader results after Back/Close/open-another-entry. */
+	#loadToken = 0;
 	#disposed = false;
 
 	// Layout shared by both backends.
@@ -145,13 +156,19 @@ export class ContextViewer implements Component {
 
 	constructor(
 		data: ContextViewData,
-		options: { onClose: () => void; requestRender: () => void; getRows: () => number },
+		options: {
+			onClose: () => void;
+			requestRender: () => void;
+			getRows: () => number;
+			loadContent?: (entry: ContextViewEntry) => Promise<ContextEntryContent | undefined>;
+		},
 	) {
 		ensureThemeSync();
 		this.#data = data;
 		this.#close = options.onClose;
 		this.#requestRender = options.requestRender;
 		this.#getRows = options.getRows;
+		this.#loadContent = options.loadContent;
 		const { breakdown } = data;
 		this.#modelLabel = safeText(breakdown.model?.name ?? breakdown.model?.id ?? "no model");
 		const window = breakdown.contextWindow;
@@ -195,6 +212,8 @@ export class ContextViewer implements Component {
 
 	dispose(): void {
 		this.#disposed = true;
+		this.#loadToken++;
+		this.#loadedEntry = undefined;
 		this.#nativePreviewCache = undefined;
 		this.#resetEntryLayout();
 		this.#overviewScroll.dispose();
@@ -276,16 +295,49 @@ export class ContextViewer implements Component {
 			this.#nativePreviewRevealAt = "nearest";
 			this.#ansiPreviewCache = undefined;
 			this.#ansiPreviewScroll.scrollToTop();
-			if (this.#category.entries.length === 1) this.#openEntry(this.#category.entries[0]!, "overview");
-			else this.#state = "category";
+			if (this.#category.entries.length === 1) {
+				const entry = this.#category.entries[0]!;
+				if (entry.loadOnOpen && this.#loadContent) void this.#openLoadedEntry(entry, "overview");
+				else this.#openEntry(entry, "overview");
+			} else this.#state = "category";
 		} else if (this.#state === "category") {
 			const entry = this.#entrySelection.selectedItem;
 			if (!entry) return;
-			this.#openEntry(entry, "category");
+			if (entry.loadOnOpen && this.#loadContent) void this.#openLoadedEntry(entry, "category");
+			else this.#openEntry(entry, "category");
 		}
 	}
 
+	/** Open the entry immediately, then replace its snapshot text with the loaded body. */
+	async #openLoadedEntry(entry: ContextViewEntry, parent: "overview" | "category"): Promise<void> {
+		this.#openEntry(entry, parent);
+		const token = ++this.#loadToken;
+		this.#loadedEntry = { entry, loading: true };
+		this.#resetEntryLayout();
+		this.#requestRender();
+		let content: ContextEntryContent | undefined;
+		try {
+			content = await this.#loadContent!(entry);
+		} catch (error) {
+			if (token !== this.#loadToken || this.#entry !== entry || this.#disposed) return;
+			this.#loadedEntry = {
+				entry,
+				loading: false,
+				error: `Failed to load content: ${error instanceof Error ? error.message : String(error)}`,
+			};
+			this.#resetEntryLayout();
+			this.#requestRender();
+			return;
+		}
+		if (token !== this.#loadToken || this.#entry !== entry || this.#disposed) return;
+		this.#loadedEntry = content ? { entry, loading: false, text: content.text } : undefined;
+		this.#resetEntryLayout();
+		this.#requestRender();
+	}
+
 	#openEntry(entry: ContextViewEntry, parent: "overview" | "category"): void {
+		this.#loadToken++;
+		this.#loadedEntry = undefined;
 		this.#entry = entry;
 		this.#entryParent = parent;
 		this.#resetEntryLayout();
@@ -296,6 +348,8 @@ export class ContextViewer implements Component {
 
 	#back(): void {
 		if (this.#state === "entry") {
+			this.#loadToken++;
+			this.#loadedEntry = undefined;
 			this.#state = this.#entryParent;
 			if (this.#entryParent === "category") this.#nativePreviewRevealAt = "start";
 			this.#entry = undefined;
@@ -378,11 +432,17 @@ export class ContextViewer implements Component {
 
 	#entryBodyText(): string {
 		const entry = this.#entry!;
-		if (this.#entryBodyCache?.entry !== entry) {
-			this.#entryBodyCache = { entry, text: safeContent(entry.text.trimEnd()) };
+		const loaded = this.#loadedEntry;
+		let text: string;
+		if (loaded?.entry === entry && loaded.loading) text = "Loading…";
+		else if (loaded?.entry === entry && loaded.error !== undefined) text = loaded.error;
+		else if (loaded?.entry === entry && loaded.text !== undefined) text = safeContent(loaded.text.trimEnd());
+		else text = safeContent(entry.text.trimEnd());
+		if (this.#entryBodyCache?.entry !== entry || this.#entryBodyCache.text !== text) {
+			this.#entryBodyCache = { entry, text };
 			this.#ansiEntryLayoutWidth = undefined;
 		}
-		return this.#entryBodyCache.text;
+		return text;
 	}
 
 	#resetEntryLayout(): void {

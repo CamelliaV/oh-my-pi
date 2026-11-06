@@ -2236,3 +2236,104 @@ fuzzyMatchResumableSessions 4, listPinnedForPicker 4, formatIntentText 3,
 getPromptSnapshot 10, resume=1, wasmGrammarFor 4, CJK escapes 14),
 `gallery --surface tool --tool read` renders 8.3 KB, a live `-p` turn answers,
 and the TUI boots to the v18.15.0 what's-new card.
+
+v18.15.0→v18.16.0 (2026-11-01 → 11-02) — one release, 467 files (439 changed /
+27 added / 1 deleted), all five packages bumped to 18.16.0. Headline upstream
+changes: the SQLite OFD-lock shim (`installSqliteLockShim`/`heldFileKind`,
+`crates/pi-natives/src/held_files/`) that stops `grep`/`read`/bash/eval from
+corrupting a live `agent.db`; date/cwd reminder journaling
+(`session/date-cwd-reminder.ts`), so a resumed session or woken subagent sends
+its earlier turns with the reminder they were sent with — Claude keeps its
+thinking and the prompt cache across a day rollover; streamed `--export`
+(`export/html/payload.ts`, no more OOM on subagent-heavy sessions); read/write
+truncation correctness (column-capped lines count their shown width against the
+page budget; `write` refuses an incomplete read projection); a browser-relay
+batch (per-agent tab ownership, `persist: true` survives session end,
+button/count clicks, 60 s protocol timeout); the two-pass resume picker
+(`PickerListing`, history.db title index, `readSessionInfo`); Hindsight
+`scope: "global"`; Scaleway provider + Mistral Vibe login; and the TUI status
+glyph unification (`buildExecutionFrame` owns the loader in `bottomBorder`,
+`buildStatusFooter` loses `status`/`exitCode`, `Editor.prediction` →
+`predictions`, every finished state shows the success glyph).
+
+Seventeen conflicts — three generated, fourteen source:
+
+1. `coding-agent/tools/{memory-retain,memory-recall,memory-reflect,learn}.ts`,
+   `hindsight/state.ts`, `hindsight/backend.ts` — the fork's
+   `createToolMemoryRuntimeContext` architecture kept; upstream's global-scope
+   semantics adopted: `isGlobalMemoryScopeAvailable(session)` from
+   `memory-backend/global-scope.ts`, per-backend pre-checks
+   (`getGlobalRetainTarget` / `assertGlobalRetainAvailable`) that keep the
+   precise rejection messages, and the hindsight backend's `save` now forwards
+   `scope` instead of throwing. The fork's `redactSecretFields`/`redactSecrets`
+   pass survives inside the new grouped flush; `enqueueRetain` takes the scope.
+   `memory-tools.test.ts`'s `makeSession` regained the top-level
+   `getHindsightSessionState`/`getMnemopiSessionState` accessors the upstream
+   tests call through.
+2. `coding-agent/main.ts`, `session/session-listing.ts`,
+   `session/session-manager.ts`, `tui/apps/session-picker.ts`,
+   `tui/overlays/session-selector.ts`, `tui/test/session-picker-native.test.ts`
+   — the fork's pinned/hidden scopes and fuzzy resume merged onto the two-pass
+   API: `listForPicker`/`listAllForPicker` return `PickerListing` and wrap both
+   passes with `filterOutHiddenSessions`; `listPinnedForPicker`/
+   `listHiddenForPicker` kept; `loadAllSessions` typed
+   `Promise<SessionListing<T>>`; the constructor keeps `initialScope` while
+   adopting `#awaitComplete`/`#refreshShownScope`/`#withEdits` (extended to the
+   hidden/pinned caches), `refreshSessions` beside `setEmptyHint`, and
+   `#deletedPaths`/`#renamedTitles` beside `#hiddenSessions`/`#pinnedSessions`.
+   `#folderShowCwd` is upstream's method now; the fork's field uses became
+   calls. The pinned-picker test reads `.sessions`.
+3. `tui/chat/read-tool-group.ts`, `tui/tools/lsp.ts`, `tui/tools/task.ts` —
+   import unions (`formatIntentText` + `formatStatusIcon`, one duplicate
+   `formatStatusIcon` dropped); lsp keeps the fork's
+   `parseDiagnosticItems`/`getDiagnosticDetailLines` path and drops upstream's
+   duplicate `request`/`action` declarations; task keeps
+   `SubagentExecutionState` and drops the now-unused `isRecord`.
+4. `ai/providers/openai-reasoning-fallback.ts` — the zh rejection gate now uses
+   `RegExp.escape` (upstream removed the local `escapeRegExp` helper).
+5. `catalog/src/compat/rules.json` — took upstream, recompiled from the merged
+   KDL tree (`gen:compat`: 1142 rules / 21 classes / 91 catalog providers /
+   100 auth providers / 243 files); `providers.web.seed.models` and the
+   `role-defaults "web"` chain verified.
+6. `catalog/src/models.json` — upstream 18.16 bake **plus** the 103 fork-only
+   rows re-injected through `model-catalog-format`
+   (`openModelCatalog`/`encodeModelCatalog`, round-trip byte-identical on
+   upstream's file). The upstream bake lacks the fork engine's
+   `extraBetas`/`usageInputIncludesCache` on 690 Anthropic-wire rows (1380
+   parity diffs), so those two keys were re-baked from `resolveModelPolicy`;
+   end state 81 providers, `web` keeps 23 models including `grok`, and
+   **compat-parity is green (0 diffs)**.
+7. `export/html/viewer.generated.json` — regenerated
+   (`export-viewer-8ab4e06b…`, 770.2 KiB); the local Bun build differs from
+   upstream's committed asset even with identical collab-web sources, so the
+   locally generated manifest is what the repo check expects.
+
+The one upstream deletion (`packages/agent/src/compaction/prompts/
+file-operations.md`) is untouched fork territory. `bun.lock`/`Cargo.*` came in
+clean.
+
+Natives: ABI grew (`MacOSFrontApp`/`keepInFront`, `heldFileKind`/
+`HeldFileKind`, `installSqliteLockShim`, the new
+`@oh-my-pi/pi-natives/sqlite-locks` subpath) and the Rust graph moved
+(`keys.rs` kitty `CSI P/Q/S`, `desktop/front_app.rs`, `held_files/`, `lib.rs`).
+Materialized from the official v18.16.0 binary's extraction (modern only),
+copied to BOTH slots and stamped 18.16.0.
+
+Verification: `check:ts` 0 errors, formatting clean. `packages/catalog` 1315
+pass / 0 fail. `packages/ai` Anthropic suites 182 pass / 0 fail; zh
+reasoning-fallback driver 6/6. Memory tools 101 pass; autolearn + message
+pipeline 132 pass; skill-on-demand 8 pass; slash-commands/pin/inject/explain,
+context-viewer and web/search 301 pass; picker suites 21 pass; shell
+history/autocomplete + uri-list paste 37 pass; 18.16's own regression files 57
+pass. `packages/agent` 845 pass / 1 fail and `packages/tui` 4283 pass / 9 fail
+— every failure byte-identical on the pre-merge snapshot worktree, so no
+net-new regressions. Binary built and installed (`omp/18.16.0`), `--smoke-test:
+ok`, marker probe (uri-list 5, fuzzyMatchResumableSessions 4, wasmGrammarFor 4,
+resume=1, CJK escapes 14, installSqliteLockShim 6, setEmptyHint 6,
+skillCatalogPolicy 12), and the TUI boots to the v18.16.0 what's-new card.
+
+The branch also carries the author's uncommitted worktree as `9308e42109`
+("wip: patches 46-48 and Tern composer usage work") so the merge could run on a
+clean tree; the 9 pre-existing TUI failures live in that work (usage-row span
+shape, user-bubble emergency rows, markdown link fragments, web-search elapsed
+row, agent-hub snapshot aging), not in the merge.

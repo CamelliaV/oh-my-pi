@@ -274,7 +274,11 @@ import { AttachmentChipsBand } from "@oh-my-pi/pi-tui/prompt/attachment-chips";
 import type { BashExecutionComponent } from "@oh-my-pi/pi-tui/chat/bash-execution";
 import { ChatBlock, type ChatBlockHost } from "@oh-my-pi/pi-tui/chrome/chat-block";
 import { CodexResetFireworksController } from "@oh-my-pi/pi-tui/overlays/codex-reset-fireworks";
-import { type ComposerNativeState, CustomEditor } from "@oh-my-pi/pi-tui/prompt/custom-editor";
+import {
+	type ComposerChipDescriptor,
+	type ComposerNativeState,
+	CustomEditor,
+} from "@oh-my-pi/pi-tui/prompt/custom-editor";
 import { DynamicBorder } from "@oh-my-pi/pi-tui/chrome/dynamic-border";
 import { EditorTopGap } from "@oh-my-pi/pi-tui/prompt/editor-top-gap";
 import { ErrorBannerComponent } from "@oh-my-pi/pi-tui/overlays/error-banner";
@@ -2230,7 +2234,12 @@ export class InteractiveMode implements InteractiveModeContext {
 		this.hookWidgetContainerAbove.addChild(new EditorTopGap(() => this.statusRowOccupied));
 		this.hookWidgetContainerBelow = new Container();
 		this.attachmentChipsContainer = new Container();
-		const attachmentChips = new AttachmentChipsBand(this.editor, this.ui.imageBudget, () => this.ui.requestRender());
+		const attachmentChips = new AttachmentChipsBand(
+			() => this.editor,
+			this.ui.imageBudget,
+			() => this.ui.requestRender(),
+			chip => this.previewComposerPaste(chip),
+		);
 		this.attachmentChipsContainer.addChild(attachmentChips);
 		this.editor.attachmentChips = attachmentChips;
 		// Restored drafts (esc-esc, /tree, branch) re-materialize chip links off the render
@@ -9475,6 +9484,19 @@ export class InteractiveMode implements InteractiveModeContext {
 
 	showCommandReport(options: { title: string; head?: TspText; body: Component }): void {
 		this.#commandController.showCommandReport(options);
+	}
+
+	/** A click on a composer paste chip: the full text in the read-only report sheet. */
+	previewComposerPaste(chip: Extract<ComposerChipDescriptor, { kind: "paste" }>): void {
+		const { n, text } = chip;
+		this.showCommandReport({
+			title: `Paste #${n}`,
+			head: [
+				span(`Paste #${n}`, "strong"),
+				span(` · ${text.lineCount} ${text.lineCount === 1 ? "line" : "lines"} · ${text.charCount} chars`, "muted"),
+			],
+			body: new Text(text.content, 0, 0),
+		});
 	}
 
 	dismissCommandReport(): boolean {

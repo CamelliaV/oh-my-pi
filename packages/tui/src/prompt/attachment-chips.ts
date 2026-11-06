@@ -13,21 +13,33 @@ import {
 } from "../index";
 import { fileHyperlink } from "../render/hyperlink";
 import { nativeImageNode } from "../native/blobs";
-import { node, row, span } from "../native/describe";
+import { node, propNode, row, span } from "../native/describe";
 import { plainText } from "../native/spans";
-import type { DescribeContext, NativeNode } from "../native/node";
+import { type DescribeContext, leafKey, type NativeNode, type NativeUiEvent } from "../native/node";
 import { convertImageToPng } from "../chat/image-loading";
 import { attachmentSgr } from "./composer-attachments";
 import { cachedImageDimensions, setCachedImageDimensions } from "./image-references";
 import { theme } from "../theme/theme";
 import type { ComposerChipDescriptor, CustomEditor, TextAttachment } from "./custom-editor";
 
-/** Chip card geometry (mirrors omp2): a 12x4 content area inside a 1-cell rounded border. */
-const INNER_COLS = 12;
-const INNER_ROWS = 4;
+/** ANSI card geometry: a 20x6 content area inside a 1-cell rounded border. The native describe
+ *  asks for a larger box still (see {@link NATIVE_*}); Tern's own CSS decides the final size. */
+const INNER_COLS = 20;
+const INNER_ROWS = 6;
 const CARD_COLS = INNER_COLS + 2;
 const CARD_GAP = 2;
 const RESET_FG = "\x1b[39m";
+/** Native paste preview: the card is a media tile, not a 1-cell token, so it carries enough
+ *  rows/columns to read at a glance. Both bounds also cap the frame bytes for a huge paste. */
+const NATIVE_PASTE_LINES = 6;
+const NATIVE_PASTE_COLS = 60;
+/** Hovercard preview: a quick read of the head of the paste, bounded so a multi-MB paste
+ *  never rides every describe frame. */
+const HOVER_PREVIEW_LINES = 16;
+const HOVER_PREVIEW_COLS = 120;
+const HOVER_PREVIEW_CHARS = 4000;
+/** Native image preview extent; Tern's chip CSS clamps it to the card's media box. */
+const NATIVE_IMAGE_MAX = { w: "32ch", h: "12lines" } as const;
 /** Symbol-keyed PNG conversion cache on the draft image (same pattern as the dimension
  *  probe cache): Kitty's `f=100` transmit accepts only PNG, so non-PNG attachments
  *  (pastes are usually re-encoded JPEG/WebP) convert before transmit — the same pipeline
@@ -38,20 +50,54 @@ interface ImageContentWithPng extends ImageContent {
 	[kImagePng]?: ImageContent | null;
 }
 
+/** The leading `lines` rows of `content`, each cut to `cols` cells. Bounds both the visible
+ *  preview and the frame bytes for a huge paste (a single-line 1 MB paste otherwise rides
+ *  every describe frame whole). */
+function previewText(content: string, lines: number, cols: number): string {
+	const out: string[] = [];
+	for (const line of plainText(content).split("\n", lines + 1)) {
+		if (out.length >= lines) break;
+		out.push(line.length > cols ? line.slice(0, cols) : line);
+	}
+	return out.join("\n");
+}
+
+/** Wide hover preview of a staged paste: size, the head of the text, and what is left out. */
+function pasteHovercard(text: TextAttachment): NativeNode {
+	const shown = previewText(text.content, HOVER_PREVIEW_LINES, HOVER_PREVIEW_COLS).slice(0, HOVER_PREVIEW_CHARS);
+	const shownLines = shown === "" ? 0 : shown.split("\n").length;
+	const remaining = text.lineCount - shownLines;
+	const children: NativeNode[] = [
+		node("text", { spans: [span(`${text.lineCount} lines · ${text.charCount} chars`, "muted")], wrap: "none" }),
+		node("text", { spans: [span(shown, "mono")], wrap: "word", lines: HOVER_PREVIEW_LINES }),
+	];
+	if (remaining > 0) {
+		children.push(node("text", { spans: [span(`+${remaining} more lines`, "dim")], wrap: "none" }));
+	}
+	return node("col", { role: "omp.composer.chip.preview", gap: "xs" }, children);
+}
+
 /**
  * The composer attachment band: one rounded card per staged attachment, rendered directly above
  * the prompt box. Image and video cards show a live thumbnail (Kitty Unicode placeholders — the only
  * protocol whose output is plain text cells and therefore composable inside a border row) with
  * the pixel dimensions as the bottom caption; text-paste cards show the leading snippet with a
- * `+N lines` / `N chars` caption. The top caption is the same `<icon> #N` token that sits in
- * the editor buffer, in the same identity color. Cards that no longer fit the terminal width
- * are omitted rather than wrapped. Renders to nothing while no attachment is staged.
+ * `+N lines` / `N chars` caption, a hovercard preview, and open their full text on click. The
+ * top caption is the same `<icon> #N` token that sits in the editor buffer, in the same
+ * identity color. Cards that no longer fit the terminal width are omitted rather than
+ * wrapped. Renders to nothing while no attachment is staged.
+ *
+ * The editor is read through a getter because `setEditorComponent` swaps the live editor
+ * (extensions, `/vim` toggles) while this band stays mounted in the dock; a captured editor
+ * would keep showing the pre-swap draft's chips. Paste cards hand their full text to the
+ * host's preview sheet on click.
  */
 export class AttachmentChipsBand implements Component {
 	constructor(
-		private readonly editor: CustomEditor,
+		private readonly getEditor: () => CustomEditor,
 		private readonly budget: ImageBudget,
 		private readonly requestRender: () => void,
+		private readonly onPreviewPaste?: (chip: Extract<ComposerChipDescriptor, { kind: "paste" }>) => void,
 	) {}
 
 	#native:
@@ -65,7 +111,7 @@ export class AttachmentChipsBand implements Component {
 	 * count. Hidden while nothing is staged.
 	 */
 	describe(_cx: DescribeContext): NativeNode {
-		const chips = this.editor.composerChips();
+		const chips = this.getEditor().composerChips();
 		if (this.#native?.chips === chips) return this.#native.node;
 		const cards: NativeNode[] = [];
 		const images = new Map<ImageContent, NativeNode>();
@@ -76,13 +122,18 @@ export class AttachmentChipsBand implements Component {
 			const title = `${icon} #${chip.n}`;
 			let content: NativeNode;
 			let caption: string;
+			let hovercard: NativeNode | undefined;
+			let actions: { click?: string } | undefined;
 			if (chip.kind === "paste") {
 				caption = chip.text.lineCount > 1 ? `+${chip.text.lineCount} lines` : `${chip.text.charCount} chars`;
 				content = node("text", {
-					spans: [span(plainText(chip.text.content.split("\n", 4).join("\n")), "muted")],
+					spans: [span(previewText(chip.text.content, NATIVE_PASTE_LINES, NATIVE_PASTE_COLS), "muted")],
 					wrap: "none",
-					lines: 4,
+					lines: NATIVE_PASTE_LINES,
+					max: { w: `${NATIVE_PASTE_COLS}ch` },
 				});
+				hovercard = pasteHovercard(chip.text);
+				actions = { click: "preview" };
 			} else {
 				const dims = this.#imageDims(chip.image);
 				caption = dims ? `${dims.width}x${dims.height}` : "";
@@ -95,9 +146,11 @@ export class AttachmentChipsBand implements Component {
 				content = node("image", {
 					...(native.k === "image" ? native.p : undefined),
 					alt: title,
+					title: "Click to zoom",
 					w: dims?.width,
 					h: dims?.height,
-					max: { w: "12ch", h: "4lines" },
+					max: NATIVE_IMAGE_MAX,
+					actions: { click: "zoom" },
 				});
 			}
 			const head =
@@ -105,7 +158,19 @@ export class AttachmentChipsBand implements Component {
 			const children: NativeNode[] = [content];
 			if (caption) children.push(node("text", { spans: [span(caption, "dim")], wrap: "none" }));
 			cards.push(
-				node("card", { role: "omp.composer.chip", tone: "accent", head }, children, `${chip.kind}:${chip.n}`),
+				node(
+					"card",
+					{
+						role: "omp.composer.chip",
+						tone: "accent",
+						head,
+						...(hovercard ? { hovercard: propNode(hovercard) } : {}),
+						...(actions ? { actions } : {}),
+						...(chip.kind === "paste" ? { title: "Click to preview" } : {}),
+					},
+					children,
+					`${chip.kind}:${chip.n}`,
+				),
 			);
 		}
 		const described = row(cards, { gap: "sm", wrap: true, role: "omp.composer.chips", hidden: cards.length === 0 });
@@ -113,10 +178,22 @@ export class AttachmentChipsBand implements Component {
 		return described;
 	}
 
+	/** Paste card click: open the full text in the host's read-only report sheet. */
+	handleNativeEvent(event: NativeUiEvent): void {
+		if (event.type !== "action" || event.act !== "preview") return;
+		const match = /^paste:(\d+)$/.exec(leafKey(event.key));
+		if (!match) return;
+		const n = Number(match[1]);
+		const chip = this.getEditor()
+			.composerChips()
+			.find(entry => entry.kind === "paste" && entry.n === n);
+		if (chip?.kind === "paste") this.onPreviewPaste?.(chip);
+	}
+
 	render(width: number): readonly string[] {
-		const chips = this.editor.composerChips();
+		const chips = this.getEditor().composerChips();
 		if (chips.length === 0) return [];
-		const rows = ["", "", "", "", "", ""];
+		const rows = Array.from({ length: INNER_ROWS + 2 }, () => "");
 		const gap = " ".repeat(CARD_GAP);
 		let x = 0;
 		for (const chip of chips) {

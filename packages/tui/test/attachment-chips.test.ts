@@ -8,6 +8,7 @@ import { setKittyGraphics } from "@oh-my-pi/pi-tui/kitty-graphics";
 import { getCellDimensions, ImageProtocol, setCellDimensions, TERMINAL } from "@oh-my-pi/pi-tui/terminal-capabilities";
 import { getAvailableSymbolPresets, SYMBOL_PRESETS } from "@oh-my-pi/pi-tui/theme/symbols";
 import { visibleWidth } from "@oh-my-pi/pi-tui/utils";
+import type { DescribeContext } from "@oh-my-pi/pi-tui/native/node";
 
 // 2x2 red PNG — real header so the band's dimension probe decodes 2x2.
 const TINY_PNG =
@@ -15,7 +16,14 @@ const TINY_PNG =
 
 function makeBand(): { editor: CustomEditor; band: AttachmentChipsBand } {
 	const editor = new CustomEditor(getEditorTheme());
-	return { editor, band: new AttachmentChipsBand(editor, new ImageBudget(8), () => {}) };
+	return {
+		editor,
+		band: new AttachmentChipsBand(
+			() => editor,
+			new ImageBudget(8),
+			() => {},
+		),
+	};
 }
 
 beforeAll(async () => {
@@ -28,13 +36,13 @@ describe("AttachmentChipsBand", () => {
 		expect(band.render(80)).toEqual([]);
 	});
 
-	it("renders a 6-row card with the chip token caption and paste line caption", () => {
+	it("renders an 8-row card with the chip token caption and paste line caption", () => {
 		const { editor, band } = makeBand();
 		editor.insertTextAttachment("line1\nline2\nline3");
 		const rows = band.render(80).map(Bun.stripANSI);
-		expect(rows).toHaveLength(6);
+		expect(rows).toHaveLength(8);
 		expect(rows[0]).toContain(chipLabel("paste", 1));
-		expect(rows[5]).toContain("+3 lines");
+		expect(rows[7]).toContain("+3 lines");
 		// Snippet: leading content rows inside the border rails.
 		expect(rows[1]).toContain("line1");
 		expect(rows[2]).toContain("line2");
@@ -44,13 +52,13 @@ describe("AttachmentChipsBand", () => {
 		const { editor, band } = makeBand();
 		editor.insertTextAttachment("x".repeat(42));
 		const rows = band.render(80).map(Bun.stripANSI);
-		expect(rows[5]).toContain("42 chars");
+		expect(rows[7]).toContain("42 chars");
 	});
 
 	it("hides the card once its inline token is deleted from the buffer", () => {
 		const { editor, band } = makeBand();
 		editor.insertTextAttachment("line1\nline2");
-		expect(band.render(80)).toHaveLength(6);
+		expect(band.render(80)).toHaveLength(8);
 		editor.setText("no token here");
 		expect(band.render(80)).toEqual([]);
 	});
@@ -61,11 +69,11 @@ describe("AttachmentChipsBand", () => {
 		editor.insertAtom(chipLabel("image", 1), "[Image #1, 2x2]");
 		editor.insertTextAttachment("hello");
 		const rows = band.render(80).map(Bun.stripANSI);
-		expect(rows).toHaveLength(6);
+		expect(rows).toHaveLength(8);
 		expect(rows[0]).toContain(chipLabel("image", 1));
 		expect(rows[0]).toContain(chipLabel("paste", 1));
-		expect(rows[5]).toContain("2x2");
-		expect(rows[5]).toContain("5 chars");
+		expect(rows[7]).toContain("2x2");
+		expect(rows[7]).toContain("5 chars");
 	});
 
 	it("renders a contact-sheet preview under a distinct video chip", () => {
@@ -78,17 +86,76 @@ describe("AttachmentChipsBand", () => {
 
 		expect(rows[0]).toContain(chipLabel("video", 1));
 		expect(rows[0]).not.toContain(chipLabel("image", 1));
-		expect(rows[5]).toContain("2x2");
+		expect(rows[7]).toContain("2x2");
 	});
 
 	it("omits cards that do not fit the terminal width instead of wrapping", () => {
 		const { editor, band } = makeBand();
 		editor.insertTextAttachment("first");
 		editor.insertTextAttachment("second");
-		// 14 cols per card + 2 gap: at width 20 only the first card fits.
-		const rows = band.render(20).map(Bun.stripANSI);
+		// 22 cols per card + 2 gap: at width 30 only the first card fits.
+		const rows = band.render(30).map(Bun.stripANSI);
 		expect(rows[0]).toContain(chipLabel("paste", 1));
 		expect(rows[0]).not.toContain(chipLabel("paste", 2));
+	});
+
+	it("describes a paste as a click-to-preview card with a bounded hovercard", () => {
+		const editor = new CustomEditor(getEditorTheme());
+		const previews: number[] = [];
+		const band = new AttachmentChipsBand(
+			() => editor,
+			new ImageBudget(8),
+			() => {},
+			chip => previews.push(chip.n),
+		);
+		editor.insertTextAttachment(`${"x".repeat(500)}\nsecond`);
+		// The band ignores the context while describing its own cards.
+		const root = band.describe({} as DescribeContext);
+		const card = root.c?.[0];
+		if (!card || !("k" in card) || card.k !== "card") throw new Error("expected a card");
+		expect(card.p?.actions).toEqual({ click: "preview" });
+		expect(card.p?.title).toBe("Click to preview");
+		const hovercard = card.p?.hovercard;
+		if (!hovercard || hovercard.k !== "col") throw new Error("expected a hovercard column");
+		const hoverBody = hovercard.c?.[1];
+		if (!hoverBody || !("k" in hoverBody) || hoverBody.k !== "text") throw new Error("expected hover text");
+		const hoverText = hoverBody.p?.spans?.[0]?.t ?? "";
+		expect(hoverText.split("\n")[0]).toHaveLength(120);
+		const preview = card.c?.[0];
+		if (!preview || !("k" in preview) || preview.k !== "text") throw new Error("expected preview text");
+		const previewText = preview.p?.spans?.[0]?.t ?? "";
+		expect(previewText.split("\n")[0]).toHaveLength(60);
+		expect(preview.p?.lines).toBe(6);
+		band.handleNativeEvent({ type: "action", key: "chips/paste:1", act: "preview", mods: [] });
+		expect(previews).toEqual([1]);
+	});
+
+	it("describes images as click-to-zoom with a larger media box", () => {
+		const { editor, band } = makeBand();
+		editor.pendingImages.push({ type: "image", data: TINY_PNG, mimeType: "image/png" });
+		editor.insertAtom(chipLabel("image", 1), "[Image #1, 2x2]");
+		const root = band.describe({} as DescribeContext);
+		const card = root.c?.[0];
+		if (!card || !("k" in card) || card.k !== "card") throw new Error("expected a card");
+		const image = card.c?.[0];
+		if (!image || !("k" in image) || image.k !== "image") throw new Error("expected an image");
+		expect(image.p?.actions).toEqual({ click: "zoom" });
+		expect(image.p?.max).toEqual({ w: "32ch", h: "12lines" });
+	});
+
+	it("follows the live editor across setEditorComponent swaps", () => {
+		let current = new CustomEditor(getEditorTheme());
+		const band = new AttachmentChipsBand(
+			() => current,
+			new ImageBudget(8),
+			() => {},
+		);
+		current.insertTextAttachment("old");
+		expect(band.render(80).length).toBeGreaterThan(0);
+		current = new CustomEditor(getEditorTheme());
+		expect(band.render(80)).toEqual([]);
+		current.insertTextAttachment("new");
+		expect(band.render(80).join("")).toContain("new");
 	});
 });
 
@@ -112,14 +179,14 @@ describe("AttachmentChipsBand — Kitty placeholder thumbnails", () => {
 			editor.pendingImages.push({ type: "image", data: header.toString("base64"), mimeType: "image/png" });
 			editor.insertAtom(chipLabel("image", 1), "[Image #1, 560x502]");
 			const rows = band.render(80);
-			expect(rows).toHaveLength(6);
+			expect(rows).toHaveLength(8);
 			// Thumbnail path actually engaged: the placement APC rides row 1.
 			expect(rows[1]).toContain("\x1b_Ga=p,U=1");
 			// Regression: the placement APC was counted as visible width, which
 			// dropped row 1's centering pad and painted its right border 3 cells
 			// inside the card. Every row must measure exactly the card width.
 			for (const row of rows) {
-				expect(visibleWidth(row)).toBe(14);
+				expect(visibleWidth(row)).toBe(22);
 			}
 		} finally {
 			mutable.imageProtocol = originalProtocol;
@@ -141,7 +208,11 @@ describe("AttachmentChipsBand — Kitty placeholder thumbnails", () => {
 			const editor = new CustomEditor(getEditorTheme());
 			const budget = new ImageBudget(8);
 			const repaint = Promise.withResolvers<void>();
-			const band = new AttachmentChipsBand(editor, budget, () => repaint.resolve());
+			const band = new AttachmentChipsBand(
+				() => editor,
+				budget,
+				() => repaint.resolve(),
+			);
 			editor.pendingImages.push({ type: "image", data: jpeg, mimeType: "image/jpeg" });
 			editor.insertAtom(chipLabel("image", 1), "[Image #1, 2x2]");
 			// Conversion in flight: icon fallback, nothing transmitted yet.

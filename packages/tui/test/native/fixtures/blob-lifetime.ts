@@ -19,7 +19,7 @@ function component(): Component {
 		const editor = new CustomEditor(getEditorTheme());
 		editor.pendingImages.push({ type: "image", data: PNG, mimeType: "image/png" });
 		editor.insertAtom(chipLabel("image", 1), "[Image #1, 1x1]");
-		return new AttachmentChipsBand(editor, new ImageBudget(8), () => {});
+		return new AttachmentChipsBand(() => editor, new ImageBudget(8), () => {});
 	}
 	const image = base64ImageNode(PNG, "image/png");
 	return { describe: () => image, render: () => [] };

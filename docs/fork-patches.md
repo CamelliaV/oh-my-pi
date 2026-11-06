@@ -1814,6 +1814,45 @@ dropped, `loadOnOpen`/path/text asserted), `tsc --noEmit` for both packages,
 `aistudio2api-linux-login` rendered its `SKILL.md` body (frontmatter omitted);
 Esc returned to the list with the selection preserved.
 
+## Patch 49: `feat(tui)` composer attachment chips become previewable media cards (2026-11-06)
+
+Tern's built-in `omp.composer.chip` CSS is a 44px pill: a 36x36 thumbnail, a
+paste preview at `5px/7px` (unreadable), and no way to see the rest. The
+omp-side describe now gives the terminal a real preview and an action path:
+
+- `AttachmentChipsBand` reads its editor through a getter, not a captured
+  instance. `setEditorComponent` swaps the live editor while the band stays
+  mounted in the dock; the captured editor left the band showing the
+  pre-swap draft's chips (extensions and editor swaps silently lost them).
+- Paste cards describe `lines: 6` × `max 60ch` (was 4 lines of the raw
+  content, unbounded per line — a 1 MB single-line paste rode every frame
+  whole), and carry a `hovercard` with up to 16 lines / 120 cols / 4,000
+  chars plus the omitted-line count.
+- Paste cards send `actions: { click: "preview" }`; `handleNativeEvent`
+  matches the card key (`paste:<n>`) and calls the host's
+  `onPreviewPaste`, wired in `interactive-mode` to `previewComposerPaste` →
+  the existing read-only `ReportPanel` (`Paste #N · N lines · N chars`).
+- Image/video cards describe `max 32ch × 12lines`, `title: "Click to zoom"`,
+  and an explicit `actions: { click: "zoom" }`.
+- ANSI cards grow from 12x4 to 20x6 (8 rows with borders), keeping the
+  non-TSP fallback legible; the paste snippet is now truncated per line.
+
+Tern cannot be changed from omp, so the card *layout* is a local theme sheet
+(`~/.config/tern/themes/kitty.css`, hot-reloaded): flex column card
+(300px × auto, max 340px), 13px head, full-width 112px media box,
+`max-height: 112px !important` to beat Tern's built-in `36px !important`
+image clamp, 10px/13px paste preview, 11px/14px caption. A backup is written
+beside the theme file. No Tern restart; the sheet reloads in ~1s.
+
+Verification: `bun test packages/tui/test/attachment-chips.test.ts` (13 pass;
+describe actions/hovercard bounds, editor-swap follow, 8-row ANSI geometry),
+`bun test packages/tui/test/native/blobs.test.ts` (22 pass), `tsgo --noEmit`
+for both packages. Tern headless (`tern serve` + a scratch extension staging
+one image + one 40-line paste): cards 300×144, image frame 234×112, paste
+text 234×77 at 10px/13px; hovercard 420×186; clicking the paste card opened
+the report sheet with the full text; clicking the image opened Tern's zoom
+viewer (86%). Screenshots under `target/shots/tern/serve/`.
+
 ## Upgrade chronicle (v18.3.2 → v18.12.3)
 
 Moved out of `AGENTS.md` on 2026-10-28: it is history, not policy, and cost

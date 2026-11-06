@@ -229,6 +229,7 @@ async function createContext() {
 		toolOutputExpanded: false,
 		settings: Settings.isolated(),
 		chatContainer: { children: [], setToolActivityVisible: vi.fn() },
+		pendingShellContainer: { children: [] },
 		handleHotkeysCommand: vi.fn(),
 		handlePlanModeCommand: vi.fn(),
 		handleNewCommand: vi.fn(),
@@ -411,6 +412,7 @@ describe("InputController keybinding setup", () => {
 		await Promise.resolve();
 
 		expect(spies.retry).toHaveBeenCalledTimes(1);
+		expect(spies.prompt).not.toHaveBeenCalled();
 		expect(editor.getText()).toBe("draft that should survive retry");
 	});
 
@@ -462,7 +464,7 @@ describe("InputController keybinding setup", () => {
 	});
 
 	it("keeps retry draft attachments after retry starts", async () => {
-		const { InputController, ctx, editor } = await createContext();
+		const { InputController, ctx, editor, spies } = await createContext();
 		const image: ImageContent = { type: "image", mimeType: "image/png", data: "abc" };
 		const controller = new InputController(ctx);
 
@@ -474,6 +476,7 @@ describe("InputController keybinding setup", () => {
 		editor.onRetry?.();
 		await Promise.resolve();
 
+		expect(spies.retry).toHaveBeenCalledTimes(1);
 		expect(ctx.editor.pendingImages).toEqual([image]);
 		expect(ctx.editor.pendingImageLinks).toEqual(["local://draft.png"]);
 		expect(editor.imageLinks).toEqual(["local://draft.png"]);
@@ -1432,7 +1435,7 @@ describe("InputController global editor actions", () => {
 
 	it("refuses Alt+G when collabGuest is active", async () => {
 		const context = await createContext();
-		context.ctx.collabGuest = {} as unknown as InteractiveModeContext["collabGuest"];
+		Object.assign(context.ctx, { collabGuest: {} });
 		const controller = new context.InputController(context.ctx);
 		controller.setupKeyHandlers();
 		const listeners = registeredInputListeners(context.spies.addInputListener);

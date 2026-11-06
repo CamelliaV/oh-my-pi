@@ -1,6 +1,6 @@
 import * as path from "node:path";
 import type { AsyncJob } from "../async/job-manager";
-import type { AgentRegistry } from "../registry/agent-registry";
+import type { AgentRegistryApi } from "../registry/agent-registry";
 import type { ToolSession } from "../tools";
 import { emitSubagentFrame } from "../utils/event-bus";
 import { createSubagentExecution, readSubagentExecution, type SubagentExecutionState } from "./execution-state";
@@ -51,7 +51,7 @@ export function publishSubagentProgress(
 
 /** Persist an owner-side recovery/delivery update without changing the child's process lifecycle. */
 export function recordSubagentExecution(
-	registry: AgentRegistry,
+	registry: AgentRegistryApi,
 	id: string,
 	execution: SubagentExecutionState,
 	expectedSessionFile?: string,
@@ -61,7 +61,7 @@ export function recordSubagentExecution(
 	const previous = ref.history?.execution;
 	if (previous && (previous.run > execution.run || previous.updatedAt > execution.updatedAt)) return false;
 	if (!registry.setHistory(id, { execution }, expectedSessionFile)) return false;
-	registry.get(id)?.session?.sessionManager?.appendCustomEntry("subagent-execution", execution);
+	registry.get(id)?.session?.sessionManager?.appendCustomEntry?.("subagent-execution", execution);
 	return true;
 }
 
@@ -83,7 +83,7 @@ export function subagentFailureFromJob(
 
 /** A delivery receipt acknowledges visibility, never understanding or acceptance by the parent. */
 export function markSubagentFailureDelivered(
-	registry: AgentRegistry,
+	registry: AgentRegistryApi,
 	failure: { id: string; execution: SubagentExecutionState } | undefined,
 ): void {
 	if (!failure) return;

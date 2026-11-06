@@ -6,6 +6,7 @@ import type { Model } from "@oh-my-pi/pi-ai";
 import { Agent } from "@oh-my-pi/pi-agent-core";
 import { createMockModel } from "@oh-my-pi/pi-ai/providers/mock";
 import { buildModel } from "@oh-my-pi/pi-catalog/build";
+import { Effort } from "@oh-my-pi/pi-catalog/effort";
 import { ModelRegistry } from "@oh-my-pi/pi-coding-agent/config/model-registry";
 import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import { dispatchRpcSkillPrompt } from "@oh-my-pi/pi-coding-agent/modes/rpc/rpc-mode";
@@ -27,14 +28,15 @@ import { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manage
 import { getBundledAgent } from "@oh-my-pi/pi-coding-agent/task/agents";
 import { removeWithRetries } from "@oh-my-pi/pi-utils";
 
-function model(provider: string, id: string, name: string): Model {
+function model(provider: string, id: string, name: string, efforts?: readonly Effort[]): Model {
 	return buildModel({
 		provider,
 		id,
 		name,
 		api: "openai-completions",
 		baseUrl: "https://example.com",
-		reasoning: false,
+		reasoning: efforts !== undefined,
+		...(efforts ? { thinking: { mode: "budget" as const, efforts } } : {}),
 		input: ["text"],
 		cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
 		contextWindow: 8192,
@@ -49,7 +51,13 @@ async function createTaggedSkill() {
 	return { dir, skill: { name: "test", filePath, baseDir: dir } };
 }
 
-const models = [model("a", "x", "X One"), model("b", "y", "Y"), model("c", "w", 'W "Three"')];
+const models = [
+	model("a", "x", "X One"),
+	model("b", "y", "Y"),
+	model("c", "w", 'W "Three"'),
+	model("d", "r", "R One", [Effort.Low, Effort.Medium, Effort.High, Effort.XHigh, Effort.Max]),
+	model("d", "r:max", "R Max"),
+];
 let auth: AuthStorage;
 let registry: ModelRegistry;
 let session: SessionManager;
@@ -324,48 +332,51 @@ describe("model mentions", () => {
 		expect(agents[0].systemPrompt).toBe(task.systemPrompt);
 	});
 
-	test("registers suffixed mentions, pins their level, and keeps literal tier ids intact", () => {
-		// A `:level` mention registers as its own pseudonym and pins the level
-		// for the spawned subagent (the executor prefers the explicit suffix).
-		expect(mentions.expandMentions("run ^a/x:xhigh and ^a/x and ^b/y:med")).toBe(
-			'run <model agent="m1" name="X One :xhigh"/> and <model agent="m2" name="X One"/> and <model agent="m3" name="Y :medium"/>',
+	test("registers a tagged effort as its own pseudonym under one canonical spelling", () => {
+		expect(mentions.expandMentions("^d/r:hi ^d/r ^d/r:auto ^d/r:high")).toBe(
+			'<model agent="m1" name="R One · high"/> <model agent="m2" name="R One"/> ' +
+				'<model agent="m2" name="R One"/> <model agent="m1" name="R One · high"/>',
 		);
 		expect(readModelMentions(session.getBranch())).toEqual([
-			{ agent: "m1", selector: "a/x:xhigh", name: "X One :xhigh" },
-			{ agent: "m2", selector: "a/x", name: "X One" },
-			{ agent: "m3", selector: "b/y:med", name: "Y :medium" },
+			{ agent: "m1", selector: "d/r:high", name: "R One · high", thinkingLevel: Effort.High },
+			{ agent: "m2", selector: "d/r", name: "R One" },
 		]);
-		expect(mentions.sessionAgents().map(agent => [agent.name, agent.model])).toEqual([
-			["m1", ["a/x:xhigh"]],
-			["m2", ["a/x"]],
-			["m3", ["b/y:med"]],
+		expect(mentions.sessionAgents().map(agent => [agent.name, agent.model, agent.thinkingLevel])).toEqual([
+			["m1", ["d/r:high"], Effort.High],
+			["m2", ["d/r"], "auto"],
 		]);
-		// Unknown suffixes do not register: the token stays literal.
-		expect(mentions.expandMentions("ignore ^a/x:oops")).toBe("ignore ^a/x:oops");
-		expect(mentions.mentions).toHaveLength(3);
 	});
 
-	test("a literal model id ending in a level-like segment wins over the suffix reading", () => {
-		const tiered = buildModel({
-			provider: "nanogpt",
-			id: "coding-router:low",
-			name: "Router Low",
-			api: "openai-completions",
-			baseUrl: "https://example.com",
-			reasoning: false,
-			input: ["text"],
-			cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
-			contextWindow: 8192,
-			maxTokens: 1024,
-		});
-		vi.spyOn(registry, "getAvailable").mockReturnValue([tiered]);
-		// The whole token is the literal id; no level is stripped or displayed.
-		expect(mentions.expandMentions("use ^nanogpt/coding-router:low")).toBe(
-			'use <model agent="m1" name="Router Low"/>',
+	test("leaves levels a model cannot run literal and lets exact colon ids win", () => {
+		expect(mentions.expandMentions("^d/r:minimal ^d/r:off ^a/x:high ^d/r:ma ^d/r:max")).toBe(
+			'^d/r:minimal ^d/r:off ^a/x:high ^d/r:ma <model agent="m1" name="R Max"/>',
 		);
-		expect(mentions.sessionAgents()[0].model).toEqual(["nanogpt/coding-router:low"]);
-		// A level the model list cannot resolve still registers nothing.
-		expect(mentions.expandMentions("use ^nanogpt/coding-router:xhigh")).toBe("use ^nanogpt/coding-router:xhigh");
+		expect(readModelMentions(session.getBranch())).toEqual([{ agent: "m1", selector: "d/r:max", name: "R Max" }]);
+	});
+
+	test("replays tagged levels and skips entries whose level is not canonical or not the selector's", () => {
+		session.appendCustomEntry(MODEL_MENTION_ENTRY_TYPE, {
+			agent: "m1",
+			selector: "d/r:high",
+			name: "R One · high",
+			thinkingLevel: "high",
+		});
+		session.appendCustomEntry(MODEL_MENTION_ENTRY_TYPE, {
+			agent: "m2",
+			selector: "d/r:low",
+			name: "R One · low",
+			thinkingLevel: "lo",
+		});
+		session.appendCustomEntry(MODEL_MENTION_ENTRY_TYPE, {
+			agent: "m3",
+			selector: "d/r:max",
+			name: "R One · max",
+			thinkingLevel: "high",
+		});
+		mentions.syncFromBranch();
+		expect(mentions.mentions.map(mention => [mention.agent, mention.thinkingLevel])).toEqual([["m1", Effort.High]]);
+		expect(mentions.expandMentions("^d/r:hi")).toBe('<model agent="m1" name="R One · high"/>');
+		expect(mentions.sessionAgents()[0]?.thinkingLevel).toBe(Effort.High);
 	});
 
 	test("replays first valid entries and frees discarded branch numbers", () => {

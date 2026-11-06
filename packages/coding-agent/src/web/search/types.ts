@@ -3,6 +3,17 @@ import type { SearchProviderId, SearchResponse, SearchUsage } from "@oh-my-pi/pi
 
 export * from "@oh-my-pi/pi-tui/tools/web-search-types";
 
+/** One provider that failed before another answered, or before the search gave up. */
+export interface SearchFailureDetail {
+	/** Provider id (`brave`, `openai`, …), or the catalog model id when the provider never loaded. */
+	provider: string;
+	label: string;
+	/** Flattened, length-capped reason, as the LLM-facing fallback note quotes it. */
+	reason: string;
+	/** HTTP-style status the provider error carried (204 marks a sourceless answer, e.g. a refusal). */
+	status?: number;
+}
+
 /** Default hard timeout for each web-search provider transport. */
 export const DEFAULT_WEB_SEARCH_TIMEOUT_SECONDS = 60;
 
@@ -63,6 +74,8 @@ export interface SearchResultDetails {
 	error?: string;
 	/** Failed attempts that preceded a successful fallback, or every attempt when all failed. */
 	providerFailures?: SearchProviderFailure[];
+	/** Providers that failed, in chain order; absent when the first candidate answered. */
+	failures?: SearchFailureDetail[];
 	/** Wall-clock duration of the whole provider chain, including failed fallbacks. */
 	durationMs?: number;
 }

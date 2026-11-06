@@ -17,7 +17,11 @@ function stageImage(editor: CustomEditor, data: string): void {
 }
 
 async function mount(editor: CustomEditor): Promise<TspHarness> {
-	const band = new AttachmentChipsBand(() => editor, new ImageBudget(8), () => {});
+	const band = new AttachmentChipsBand(
+		() => editor,
+		new ImageBudget(8),
+		() => {},
+	);
 	return TspHarness.start(tui => {
 		tui.addChild(band);
 		tui.addChild(editor);

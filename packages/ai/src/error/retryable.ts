@@ -1,4 +1,5 @@
 import { isRetryableError, isUnexpectedSocketCloseMessage } from "@oh-my-pi/pi-utils";
+import { getHeadersFromError, getShouldRetryFromHeaders } from "../utils/retry-after";
 import {
 	ALIYUN_MM_GATEWAY_PATTERN,
 	CODEX_HTTP_BODY_READ_ERROR_PATTERN,
@@ -47,6 +48,10 @@ function isTransientTransportMessage(message: string): boolean {
  *
  * Every 4xx other than 408/429 is terminal: a request the provider rejected
  * as malformed, unauthorized, or unentitled fails identically on replay.
+ *
+ * A captured `x-should-retry` response header overrides the status and text
+ * heuristics below: a server or gateway that already retried and answered
+ * `false` must not be replayed by provider retry loops.
  */
 export function isProviderRetryableError(error: unknown): boolean {
 	if (!(error instanceof Error)) return false;
@@ -58,6 +63,8 @@ export function isProviderRetryableError(error: unknown): boolean {
 	if (userRules.nonRetryablePatterns.some(re => re.test(error.message))) return false;
 	if (userRules.retryablePatterns.some(re => re.test(error.message))) return true;
 	if (isUsageLimit(error)) return false;
+	const verdict = getShouldRetryFromHeaders(getHeadersFromError(error));
+	if (verdict !== undefined) return verdict;
 	// Misrouted relay nodes: new-api gateways sometimes route a request to an
 	// upstream that rejects it with a misleading 400 (code 1210 该模型始终思考，
 	// 不支持关闭思考) fired regardless of the payload's thinking parameters and

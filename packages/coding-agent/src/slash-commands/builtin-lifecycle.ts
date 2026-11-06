@@ -16,7 +16,7 @@ import type { InjectToolsMode } from "../session/session-tools";
 import { COMPACT_MODES, parseCompactArgs } from "../session/compact-modes";
 import { USER_INTERRUPT_LABEL } from "../session/messages";
 import { resolveResumableSession, resolveResumeTarget } from "../session/session-listing";
-import { loadPinnedSessionIds, toggleSessionPin } from "../session/session-pins";
+import { loadPinnedSessionIds, toggleSessionPin, unpinSession } from "../session/session-pins";
 import { hideSession, loadHiddenSessionIds, unhideSession } from "../session/session-hides";
 import {
 	cleanSourceCheckoutIfConfigured,
@@ -167,6 +167,22 @@ async function unhideSessionByArg(
 	}
 	await unhideSession(sessionId);
 	return { restored: true };
+}
+
+/** Session id `/pin` and `/unpin` act on (the argument's match, else the active session), or the usage result. */
+async function resolvePinTarget(
+	command: ParsedSlashCommand,
+	runtime: SlashCommandRuntime,
+	verb: "pin" | "unpin",
+): Promise<string | SlashCommandResult> {
+	const sessionArg = command.args.trim();
+	if (sessionArg) {
+		const match = await resolveResumableSession(sessionArg, runtime.cwd, runtime.sessionManager.getSessionDir(), {
+			allowGlobalFallback: true,
+		});
+		return match ? match.session.id : usage(`Session "${sessionArg}" not found.`, runtime);
+	}
+	return runtime.sessionManager.getSessionId() || usage(`No active session to ${verb}.`, runtime);
 }
 
 export const BUILTIN_LIFECYCLE_SLASH_COMMANDS: ReadonlyArray<SlashCommandSpec> = [
@@ -492,26 +508,10 @@ export const BUILTIN_LIFECYCLE_SLASH_COMMANDS: ReadonlyArray<SlashCommandSpec> =
 		inlineHint: "[session id]",
 		allowArgs: true,
 		handle: async (command, runtime) => {
-			const sessionArg = command.args.trim();
-			let sessionId: string | undefined;
-			if (sessionArg) {
-				const match = await resolveResumableSession(
-					sessionArg,
-					runtime.cwd,
-					runtime.sessionManager.getSessionDir(),
-					{ allowGlobalFallback: true },
-				);
-				if (!match) {
-					return usage(`Session "${sessionArg}" not found.`, runtime);
-				}
-				sessionId = match.session.id;
-			} else {
-				sessionId = runtime.sessionManager.getSessionId();
-				if (!sessionId) {
-					return usage("No active session to pin.", runtime);
-				}
-			}
+			const sessionId = await resolvePinTarget(command, runtime, "pin");
+			if (typeof sessionId !== "string") return sessionId;
 			const pinned = await toggleSessionPin(sessionId);
+			await runtime.notifySessionPinChanged?.(sessionId, pinned);
 			await runtime.output(
 				pinned
 					? "Session pinned. It now leads the resume list and has its own Pinned scope; browse pins with /pinned."
@@ -629,6 +629,21 @@ export const BUILTIN_LIFECYCLE_SLASH_COMMANDS: ReadonlyArray<SlashCommandSpec> =
 		handleTui: async (_command, runtime) => {
 			clearSubmittedText(runtime);
 			runtime.ctx.showSessionSelector(undefined, undefined, { initialScope: "pinned" });
+			return commandConsumed();
+		},
+	},
+	{
+		name: "unpin",
+		icon: "pin",
+		description: "Unpin a session from the top of the resume list",
+		inlineHint: "[session id]",
+		allowArgs: true,
+		handle: async (command, runtime) => {
+			const sessionId = await resolvePinTarget(command, runtime, "unpin");
+			if (typeof sessionId !== "string") return sessionId;
+			const wasPinned = await unpinSession(sessionId);
+			await runtime.notifySessionPinChanged?.(sessionId, false);
+			await runtime.output(wasPinned ? "Session unpinned." : "Session is not pinned.");
 			return commandConsumed();
 		},
 	},

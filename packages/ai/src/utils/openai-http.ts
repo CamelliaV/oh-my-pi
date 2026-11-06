@@ -3,8 +3,8 @@
  * completions, responses, azure responses). Replaces the `openai` SDK client:
  *
  * - Retries: `fetchWithRetry` (Retry-After/quota-hint aware; 5xx/408/429 and
- *   transient network errors). Default 6 total attempts — parity with the
- *   SDK's former `maxRetries: 5`.
+ *   transient network errors; `x-should-retry: false` is terminal). Default 6
+ *   total attempts — parity with the SDK's former `maxRetries: 5`.
  * - SSE decode: `readSseJson` (spec-compliant framing, `[DONE]`-aware).
  *   `onSseEvent` observers now receive real wire frames instead of events
  *   re-synthesized from decoded SDK objects.
@@ -22,6 +22,7 @@ export { OpenAIHttpError };
 
 import type { FetchImpl } from "../types";
 import type { CapturedHttpErrorResponse } from "./http-inspector";
+import { getShouldRetryFromHeaders } from "./retry-after";
 
 /** Bound the `Error.message` allocation for proxy HTML error pages and the like. */
 const MAX_DETAIL_CHARS = 4096;
@@ -98,10 +99,13 @@ export async function postOpenAIStream<TEvent>(init: OpenAIStreamRequestInit): P
 			signal: init.signal,
 			fetch: init.fetch,
 			maxAttempts: init.maxAttempts ?? AIError.openaiHttpMaxAttempts(),
-			// A proxy concurrency-admission 429 (`rate_limit_type: max_parallel_requests`)
-			// surfaces immediately instead of being slept-and-retried here; session
-			// recovery owns its backoff/fallback (issue #8854).
+			// A server/gateway `x-should-retry: false` verdict is terminal, as it was
+			// under the removed SDK client. A proxy concurrency-admission 429
+			// (`rate_limit_type: max_parallel_requests`) surfaces immediately instead of
+			// being slept-and-retried here; session recovery owns its backoff/fallback
+			// (issue #8854).
 			shouldRetryResponse: async (response, bodyText) =>
+				getShouldRetryFromHeaders(response.headers) !== false &&
 				!isConcurrencyAdmissionRejection(response, bodyText) &&
 				(init.shouldRetryResponse === undefined || (await init.shouldRetryResponse(response, bodyText))),
 			// Misrouted relay nodes answer with a misleading 400 naming thinking-control

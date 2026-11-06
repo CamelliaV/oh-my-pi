@@ -38,6 +38,7 @@ import {
 	getSearchProviderLabel,
 	MAX_WEB_SEARCH_TIMEOUT_SECONDS,
 	SearchProviderError,
+	type SearchFailureDetail,
 	type SearchProviderId,
 	type SearchProviderFailure,
 	type SearchResponse,
@@ -125,6 +126,22 @@ function formatForLLM(
 	}
 
 	return parts.join("\n");
+}
+
+/** Longest failure reason a fallback note quotes, the cap source snippets get; provider errors can carry whole response bodies. */
+const MAX_FALLBACK_REASON_CHARS = 240;
+
+/** Failed candidates as tool details record them: reason flattened and capped. */
+function failureDetails(failures: readonly SearchProviderFailure[]): SearchFailureDetail[] {
+	return failures.map(({ provider, label, message, status }): SearchFailureDetail => {
+		const reason = message.replace(/\s+/g, " ").trim().replace(/\.$/, "");
+		return {
+			provider,
+			label,
+			reason: truncate(reason, MAX_FALLBACK_REASON_CHARS),
+			...(status !== undefined ? { status } : {}),
+		};
+	});
 }
 
 function hasRenderableSearchContent(response: SearchResponse): boolean {
@@ -347,6 +364,7 @@ async function executeSearch(
 				throw new SearchProviderError(provider.id, `${provider.label} returned no renderable search content.`, 204);
 			}
 
+			const failed = failureDetails(failures);
 			const text = formatForLLM(finalResponse, constraintNotes, failures);
 
 			return {
@@ -354,6 +372,7 @@ async function executeSearch(
 				details: {
 					response: finalResponse,
 					providerFailures: failures.length > 0 ? failures : undefined,
+					...(failed.length > 0 ? { failures: failed } : {}),
 					durationMs: Math.round(performance.now() - searchStartedAtMs),
 				},
 			};
@@ -400,6 +419,7 @@ async function executeSearch(
 			response: { provider: failedResponseProvider, sources: [] },
 			error: message,
 			providerFailures: failures.length > 0 ? failures : undefined,
+			failures: failureDetails(failures),
 			durationMs: Math.round(performance.now() - searchStartedAtMs),
 		},
 	};

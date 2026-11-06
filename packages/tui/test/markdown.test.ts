@@ -10,7 +10,7 @@ import {
 } from "@oh-my-pi/pi-tui/components/markdown";
 import { setTerminalTextSizing, TERMINAL } from "@oh-my-pi/pi-tui/terminal-capabilities";
 import { loadTheme } from "@oh-my-pi/pi-tui/theme/loader";
-import { getSymbolTheme, setThemeInstance } from "@oh-my-pi/pi-tui/theme/theme";
+import { getSymbolTheme, setThemeInstance, theme } from "@oh-my-pi/pi-tui/theme/theme";
 import { type Component, TUI } from "@oh-my-pi/pi-tui/tui";
 import { visibleWidth } from "@oh-my-pi/pi-tui/utils";
 import { Chalk } from "@oh-my-pi/pi-utils/chalk";
@@ -2210,13 +2210,18 @@ describe("themes without symbols (upstream pi-tui MarkdownTheme shape)", () => {
 	});
 
 	it("does not reuse cached fallback glyphs after a symbol-preset switch", async () => {
+		const previous = theme;
 		const text = "> quoted across a preset switch";
-		setThemeInstance(await loadTheme("dark", { symbolPresetOverride: "unicode" }));
-		const before = new Markdown(text, 0, 0, upstreamTheme).render(40);
-		setThemeInstance(await loadTheme("dark", { symbolPresetOverride: "ascii" }));
-		const after = new Markdown(text, 0, 0, upstreamTheme).render(40);
-		expect(after).not.toEqual(before);
-		expect(after).toEqual(new Markdown(text, 0, 0, { ...upstreamTheme, symbols: getSymbolTheme() }).render(40));
+		try {
+			setThemeInstance(await loadTheme("dark", { symbolPresetOverride: "unicode" }));
+			const before = new Markdown(text, 0, 0, upstreamTheme).render(40);
+			setThemeInstance(await loadTheme("dark", { symbolPresetOverride: "ascii" }));
+			const after = new Markdown(text, 0, 0, upstreamTheme).render(40);
+			expect(after).not.toEqual(before);
+			expect(after).toEqual(new Markdown(text, 0, 0, { ...upstreamTheme, symbols: getSymbolTheme() }).render(40));
+		} finally {
+			setThemeInstance(previous);
+		}
 	});
 });
 

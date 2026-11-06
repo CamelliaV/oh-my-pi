@@ -313,6 +313,8 @@ describe("executeSearch abort propagation", () => {
 		expect(context.getProvider).toHaveBeenCalledTimes(1);
 		expect(context.getProvider).toHaveBeenCalledWith("exa");
 		expect(fallbackSearch).not.toHaveBeenCalled();
+		expect(result.content[0]?.text).not.toContain("Note: Web search fallback used.");
+		expect(Object.hasOwn(result.details, "failures")).toBe(false);
 	});
 
 	it("exposes a rate-limit fallback to the model and renderer metadata", async () => {
@@ -368,9 +370,33 @@ describe("executeSearch abort propagation", () => {
 		expect(result.details.response.provider).toBe("brave");
 		expect(context.getProvider).toHaveBeenCalledTimes(2);
 		expect(fallbackSearch).toHaveBeenCalledTimes(1);
+		// Fork patch 29 renderer: one attribution note, not upstream's `answered by`.
 		const noteText = result.content[0]?.text ?? "";
 		expect(noteText).toContain("Note: Web search fallback used.");
 		expect(noteText).toContain("exa: Preferred provider failed. (HTTP 500)");
+		// Upstream's flattened detail list rides alongside the fork's `providerFailures`.
+		expect(result.details.failures).toEqual([
+			{ provider: "exa", label: "exa", reason: "Preferred provider failed", status: 500 },
+		]);
+	});
+
+	it("records every provider in details.failures when all of them fail", async () => {
+		const context = await configureProviderChain([
+			fakeProvider("exa", async () => {
+				throw new SearchProviderError("exa", "Exa refused.", 204);
+			}),
+			fakeProvider("brave", async () => {
+				throw new Error("upstream 500");
+			}),
+		]);
+
+		const result = await runSearchQuery({ query: "anything" }, context);
+
+		expect(result.details.error).toContain("All web search providers failed");
+		expect(result.details.failures).toEqual([
+			{ provider: "exa", label: "exa", reason: "Exa refused", status: 204 },
+			{ provider: "brave", label: "brave", reason: "upstream 500" },
+		]);
 	});
 
 	it("flattens and caps a long multi-line failure reason in the fallback note", async () => {

@@ -1,5 +1,5 @@
 Results auto-deliver; NEVER poll.{{#if waitTool}} Completely blocked? Call `wait` to receive the first settled job you started.{{/if}}
-{{#if ircEnabled}}Coordinate while peers run via `write agent://<id>` (or `agent://all` to broadcast). Continue a failed unfinished child in its original session with `write agent://<id>?resume=1`; `content` is the continuation instruction. Do not spawn a replacement.{{/if}}
+{{#if ircEnabled}}Continue a failed unfinished child in its original session with `write agent://<id>?resume=1`; `content` is the continuation instruction. Do not spawn a replacement.{{/if}}
 
 `read proc://` lists jobs/services; `read proc://<id>` inspects status/output without consuming delivery. `write proc://<id>/kill` cancels/stops; omit `content`.
 

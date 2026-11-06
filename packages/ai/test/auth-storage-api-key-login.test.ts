@@ -6,6 +6,7 @@ import * as path from "node:path";
 
 import { AuthStorage, SqliteAuthCredentialStore } from "@oh-my-pi/pi-ai/auth-storage";
 import * as envApiKey from "@oh-my-pi/pi-ai/env-api-key";
+import * as devinCliModule from "@oh-my-pi/pi-ai/registry/oauth/devin-cli";
 import { serializeAlibabaTokenPlanCredential } from "@oh-my-pi/pi-catalog/wire/alibaba-token-plan";
 import { removeWithRetries } from "../../utils/src/temp";
 
@@ -150,6 +151,18 @@ describe("AuthStorage api-key login upsert", () => {
 		const next = await authStorage.keys.get("google", sessionId);
 		expect(next).toMatch(/^sk-fake-\d{2}$/);
 		expect(next).not.toBe(first);
+	});
+
+	it("stores an API-key login under the rule's store-as provider, not the auth id", async () => {
+		if (!store || !authStorage || !dbPath) throw new Error("test setup failed");
+		vi.spyOn(devinCliModule, "loginDevinCliHook").mockResolvedValue("sk-ws-01-adopted");
+
+		await authStorage.oauth.login("devin-cli", { onAuth: () => {}, onPrompt: async () => "" });
+
+		expect(countCredentialRows(dbPath, "devin-cli")).toBe(0);
+		expect(store.listAuthCredentials("devin").map(entry => entry.credential)).toEqual([
+			{ type: "api_key", key: "sk-ws-01-adopted", source: "login" },
+		]);
 	});
 
 	it("replaces Token Plan Cookies by API-token identity without collapsing different tokens", async () => {

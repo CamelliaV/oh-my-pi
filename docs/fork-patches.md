@@ -147,6 +147,11 @@ reasoning matters. The per-release upgrade history sits at the bottom
    kitty translates wheel to arrow keys on the alt screen). PTY-verified
    marker/jump/expansion/rewind + no-mouse-tracking-bytes paths.
 11. `feat(extensions)` history_search recall over full session history —
+   **Current (2026-11-07):** shared code moved to `extensions/recall/`;
+   `session_search` has snapshot-safe scan/session/hit pagination, match-centered
+   content paging, scoped stable references and current-branch expansion checks.
+   See [session-search.md](session-search.md) for the current contract and tests.
+   The implementation history below describes the original scanner.
    runtime extension at `extensions/recall.ts`, deployed by symlink to
    `~/.omp/agent/extensions/recall.ts` (rebase-immune, no binary rebuild).
    Compaction never deletes data: old entries stay on the branch tree, so a
@@ -2683,7 +2688,9 @@ local fork workflow, validated through native exports and shell tests.
 
 Build, isolated smoke, tool gallery, PTY startup/exit and isolated Tern intent
 replay are recorded under
-`/home/cindy/code/clean/omp-upgrade-18.18.0-20261107/`. Keep the independently
-installed recall extension symlink to
+`/home/cindy/code/clean/omp-upgrade-18.18.0-20261107/`. At upgrade completion the recall extension still used
 `~/.omp/agent/local-extensions/recall-v2-20261107/recall.ts`; its separate
-integration patch was not applied by this upgrade.
+integration patch was not applied by that upgrade. The later authorized
+session-search revision integrated the source/tests into this repository and
+restored `~/.omp/agent/extensions/recall.ts` to `extensions/recall.ts`; see
+[session-search.md](session-search.md).

@@ -84,6 +84,7 @@ export const TSP_KINDS = [
 	"meter",
 	"effort",
 	"shell",
+	"scroll",
 ] as const;
 
 export type TspKind = (typeof TSP_KINDS)[number];
@@ -178,6 +179,12 @@ export type TspPreview = { lines: number } | "auto";
 export interface TspColProps {
 	gap?: TspSpace;
 	align?: "start" | "center" | "end" | "stretch";
+}
+/** A bounded scrolling container; its children can be targeted by `reveal`. */
+export interface TspScrollProps {
+	variant?: "bar" | "fade";
+	bar?: "auto" | "always";
+	gap?: TspSpace;
 }
 export interface TspRowProps {
 	gap?: TspSpace;
@@ -1007,6 +1014,7 @@ export interface TspPropsByKind {
 	meter: TspMeterProps;
 	effort: TspEffortProps;
 	shell: TspShellProps;
+	scroll: TspScrollProps;
 }
 
 /**

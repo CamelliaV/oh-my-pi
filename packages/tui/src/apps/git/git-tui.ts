@@ -13,8 +13,8 @@
  * `tab` moves focus between the diff and the sidebar; both panes take
  * arrows/PgUp/PgDn, vim motions (`j`/`k`/`h`/`l`/`g`/`G`), and mouse
  * clicks/wheel. All toolbar buttons are clickable and mirrored by keys:
- * `v` cycles the view (`1`–`4` pick one), `alt+↓`/`alt+↑` jump hunks and roll
- * into the adjacent file at the edges, `space` stages/unstages the focused
+ * `v` cycles the view (`1`–`4` pick one), `alt+↓`/`alt+↑` jump hunks and wrap
+ * inside the file at the edges, `space` stages/unstages the focused
  * diff row (the focused hunk in hunk view), `s`/`u` stage/unstage
  * (hunk-aware), `x` discards a hunk, `delete` discards the
  * whole file (press twice to confirm), `w` wraps, `b` cycles
@@ -214,6 +214,8 @@ class GitTuiComponent implements Component {
 	readonly #nativeBar = new Memo();
 	readonly #nativeBody = new Memo();
 	readonly #nativeRoot = new Memo();
+	#nativeDiff: { doc: DiffDocument; whole: boolean; chunks: NativeDiffChunk[] } | undefined;
+	#nativeHunkReveal = 0;
 
 	constructor(ui: TUI, host: GitTuiHost) {
 		this.#ui = ui;
@@ -621,13 +623,11 @@ class GitTuiComponent implements Component {
 		);
 		this.#rebuildDocument();
 	}
-	/** Alt+Down/Up: next/prev hunk, rolling into the adjacent file at the edges. */
-	#jumpHunkOrFile(direction: 1 | -1): void {
-		if (this.#pane.jumpHunk(direction)) {
-			this.#ui.requestRender();
-			return;
-		}
-		this.#selectFile(direction, direction < 0 ? "last" : "first");
+	/** Alt+Down/Up: next/prev hunk, wrapping inside the file. `]`/`[` switch files. */
+	#jumpHunk(direction: 1 | -1): void {
+		if (!this.#pane.jumpHunk(direction)) this.#pane.seekHunk(direction > 0 ? "first" : "last");
+		this.#nativeHunkReveal++;
+		this.#ui.requestRender();
 	}
 
 	/** `]`/`[`: show the next/previous file; `edge` picks the landing hunk. */
@@ -663,8 +663,8 @@ class GitTuiComponent implements Component {
 				return;
 			}
 			// Ghostty on macOS reports Option as super+alt (kitty mod 11).
-			if (matchesKey(data, "alt+down") || matchesKey(data, "super+alt+down")) return this.#jumpHunkOrFile(1);
-			if (matchesKey(data, "alt+up") || matchesKey(data, "super+alt+up")) return this.#jumpHunkOrFile(-1);
+			if (matchesKey(data, "alt+down") || matchesKey(data, "super+alt+down")) return this.#jumpHunk(1);
+			if (matchesKey(data, "alt+up") || matchesKey(data, "super+alt+up")) return this.#jumpHunk(-1);
 			if (data === "]") return this.#selectFile(1);
 			if (data === "[") return this.#selectFile(-1);
 			if (data === "v") {
@@ -700,7 +700,7 @@ class GitTuiComponent implements Component {
 			else if (matchesKey(data, "right") || data === "l") this.#pane.scrollLeftBy(8);
 			else if (matchesKey(data, "home") || data === "g") this.#pane.cursorToEdge("start");
 			else if (matchesKey(data, "end") || data === "G") this.#pane.cursorToEdge("end");
-			else if (matchesKey(data, "enter")) return this.#jumpHunkOrFile(1);
+			else if (matchesKey(data, "enter")) return this.#jumpHunk(1);
 			else if (matchesKey(data, "space")) {
 				// Hunk-view rows do not map back to document rows, so Space acts on the focused hunk there.
 				const target = this.#pane.patchTarget;
@@ -864,10 +864,10 @@ class GitTuiComponent implements Component {
 		const groupStart = Math.max(row.width + 2, Math.floor((this.#centerWidth - groupWidth) / 2));
 		row.add(" ".repeat(Math.max(0, groupStart - row.width)));
 		row.button(navUp, () => {
-			this.#jumpHunkOrFile(-1);
+			this.#jumpHunk(-1);
 		});
 		row.button(navDown, () => {
-			this.#jumpHunkOrFile(1);
+			this.#jumpHunk(1);
 		});
 		row.add("  ");
 		for (const segment of segments) {
@@ -944,6 +944,9 @@ class GitTuiComponent implements Component {
 				this.#pane.state,
 				this.#pane.doc,
 				this.#pane.mode,
+				this.#nativeHunkReveal,
+				this.#ui.terminal.rows,
+				cx.supports("scroll"),
 				this.#contents,
 				this.#currentFile,
 				this.#pane.emptyMessage,
@@ -985,9 +988,9 @@ class GitTuiComponent implements Component {
 		if (event.type === "action") {
 			switch (event.act) {
 				case "prev-hunk":
-					return this.#jumpHunkOrFile(-1);
+					return this.#jumpHunk(-1);
 				case "next-hunk":
-					return this.#jumpHunkOrFile(1);
+					return this.#jumpHunk(1);
 				case "whitespace":
 					return this.#cycleWhitespace();
 				case "wrap":
@@ -1102,15 +1105,40 @@ class GitTuiComponent implements Component {
 		const doc = this.#pane.doc;
 		const file = this.#currentFile;
 		if (doc && this.#pane.state === "ready") {
+			// TSP can reveal nodes, not rows inside one diff. Keep each hunk a
+			// stable node so both the toolbar and keyboard move the actual host
+			// viewport. File view retains the unchanged spans between those nodes.
+			const target = this.#pane.focusedHunkIndex;
+			const whole = this.#pane.mode === "file";
+			if (this.#nativeDiff?.doc !== doc || this.#nativeDiff.whole !== whole) {
+				this.#nativeDiff = { doc, whole, chunks: nativeDiffChunks(doc, whole) };
+			}
+			const { chunks } = this.#nativeDiff;
 			return node(
-				"diff",
+				cx.supports("scroll") ? "scroll" : "col",
 				{
-					text: unifiedDiff(doc, this.#pane.mode === "file"),
-					path: doc.filePath,
-					mode: this.#pane.mode === "split" ? "split" : "unified",
+					gap: "none",
 					role: "omp.app.git.diff",
+					...(cx.supports("scroll")
+						? { max: { h: `${Math.max(6, this.#ui.terminal.rows - 6)}lines` as const } }
+						: {}),
 				},
-				undefined,
+				chunks.map(chunk => {
+					const diff = node(
+						"diff",
+						{
+							text: chunk.text,
+							path: doc.filePath,
+							shrink: 0,
+							mode: this.#pane.mode === "split" ? "split" : "unified",
+						},
+						undefined,
+						chunk.key,
+					);
+					return chunk.hunk === target && this.#nativeHunkReveal > 0
+						? { ...diff, reveal: { at: "start" as const, n: this.#nativeHunkReveal } }
+						: diff;
+				}),
 				"diff",
 			);
 		}
@@ -1174,14 +1202,16 @@ class GitTuiComponent implements Component {
 }
 
 /**
- * A unified diff of `doc` for the `diff` kind: the tight hunks (Tern folds
- * the unchanged lines between them), or with `whole` one hunk spanning the
- * file. Paired changes go out as their `-` block then their `+` block, so the
- * terminal pairs them for word emphasis.
+ * A unified diff for one addressable span. Paired changes go out as their
+ * `-` block then their `+` block, so the terminal pairs them for word emphasis.
  */
-function unifiedDiff(doc: DiffDocument, whole: boolean): string {
-	const out: string[] = [];
-	const emit = (rows: DiffDocument["rows"]): void => {
+function unifiedDiff(rows: DiffDocument["rows"], header?: string): string {
+	const oldCount = rows.filter(row => row.oldNum !== undefined).length;
+	const newCount = rows.filter(row => row.newNum !== undefined).length;
+	const oldStart = rows.find(row => row.oldNum !== undefined)?.oldNum ?? 0;
+	const newStart = rows.find(row => row.newNum !== undefined)?.newNum ?? 0;
+	const out: string[] = [header ?? `@@ -${oldStart},${oldCount} +${newStart},${newCount} @@`];
+	const emit = (): void => {
 		let dels: string[] = [];
 		let adds: string[] = [];
 		const flush = (): void => {
@@ -1200,18 +1230,35 @@ function unifiedDiff(doc: DiffDocument, whole: boolean): string {
 		}
 		flush();
 	};
-	if (whole) {
-		const oldCount = doc.rows.filter(diffRow => diffRow.oldNum !== undefined).length;
-		const newCount = doc.rows.filter(diffRow => diffRow.newNum !== undefined).length;
-		out.push(`@@ -1,${oldCount} +1,${newCount} @@`);
-		emit(doc.rows);
-	} else {
-		for (const hunk of doc.hunks) {
-			out.push(hunk.header);
-			emit(hunk.rows);
-		}
-	}
+	emit();
 	return out.join("\n");
+}
+
+interface NativeDiffChunk {
+	readonly key: string;
+	readonly text: string;
+	readonly hunk?: number;
+}
+
+/** Split the wire document at hunk boundaries without losing full-file context. */
+function nativeDiffChunks(doc: DiffDocument, whole: boolean): NativeDiffChunk[] {
+	const chunks: NativeDiffChunk[] = [];
+	const rowKey = (row: DiffDocument["rows"][number]): string => `${row.oldNum ?? ""}:${row.newNum ?? ""}`;
+	const indices = whole ? new Map(doc.rows.map((row, index) => [rowKey(row), index])) : undefined;
+	let from = 0;
+	for (const [index, hunk] of doc.hunks.entries()) {
+		if (indices && hunk.rows.length > 0) {
+			const start = indices.get(rowKey(hunk.rows[0]!));
+			const end = indices.get(rowKey(hunk.rows[hunk.rows.length - 1]!));
+			if (start !== undefined && end !== undefined) {
+				if (start > from) chunks.push({ key: `context-${index}`, text: unifiedDiff(doc.rows.slice(from, start)) });
+				from = end + 1;
+			}
+		}
+		chunks.push({ key: `hunk-${index}`, text: unifiedDiff(hunk.rows, hunk.header), hunk: index });
+	}
+	if (whole && from < doc.rows.length) chunks.push({ key: "context-tail", text: unifiedDiff(doc.rows.slice(from)) });
+	return chunks;
 }
 
 /** `media` nodes of the before/after compare share this link, so they pan and zoom together. */

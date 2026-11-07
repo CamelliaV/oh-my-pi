@@ -1853,6 +1853,31 @@ text 234×77 at 10px/13px; hovercard 420×186; clicking the paste card opened
 the report sheet with the full text; clicking the image opened Tern's zoom
 viewer (86%). Screenshots under `target/shots/tern/serve/`.
 
+## Patch 50: `fix(tui)` git TUI hunk navigation stays in the file and uses hunk boundaries (2026-11-06)
+
+Alt+Down/Up in the git TUI (the footer's `hunk` keys) used `#changeStarts`,
+which marked every contiguous change block. In file view a hunk with two
+change blocks separated by context stopped twice, and a deletion-only hunk
+was unreachable because the file line maps to the following context row. At
+the boundary `#jumpHunkOrFile` switched to the adjacent file, so an untracked
+one-hunk file (all lines added, hunk at line 1) fell through to the next file
+or did nothing.
+
+`DiffPane.#hunkStarts` now derives one start per `doc.hunks` entry: split and
+inline map the first changed row by new/old line number; file view maps its
+first new-side line (a deletion-only hunk uses the following new line, or the
+last file line at EOF). `#jumpHunk` wraps with `seekHunk("first"/"last")`
+inside the file; `]`/`[` still switch files.
+
+Verification: `bun test packages/tui/test/git-hunk-jump.test.ts` (5 pass: one
+stop per hunk in file/split/inline, two-hunk walk, all-added one-hunk file,
+deletion-only landing), `bun test packages/tui/test/git-commit-view-hints.test.ts`
+(6 pass), `bun run check:types` in `packages/tui`, `oxfmt --check`/`oxlint`
+clean. Release binary rebuilt (`RELEASE_TARGETS=linux-x64
+bun run ci:release:build-binaries`) and installed as `omp-patched`; in the
+new binary Alt+Down in file view keeps the selected file (a.py) where the old
+binary switched to the next file (b.py), while `]` still switches.
+
 ## Upgrade chronicle (v18.3.2 → v18.12.3)
 
 Moved out of `AGENTS.md` on 2026-10-28: it is history, not policy, and cost
@@ -2510,3 +2535,66 @@ connection-cleanup` and `mcp-http-transport` time out identically on master
 ok`, marker probe (uri-list 5, fuzzyMatchResumableSessions 4, wasmGrammarFor
 4, resume=1, CJK escapes 14, skillCatalogPolicy 12, installSqliteLockShim 6,
 setEmptyHint 6), and `gallery --surface tool` renders.
+
+### 2026-11-06: repair native ABI mismatch after the v18.17 upgrade
+
+The main build worktree and installed native cache held a 122,169,144-byte
+addon reporting `18.17.0` but exporting neither `RunTrace` nor
+`ShellVisualization`. The upgrade worktree retained the correct
+128,557,176-byte addon with both constructors. The incorrect addon had been
+embedded in `omp-patched`; Bash transcript cards crashed in
+`ToolExecutionComponent.#getShellPresentation()` at `new RunTrace(script)`
+(`new XK(u)` in the minified binary), during both live updates and resume.
+The exit cleanup encountered the same exception. A version stamp and the
+generic worker smoke test therefore did not establish native ABI compatibility.
+The precise operation that introduced the incorrect addon was not established.
+
+Backed up the executable and affected addons, restored the verified addon
+from `oh-my-pi-wt/v18.17.0` into the main build slots, rebuilt with
+`RELEASE_TARGETS=linux-x64 bun run ci:release:build-binaries`, and atomically
+installed the executable and native cache. Existing processes were left running.
+No application source or original transcript was changed for this repair.
+
+Verification: the original shell-viz regression reproduced 3 constructor
+failures before repair; all 40 TUI shell visualization/native card tests passed
+afterward. The Bash executor suite had 69 passes and 2 separate failures
+(fish exit 127 and a zsh interactive-input timeout), retained in the report.
+The rebuilt executable passed `--version`, `--smoke-test`, and the Bash gallery.
+In isolated PTYs, the same copied real transcript crashed with the backed-up
+binary and resumed/exited cleanly with the repaired binary. The original
+transcript hash was unchanged. The extracted embedded addon matched the
+verified source SHA-256.
+
+Evidence, hashes, backup manifest and repeatable PTY probe:
+`/home/cindy/code/clean/omp-crash-20261106/README.md`.
+
+### 2026-11-06: native git hunk navigation reaches the visible viewport (patch 51)
+
+The native git app's Previous/Next change buttons already route to
+`GitTuiComponent.#jumpHunk`; Alt+Up/Down reaches the same handler. However,
+that only changed `DiffPane`'s ANSI cursor and scroll offset. The native body
+memo omitted navigation state and sent one unchanged `diff` node, so Tern
+received no viewport update. A `.sf-chat-reader` ancestor is also how this
+fullscreen app is hosted; earlier claims that this was an inert chat preview
+and required a Tern-side fix were incorrect.
+
+The wire drawing now keeps one stable diff node per hunk and sends a repeatable
+`reveal` to the selected one. File view preserves unchanged spans before,
+between and after hunks. Serialized chunks are cached per document/view so
+navigation does not re-serialize a large file. A bounded `scroll` container
+keeps the toolbar and sidebar in place; diff children have `shrink: 0` so
+Tern's flex layout does not squeeze overlapping hunks into the viewport.
+The published TSP `scroll` node was added to the wire vocabulary and is gated
+on the host's advertised kinds, including the optimistic handshake path.
+Older hosts retain the column fallback and reveal the enclosing scroller.
+
+Regression: `apps-native.test.ts` drives real native button events and raw
+Alt+arrow input through TspHarness and verifies the emitted reveal targets,
+within-file wrapping and retained file context. Before the fix it emitted
+no reveal; afterward the Git and native suites pass (214 tests), and full
+`bun run check:ts` passes. An isolated Tern 0.9.12 window with a 200-line file
+changed at lines 10, 100 and 190 reproduces the old no-op and verifies actual
+scrolling after repair: File Next selects the line-100 hunk at viewport y=106,
+Alt+Up returns the line-10 hunk to y=106, and Alt+Down returns to line 100.
+Screenshots verify the toolbar stays visible. No Tern plugin or user setting
+is required. Evidence: `/home/cindy/code/clean/omp-native-hunk-20261106/README.md`.

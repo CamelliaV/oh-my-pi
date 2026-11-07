@@ -877,8 +877,8 @@ export class DiffPane {
 			this.#focusHunkHeader(next, visuals);
 			return true;
 		}
-		// Other modes: jump between change blocks.
-		const starts = this.#changeStarts(visuals);
+		// Other modes: jump to each hunk's first change.
+		const starts = this.#hunkStarts(visuals);
 		const reference = this.cursor;
 		const next =
 			direction > 0
@@ -898,7 +898,7 @@ export class DiffPane {
 			this.#focusHunkHeader(edge === "first" ? 0 : doc.hunks.length - 1, visuals);
 			return;
 		}
-		const starts = this.#changeStarts(visuals);
+		const starts = this.#hunkStarts(visuals);
 		if (starts.length === 0) return;
 		this.#focusChange(edge === "first" ? starts[0] : starts[starts.length - 1]);
 	}
@@ -939,26 +939,53 @@ export class DiffPane {
 		}
 	}
 
-	/** First visual row of every change block, in document order. */
-	#changeStarts(visuals: Visual[]): number[] {
+	/** First visual row of every hunk's first change, in document order. */
+	#hunkStarts(visuals: Visual[]): number[] {
+		const doc = this.#doc;
+		if (!doc) return [];
 		const starts: number[] = [];
-		let inChange = false;
-		for (let i = 0; i < visuals.length; i++) {
-			const kind = this.#changeKind(visuals[i]);
-			const changed = kind !== "context" && kind !== null;
-			if (changed && !inChange) starts.push(i);
-			inChange = changed;
+		if (this.mode === "file") {
+			const firstByLine = new Map<number, number>();
+			for (let i = 0; i < visuals.length; i++) {
+				const visual = visuals[i];
+				if (visual?.t === "file" && !firstByLine.has(visual.index)) firstByLine.set(visual.index, i);
+			}
+			for (const hunk of doc.hunks) {
+				const firstChanged = hunk.rows.findIndex(row => row.kind !== "context");
+				if (firstChanged < 0) continue;
+				let newLine: number | undefined;
+				for (let i = firstChanged; i < hunk.rows.length; i++) {
+					newLine = hunk.rows[i]?.newNum;
+					if (newLine !== undefined) break;
+				}
+				// A deletion-only hunk at the end of the file still lands on its last line.
+				if (newLine === undefined) newLine = Math.max(1, doc.fileLines.length);
+				const start = firstByLine.get(newLine - 1);
+				if (start !== undefined) starts.push(start);
+			}
+		} else {
+			const firstByNew = new Map<number, number>();
+			const firstByOld = new Map<number, number>();
+			for (let i = 0; i < visuals.length; i++) {
+				const visual = visuals[i];
+				if (visual?.t !== "split" && visual?.t !== "line") continue;
+				const { newNum, oldNum } = visual.row;
+				if (newNum !== undefined && !firstByNew.has(newNum)) firstByNew.set(newNum, i);
+				if (oldNum !== undefined && !firstByOld.has(oldNum)) firstByOld.set(oldNum, i);
+			}
+			for (const hunk of doc.hunks) {
+				const row = hunk.rows.find(entry => entry.kind !== "context");
+				if (!row) continue;
+				const start =
+					row.newNum !== undefined
+						? firstByNew.get(row.newNum)
+						: row.oldNum !== undefined
+							? firstByOld.get(row.oldNum)
+							: undefined;
+				if (start !== undefined) starts.push(start);
+			}
 		}
-		return starts;
-	}
-
-	/** Like {@link visualKind}, but resolves file-view rows through the document. */
-	#changeKind(visual: Visual): RowKind | "hunk" | null {
-		if (visual.t === "file") {
-			const row = visual.rowIndex >= 0 ? this.#doc?.rows[visual.rowIndex] : undefined;
-			return row?.kind ?? "context";
-		}
-		return visualKind(visual);
+		return [...new Set(starts)].sort((a, b) => a - b);
 	}
 
 	/** Put the cursor on a change block and scroll it into the upper third. */
@@ -972,6 +999,16 @@ export class DiffPane {
 	/** Currently selected hunk (hunk view), if any. */
 	get currentHunk(): HunkBlock | null {
 		return this.#doc?.hunks[this.selectedHunk] ?? null;
+	}
+
+	/** Hunk reached by navigation, also in the file/split/inline layouts. */
+	get focusedHunkIndex(): number {
+		if (this.mode === "hunk") return this.selectedHunk;
+		const starts = this.#hunkStarts(this.#layout(this.#lastWidth || 80));
+		return Math.max(
+			0,
+			starts.findLastIndex(start => start <= this.cursor),
+		);
 	}
 
 	// ── mouse ──────────────────────────────────────────────────────────────

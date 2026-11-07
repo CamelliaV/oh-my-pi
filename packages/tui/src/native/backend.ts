@@ -209,7 +209,13 @@ function sameSet(a: ReadonlySet<string>, b: ReadonlySet<string>): boolean {
  * raw JSON values Tern draws as its own tree; `button`: omp's buttons, which
  * older builds get as role-styled rows; `shell`: the bash tool's live trace).
  */
-const UNASSUMED_KINDS: Partial<Record<TspKind, true>> = { media: true, json: true, button: true, shell: true };
+const UNASSUMED_KINDS: Partial<Record<TspKind, true>> = {
+	media: true,
+	json: true,
+	button: true,
+	shell: true,
+	scroll: true,
+};
 
 /**
  * The reply a v1 terminal is assumed to give before its real `hello` arrives

@@ -167,6 +167,86 @@ describe("git native", () => {
 		}
 	});
 
+	it("reveals the requested hunk after native toolbar clicks and Alt+arrows, including file view", async () => {
+		await initTheme();
+		const h = await TspHarness.start(undefined, { cols: 150, rows: 24 });
+		const original = Array.from({ length: 160 }, (_, index) => `line ${index + 1}`).join("\n") + "\n";
+		const changed = original.replace("line 10\n", "first change\n").replace("line 140\n", "last change\n");
+		const closed = showGitOverlay(h.tui, {
+			model: {
+				...model,
+				unstaged: [file("lines.txt", "unstaged")],
+				streamContents: async () => ({
+					kind: "text",
+					oldText: original,
+					newText: changed,
+					streamResult: undefined as never,
+				}),
+			},
+			createAvatarSource: () => ({ get: () => null }),
+			aiStage: async () => ({ matchedFiles: 0, totalFiles: 0, stagedHunks: 0, totalHunks: 0, wholeFiles: 0 }),
+			generateCommitMessage: async () => {
+				throw new Error("unused");
+			},
+		});
+		const settle = async (): Promise<void> => {
+			for (let i = 0; i < 4; i++) {
+				await Bun.sleep(0);
+				h.tui.requestRender();
+				h.flush(10);
+			}
+		};
+		const revealedText = (since: number): string[] =>
+			h.terminal.frames.slice(since).flatMap(frame =>
+				frame.ops.flatMap(op => {
+					if (op[0] !== "reveal") return [];
+					const target = h.find(n => n.id === op[1]);
+					return target?.k === "diff" ? [String(target.p?.text)] : [];
+				}),
+			);
+		try {
+			await settle();
+			const sf = h.terminal.surface ?? "";
+			const click = async (act: string): Promise<string[]> => {
+				const button = h.find(n => (n.p as { actions?: { click?: string } } | undefined)?.actions?.click === act);
+				expect(button).toBeDefined();
+				const since = h.terminal.frames.length;
+				h.event({ ev: "action", sf, id: button!.id, act });
+				await settle();
+				return revealedText(since);
+			};
+			// The initial cursor is on the first change. The next click must
+			// tell the host where to scroll, not only update the ANSI pane's cursor.
+			expect((await click("next-hunk")).join()).toContain("+last change");
+			let since = h.terminal.frames.length;
+			h.terminal.send("\x1b[1;3A");
+			await settle();
+			expect(revealedText(since).join()).toContain("+first change");
+			// Going backwards across the first hunk wraps within this file.
+			expect((await click("prev-hunk")).join()).toContain("+last change");
+			const views = h.find(n => n.k === "tabs" && n.p?.role === "omp.app.seg");
+			h.event({ ev: "select", sf, id: views!.id, item: "file" });
+			await settle();
+			const allText = h
+				.findAll(n => n.k === "diff")
+				.map(n => (n.k === "diff" ? String(n.p?.text) : ""))
+				.join("\n");
+			for (const line of ["line 1\n", "line 80\n", "line 160"]) expect(allText).toContain(line);
+			await click("next-hunk");
+			since = h.terminal.frames.length;
+			h.terminal.send("\x1b[1;3B");
+			await settle();
+			expect(revealedText(since).join()).toContain("+last change");
+			expect(revealedText(since).join()).not.toContain("+first change");
+			expect(h.terminal.errors).toEqual([]);
+		} finally {
+			h.terminal.send("q");
+			h.flush();
+			await closed;
+			h.tui.stop();
+		}
+	});
+
 	/** Open a 60-line file whose lines 5 and 6 changed, type `keys` into the diff, and return the applied patches. */
 	async function patchesAfter(keys: readonly string[]): Promise<string[]> {
 		await initTheme();

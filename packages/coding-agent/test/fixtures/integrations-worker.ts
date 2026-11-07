@@ -15,6 +15,7 @@ import { authService } from "../../src/thread/services/auth";
 import { integrationsThreadService } from "../../src/thread/services/integrations";
 import { RemoteMCPManager } from "../../src/thread/services/mcp-remote";
 import { settingsThreadService } from "../../src/thread/services/settings";
+import { runtimeThreadService } from "../../src/thread/services/runtime";
 
 /** Outcome of one tool call made from the worker. */
 export interface ToolCallOutcome {
@@ -37,6 +38,8 @@ export interface IntegrationsProbe {
 		args: Record<string, unknown>,
 		signal?: AbortSignal,
 	): Promise<ToolCallOutcome>;
+	/** Call as `scope`, pausing after attribution until both participating workers have tracked their call. */
+	mcpScopedCall(scope: string, toolName: string, toolCallId: string, barrier: Int32Array): Promise<ToolCallOutcome>;
 	/** Subscribe to the remote manager's tool changes; the returned promise settles on the first one. */
 	watchTools(): Promise<{ changed: Promise<void> }>;
 	/** Execute a main-defined custom tool with a worker-side context; optionally abort on its first update. */
@@ -72,13 +75,14 @@ async function runTool(
 	ctx: CustomToolContext,
 	args: Record<string, unknown>,
 	abort: AbortSignal | "on-update" | undefined,
+	toolCallId = "call-1",
 ): Promise<ToolCallOutcome> {
 	const updates: string[] = [];
 	const controller = new AbortController();
 	const signal = abort instanceof AbortSignal ? abort : controller.signal;
 	try {
 		const result = await tool.execute(
-			"call-1",
+			toolCallId,
 			args,
 			partial => {
 				updates.push(resultText(partial));
@@ -140,6 +144,30 @@ function buildProbe(): IntegrationsProbe {
 				signal,
 			);
 		},
+		mcpScopedCall: async (scope, toolName, toolCallId, barrier) => {
+			const manager = MCPManager.instance();
+			if (!manager) throw new Error("no MCP manager in worker");
+			manager.openToolScope(scope);
+			const tool = createMCPProxyTools(manager, scope).find(candidate => candidate.mcpToolName === toolName);
+			if (!tool) throw new Error(`no proxy for ${toolName}`);
+			const trackToolCall = manager.trackToolCall;
+			manager.trackToolCall = (callScope, callId) => {
+				const release = trackToolCall.call(manager, callScope, callId);
+				Atomics.add(barrier, 0, 1);
+				Atomics.notify(barrier, 0);
+				while (true) {
+					const count = Atomics.load(barrier, 0);
+					if (count >= 2) break;
+					Atomics.wait(barrier, 0, count);
+				}
+				return release;
+			};
+			try {
+				return await runTool(tool, {} as CustomToolContext, {}, undefined, toolCallId);
+			} finally {
+				manager.trackToolCall = trackToolCall;
+			}
+		},
 		watchTools: async () => {
 			unwatch?.();
 			const { promise, resolve } = Promise.withResolvers<void>();
@@ -191,7 +219,7 @@ port.once("message", (init: { sync: MessagePort; counter: SharedArrayBuffer }) =
 		},
 		{ name: "integrations-fixture", sync: { port: init.sync, counter: new Int32Array(init.counter) } },
 	);
-	const services = [settingsThreadService, authService, integrationsThreadService];
+	const services = [runtimeThreadService, settingsThreadService, authService, integrationsThreadService];
 	for (const service of services) service.installWorker?.(link);
 	link.handle("ping", nonce => nonce);
 	link.handle("boot", async globals => {

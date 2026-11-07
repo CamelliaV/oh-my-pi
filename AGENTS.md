@@ -431,7 +431,7 @@ patch series by hand/cherry-pick.
    PTY probes for extensions (`/tools`) — debug sessions MUST use `--no-session`.
 
 
-### Patch list (v18.17.0 baseline)
+### Patch list (v18.18.0 baseline)
 
 Index only. Full rationale, wire measurements, and verification recipes live in
 [`docs/fork-patches.md`](docs/fork-patches.md) — read it before rebasing, before

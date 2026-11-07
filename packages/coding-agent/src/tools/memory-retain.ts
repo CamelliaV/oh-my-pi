@@ -64,7 +64,7 @@ export class MemoryRetainTool implements AgentTool<MemoryRetainSchema, MemoryRet
 		return new MemoryRetainTool(session);
 	}
 
-	async execute(_id: string, params: MemoryRetainParams): Promise<AgentToolResult<MemoryRetainDetails>> {
+	async execute(toolCallId: string, params: MemoryRetainParams): Promise<AgentToolResult<MemoryRetainDetails>> {
 		const backend = cfgMemoryBackend.get(this.session.settings);
 		if (params.items.some(item => item.scope === "global")) {
 			// Resolve before any write so an unsupported scoping mode rejects the whole batch.
@@ -76,6 +76,17 @@ export class MemoryRetainTool implements AgentTool<MemoryRetainSchema, MemoryRet
 			} else {
 				throw new Error(`Global memory scope is not available with the ${backend} memory backend.`);
 			}
+		}
+		if (backend === "hindsight") {
+			const state = this.session.getHindsightSessionState?.();
+			if (!state) throw new Error("Hindsight backend is not initialised for this session.");
+			// Publish the complete tool call atomically, with stable IDs across retries.
+			await state.enqueueRetain(toolCallId, params.items);
+			const count = params.items.length;
+			return {
+				content: [{ type: "text", text: `${count} ${count === 1 ? "memory" : "memories"} queued.` }],
+				details: { count },
+			};
 		}
 		const memory = createToolMemoryRuntimeContext(this.session);
 		let stored = 0;

@@ -2612,3 +2612,61 @@ scrolling after repair: File Next selects the line-100 hunk at viewport y=106,
 Alt+Up returns the line-10 hunk to y=106, and Alt+Down returns to line 100.
 Screenshots verify the toolbar stays visible. No Tern plugin or user setting
 is required. Evidence: `/home/cindy/code/clean/omp-native-hunk-20261106/README.md`.
+
+### v18.17.0 → v18.18.0 (2026-11-07)
+
+Release tag `b5a6b2f7e5b6606b6562e678ead83f21738f34a0`; the downloaded
+tarball's Git tree is `cc847a53faf634167bde0ae8c12cb1d6ef38a412`, identical
+to the tag tree. Three-way merge used synthetic `upstream/v18.17.0`
+(`a95fa16cc0`) as the explicit base and a snapshot of the working tree,
+including the uncommitted Git navigation and native intent repairs. The
+upstream delta is 153 files, with eight conflicts including one generated
+viewer manifest. The user authorized local commits, backup-remote push and
+camelia deployment after the verified installation. History keeps the Git
+navigation repair, native intent repair and upstream upgrade as separate changes.
+
+Adjudications and review:
+
+- Hindsight adopts the durable outbox and retry lifecycle. Fork obfuscator
+  redaction now runs before publishing files, including default retain context;
+  automatic transcript retention keeps its existing redaction. Tool-initiated
+  Hindsight writes submit the entire call with stable tool-call IDs, preserving
+  atomic publication and retry deduplication. Other backends retain the unified
+  memory runtime, approval policy, candidate-gated skills and partial-write errors;
+  generic Hindsight `memory.save` awaits durable enqueue with its own generated ID.
+  Tests read the actual outbox contents as well as the outgoing requests.
+- Embeddings keep the fork's explicit-configuration/key gate, Gemini native
+  retrieval task types and key rotation, plus the persisted rebuild cooldown.
+  Upstream adds bounded API batches and stages a whole model migration before
+  replacing vectors. Review found the new migration could restore vectors for
+  memories edited/deleted while requests were in flight. Reuse the existing
+  source-revision capture/check at commit; the regression fails without the
+  guard and passes with it. The mismatch migration also observes the cooldown.
+- Task approval imports are a union: upstream's target binding and whitespace
+  preservation coexist with fork subagent execution-state tracking.
+- Provider-replay cleanup and focus resync preserve both live and rebuilt intent
+  paths. Native Read/Glob intent, Git hunk reveal and attachment chips regressions
+  pass. `ShellTraceBytes`, hoisted-cd display and malformed/Unicode shell traces
+  use the actual 18.18 addons, independently extracted in modern and baseline
+  modes from the checksum-verified official binary. No restamping old addons.
+- The combined regression run exposed a test-fixture dependency: MCP worker
+  fixtures omitted the runtime service needed when settings had an AgentStorage.
+  Register that service on both ends; isolated and combined tests now pass.
+- Models and KDL rules are unchanged upstream; retain the existing fork-generated
+  catalog unchanged. Catalog tests, including compat parity, pass. Regenerate the
+  export viewer using the merged checkout rather than hand-edit its manifest.
+
+Verification: full `bun run check:ts`; catalog 1327 pass; changed upstream tests
+708 pass / 3 platform skips; fork regression selection 179 pass; native/shell
+41 pass; thread/web/task selection 370 pass; memory/outbox suites and embedding
+regressions pass. Bash executor has 70 pass / 2 failures (fish exit 127 and zsh
+interactive-input timeout), reproduced on the pre-upgrade checkout (69 pass /
+the same 2 failures). Rust is supplied by the official release binaries per the
+local fork workflow, validated through native exports and shell tests.
+
+Build, isolated smoke, tool gallery, PTY startup/exit and isolated Tern intent
+replay are recorded under
+`/home/cindy/code/clean/omp-upgrade-18.18.0-20261107/`. Keep the independently
+installed recall extension symlink to
+`~/.omp/agent/local-extensions/recall-v2-20261107/recall.ts`; its separate
+integration patch was not applied by this upgrade.

@@ -6,6 +6,7 @@ import { isNameClaimedByAuthoredSkill } from "../extensibility/skills";
 import { isHindsightConfigured, loadHindsightConfig } from "../hindsight/config";
 import { createToolMemoryRuntimeContext } from "../memory-backend/runtime";
 import { memoryBackendCapabilities } from "../memory-backend/types";
+import type { MemoryBackendSaveResult } from "../memory-backend/types";
 import learnDescription from "../prompts/tools/learn.md" with { type: "text" };
 import type { ToolSession } from ".";
 
@@ -75,7 +76,7 @@ export class LearnTool implements AgentTool<LearnSchema> {
 		return new LearnTool(session);
 	}
 
-	async execute(_id: string, params: LearnParams): Promise<AgentToolResult> {
+	async execute(toolCallId: string, params: LearnParams): Promise<AgentToolResult> {
 		const capabilities = memoryBackendCapabilities[cfgMemoryBackend.get(this.session.settings)];
 		if (params.skill && !capabilities.directSkills) {
 			throw new Error(
@@ -94,14 +95,25 @@ export class LearnTool implements AgentTool<LearnSchema> {
 				throw new Error(`Global memory scope is not available with the ${backend} memory backend.`);
 			}
 		}
-		const result = await createToolMemoryRuntimeContext(this.session).save({
-			content: params.memory,
-			context: params.context,
-			source: "coding-agent-learn",
-			importance: 0.8,
-			scope: params.scope,
-			tool: "learn",
-		});
+		const saveLesson = async (): Promise<MemoryBackendSaveResult> => {
+			if (backend === "hindsight") {
+				const state = this.session.getHindsightSessionState?.();
+				if (!state) throw new Error("Hindsight backend is not initialised for this session.");
+				await state.enqueueRetain(toolCallId, [
+					{ content: params.memory, context: params.context, scope: params.scope },
+				]);
+				return { backend, stored: 0, queued: true };
+			}
+			return createToolMemoryRuntimeContext(this.session).save({
+				content: params.memory,
+				context: params.context,
+				source: "coding-agent-learn",
+				importance: 0.8,
+				scope: params.scope,
+				tool: "learn",
+			});
+		};
+		const result = await saveLesson();
 		if (result.error || (!result.queued && result.stored < 1)) {
 			const raw = result.error ?? result.message ?? "The memory backend did not store the lesson.";
 			const reason = raw.replace(/^Mnemopi did not store the memory: /, "");

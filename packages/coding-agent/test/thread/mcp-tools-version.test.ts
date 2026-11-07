@@ -8,6 +8,7 @@ import { MCPManager } from "../../src/mcp/manager";
 import { authService } from "../../src/thread/services/auth";
 import { integrationsThreadService } from "../../src/thread/services/integrations";
 import { settingsThreadService } from "../../src/thread/services/settings";
+import { runtimeThreadService } from "../../src/thread/services/runtime";
 import type { IntegrationsProbe } from "../fixtures/integrations-worker";
 import { createInMemoryAuthStorage } from "../helpers/agent-session-setup";
 import { type ServiceWorker, startServiceWorker } from "../helpers/service-worker";
@@ -45,7 +46,7 @@ beforeEach(async () => {
 	MCPManager.setInstance(manager);
 	fixture = await startServiceWorker<IntegrationsProbe>(
 		new URL("../fixtures/integrations-worker.ts", import.meta.url),
-		[settingsThreadService, authService, integrationsThreadService],
+		[runtimeThreadService, settingsThreadService, authService, integrationsThreadService],
 	);
 });
 

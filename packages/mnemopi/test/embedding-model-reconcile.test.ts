@@ -2,8 +2,10 @@
  * Wipe-and-rebuild reconcile: each `memory_embeddings` row is stamped with the
  * model that produced it. When the configured embedding model changes the vector
  * dimension changes too, so on store open `reconcileEmbeddingModel` (wired into
- * the `Mnemopi` constructor) wipes every stale vector and enqueues all live
- * memories for re-embedding under the new model. A matching model is a no-op.
+ * the `Mnemopi` constructor) probes the new model, then embeds the whole corpus with it.
+ * Only when every batch returns does it swap the stale vectors for the new ones in one
+ * transaction. A provider that fails any request leaves the stale vectors in place.
+ * A matching model is a no-op.
  */
 
 import { Database } from "bun:sqlite";
@@ -48,22 +50,46 @@ function countEmbeddings(memory: Mnemopi): number {
 }
 
 describe("reconcileEmbeddingModel on store open", () => {
+	it("does not restore embeddings of memories edited or deleted while a model migration is in flight", async () => {
+		const { db } = seedDb(OLD_MODEL);
+		const entered = Promise.withResolvers<void>();
+		const resume = Promise.withResolvers<void>();
+		const provider = async function* (texts: readonly string[]) {
+			if (texts.includes("alpha working memory")) {
+				entered.resolve();
+				await resume.promise;
+			}
+			yield texts.map(() => [0.2, 0.3, 0.4, 0.5]);
+		};
+		const memory = new Mnemopi({ db, embeddings: { model: NEW_MODEL, provider } });
+		try {
+			await entered.promise;
+			db.run("UPDATE working_memory SET content = 'revised', content_revision = 'revised' WHERE id = 'wm-1'");
+			db.run("DELETE FROM episodic_memory WHERE id = 'ep-1'");
+			resume.resolve();
+			await memory.flushExtractions();
+			expect(db.query("SELECT memory_id FROM memory_embeddings").all()).toEqual([]);
+		} finally {
+			resume.resolve();
+			memory.close();
+			db.close();
+		}
+	});
+
 	it("wipes stale embeddings + binary vectors and re-embeds when the model changed", async () => {
 		const { db, ids } = seedDb(OLD_MODEL);
 		const memory = new Mnemopi({ db, embeddings: { model: NEW_MODEL, provider: fakeEmbed() } });
 		try {
-			// Reconcile fired in the constructor: stale vector rows are gone and the
-			// episodic binary vector was cleared. The async rebuild is enqueued but
-			// has not yet run.
-			expect(countEmbeddings(memory)).toBe(0);
+			// The constructor enqueues the migration: it probes the new provider, embeds the corpus,
+			// then swaps the stale vectors and clears the episodic binary vector.
+			expect(memory.beam.pendingExtractions.size).toBeGreaterThanOrEqual(1);
+			await memory.flushExtractions();
 			const ep = memory.conn.query("SELECT binary_vector AS v FROM episodic_memory WHERE id = 'ep-1'").get() as {
 				v: Uint8Array | null;
 			};
 			expect(ep.v).toBeNull();
-			expect(memory.beam.pendingExtractions.size).toBeGreaterThanOrEqual(1);
 
-			// The background rebuild repopulates every live memory, stamped with the
-			// new model.
+			// Every live memory is re-stamped with the new model.
 			await memory.flushExtractions();
 			const rows = memory.conn.query("SELECT memory_id, model FROM memory_embeddings ORDER BY memory_id").all() as {
 				memory_id: string;
@@ -71,6 +97,28 @@ describe("reconcileEmbeddingModel on store open", () => {
 			}[];
 			expect(rows.map(row => row.memory_id).sort()).toEqual([...ids].sort());
 			expect(rows.every(row => row.model === NEW_MODEL)).toBe(true);
+		} finally {
+			memory.close();
+			db.close();
+		}
+	});
+
+	it("keeps stale embeddings when the new provider does not answer", async () => {
+		const { db } = seedDb(OLD_MODEL);
+		const down = async function* (_texts: readonly string[]): AsyncGenerator<number[][]> {
+			yield* [];
+			throw new Error("provider down");
+		};
+		const memory = new Mnemopi({ db, embeddings: { model: NEW_MODEL, provider: down } });
+		try {
+			await memory.flushExtractions();
+			const rows = memory.conn.query("SELECT model FROM memory_embeddings").all() as { model: string }[];
+			expect(rows).toHaveLength(2);
+			expect(rows.every(row => row.model === OLD_MODEL)).toBe(true);
+			const ep = memory.conn.query("SELECT binary_vector AS v FROM episodic_memory WHERE id = 'ep-1'").get() as {
+				v: Uint8Array | null;
+			};
+			expect(ep.v).not.toBeNull();
 		} finally {
 			memory.close();
 			db.close();

@@ -119,6 +119,20 @@ reasoning matters. The per-release upgrade history sits at the bottom
    card, rendered without the row. Tests: gallery-cli, read-tool-group,
    tool-execution, event-controller-args-reveal, event-controller-tool-intent,
    tool-intent-rebuild.
+   Native follow-up (2026-11-07): the ANSI annotation survived the upgrades,
+   but the Tern path never drew it consistently: grouped reads omitted intent,
+   generic tool nodes exposed only an `intent` tooltip, and native cards read
+   only `args.i`, ignoring separately stored intent. Keep one retained intent
+   on the component, invalidate native/committed rendering when it changes,
+   and put sanitized accent spans in visible native heads. Read groups attach
+   each intent to its file row or preview heading; single-file and internal-URL
+   reads keep it in the tool head. Bash/Edit already display it and are not
+   duplicated. Shared helper: `tui/tools/native-view.ts` (`withToolIntent`).
+   Regression coverage: `tui/test/tool-intent-native.test.ts` and expanded
+   `coding-agent/test/modes/tool-intent-rebuild.test.ts` (Glob, skill URL Read,
+   file Read, persisted metadata versus wire `i`). Isolated Tern surface replay
+   verified the visible labels, including both skill reads from the reported
+   example; no user Tern configuration changes.
 10. `feat(extensions)` session-nav user-turn viewport jump — runtime extension
    at `extensions/session-nav.ts`, deployed by symlink to
    `~/.omp/agent/extensions/session-nav.ts` (rebase-immune, no binary rebuild).

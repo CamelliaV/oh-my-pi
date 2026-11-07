@@ -9,7 +9,8 @@ import { ansi, code, compact, keyed, node, row, span, text } from "../native/des
 import type { NativeChild, NativeNode } from "../native/node";
 import { tryFileUri } from "../render/hyperlink";
 import { type ParsedDiagnostic, parseDiagnosticMessage, pathNameStart, shortenPath } from "../render/render-utils";
-import { plainText } from "../native/spans";
+import { plainLine, plainText } from "../native/spans";
+import { theme } from "../theme/theme";
 import type { FileDiagnosticsResult } from "./lsp";
 import { formatArtifactErrorNotice, formatTruncationMetaNotice, type OutputMeta } from "./output-meta";
 import type { NativeToolHead, NativeToolView, ToolRenderResult } from "./renderer";
@@ -146,6 +147,21 @@ export function toolHead(title: string, ...details: readonly (TspSpan | string |
 		spans.push(span(" "), value);
 	}
 	return spans;
+}
+
+/** Keep the intent in the visible head, including when the tool's body is collapsed. */
+export function withToolIntent(head: TspText, intent: string | undefined, target?: TspText): TspText {
+	const label = intent === undefined ? "" : plainLine(intent);
+	if (!label) return head;
+	const headText = typeof head === "string" ? head : head.map(part => part.t).join("");
+	const targetText = typeof target === "string" ? target : target?.map(part => part.t).join("");
+	// Some renderers already make the intent their title or target (edit and bash).
+	if (plainLine(headText).includes(label) || (targetText && plainLine(targetText).includes(label))) return head;
+	return [
+		...(typeof head === "string" ? [span(head)] : head),
+		span(` ${theme.symbol("tool.intent")} `, "accent"),
+		span(label, "accent strong"),
+	];
 }
 
 /** Error body: wrapped error text, or a JSON `code` block when the message is structured. */

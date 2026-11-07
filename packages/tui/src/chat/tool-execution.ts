@@ -43,7 +43,7 @@ import {
 	rootToggleExpanded,
 } from "../native/node";
 import { plainLine, plainText } from "../native/spans";
-import { diagnosticsSection, displayPath, resultText, toolHead } from "../tools/native-view";
+import { diagnosticsSection, displayPath, resultText, toolHead, withToolIntent } from "../tools/native-view";
 import type { FileDiagnosticsResult } from "../tools/lsp";
 import { NativeImageCache, readMediaPath, shownMedia } from "../native/blobs";
 import { imageLinksEnabled, linkedImageText } from "../prompt/image-references";
@@ -411,7 +411,7 @@ export function resolveToolCallIntent(intent: unknown, args: unknown): string | 
 	const explicit = normalizeToolIntent(intent);
 	if (explicit) return explicit;
 	if (!args || typeof args !== "object" || Array.isArray(args)) return undefined;
-	return normalizeToolIntent((args as Record<string, unknown>).i);
+	return normalizeToolIntent((args as Record<string, unknown>)[INTENT_FIELD]);
 }
 export class ToolExecutionComponent extends Container {
 	#shellPreferences: ShellVizPreferences = defaultShellVizPreferences();
@@ -608,7 +608,7 @@ export class ToolExecutionComponent extends Container {
 		this.#toolCallId = toolCallId;
 		this.#toolName = toolName;
 		this.#toolLabel = tool?.label ?? toolName;
-		this.#intent = normalizeToolIntent(options.intent);
+		this.#intent = resolveToolCallIntent(options.intent, args);
 		this.#bodyBox = new Box(0, 0);
 		let lastBodyLines: readonly string[] | undefined;
 		let lastIntent: string | undefined;
@@ -813,6 +813,7 @@ export class ToolExecutionComponent extends Container {
 		// signals "nothing meaningful changed" and the renderer can skip.
 		if (args === this.#args) return;
 		this.#args = args;
+		this.updateIntent(resolveToolCallIntent(undefined, args));
 		this.#presentation.markStale();
 		this.#displayInputVersion++;
 		this.#updateSpinnerAnimation();
@@ -823,6 +824,8 @@ export class ToolExecutionComponent extends Container {
 		const normalized = normalizeToolIntent(intent);
 		if (!normalized || normalized === this.#intent) return;
 		this.#intent = normalized;
+		this.#blockVersion++;
+		this.#displayInputVersion++;
 		super.invalidate();
 	}
 
@@ -1469,7 +1472,7 @@ export class ToolExecutionComponent extends Container {
 		const hasBody = body.length > 0;
 		const ms = this.#elapsedMs(status);
 		const live = status === "running" || status === "pending";
-		const intent = isRecord(this.#args) ? this.#args[INTENT_FIELD] : undefined;
+		const intent = this.#intent;
 		const badges = [...(head?.badges ?? []), ...(late.chip ? [late.chip] : [])];
 		const title: TspText = head?.title ?? (head ? this.#toolLabel : (view.head ?? this.#toolLabel));
 		const preview = view.preview ?? (inline ? "none" : { lines: DEFAULT_TERMINAL_PREVIEW_LINES });
@@ -1480,7 +1483,7 @@ export class ToolExecutionComponent extends Container {
 				key: this.#toolCallId,
 				name: this.#toolName,
 				// `title` here is the head verb (TspToolProps), not the common tooltip.
-				title: title as string,
+				title: withToolIntent(title, intent, head?.target) as string,
 				target: head?.target,
 				targetKind: head?.targetKind,
 				lang: head?.lang,
@@ -1532,10 +1535,13 @@ export class ToolExecutionComponent extends Container {
 		const view = this.#nativeView(host);
 		const status = this.#nativeStatus();
 		const late = this.#lateDiagnosticsParts();
-		const fallbackHead = this.#fallbackHead(view);
+		const fallbackHead = withToolIntent(
+			this.#fallbackHead(view) ?? [span(this.#toolLabel, "toolTitle")],
+			this.#intent,
+		);
 		const headChildren: NativeChild[] = [
 			// One line; paths drop whole directories first (path-aware middle cut), the full head in the tooltip.
-			text(fallbackHead ?? [span(this.#toolLabel, "toolTitle")], {
+			text(fallbackHead, {
 				lines: 1,
 				truncate: "middle",
 				grow: 1,

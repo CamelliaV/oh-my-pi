@@ -45,7 +45,7 @@ import {
 } from "../native/node";
 import { plainText } from "../native/spans";
 import { Memo } from "../native/memo";
-import { fileHref, fileRow, inlineErrorView, resultText, urlHref } from "../tools/native-view";
+import { fileHref, fileRow, inlineErrorView, resultText, urlHref, withToolIntent } from "../tools/native-view";
 import { compactHead, compactRows, presentNative, TranscriptPresentationState } from "./transcript-presentation";
 
 /**
@@ -574,6 +574,7 @@ export class ReadToolGroupComponent extends Container implements ToolExecutionHa
 		const normalized = typeof intent === "string" && intent.trim() ? intent.trim() : undefined;
 		if (!normalized || normalized === entry.intent) return;
 		entry.intent = normalized;
+		this.#blockVersion++;
 		this.#updateDisplay();
 	}
 
@@ -812,6 +813,8 @@ export class ReadToolGroupComponent extends Container implements ToolExecutionHa
 	#describeTool(entries: readonly ReadEntry[]): NativeNode {
 		const rows = this.#buildSummaryRows(this.#displayTargetsForEntries(entries));
 		const status = this.#groupStatus(entries);
+		const intent =
+			[...new Set(entries.flatMap(entry => (entry.intent ? [entry.intent] : [])))].join(" · ") || undefined;
 		const previews = entries.filter(entry => entry.status !== "error" && this.#shouldRenderPreview(entry));
 		const body: NativeChild[] = [];
 		let head: NativeToolHead;
@@ -852,7 +855,14 @@ export class ReadToolGroupComponent extends Container implements ToolExecutionHa
 				const name = shortenPath(split.path);
 				const sectionHead: TspSpan[] = [span(name || "…", "path")];
 				if (split.sel) sectionHead.push(span(`:${split.sel}`, "muted"));
-				body.push(node("section", { head: sectionHead }, this.#nativePreview(entry), `p${entry.toolCallId}`));
+				body.push(
+					node(
+						"section",
+						{ head: withToolIntent(sectionHead, entry.intent) },
+						this.#nativePreview(entry),
+						`p${entry.toolCallId}`,
+					),
+				);
 				const usage = this.#usageRows.get(entry.toolCallId);
 				if (usage) body.push(this.#nativeUsage(usage, `u${entry.toolCallId}`));
 			}
@@ -863,7 +873,8 @@ export class ReadToolGroupComponent extends Container implements ToolExecutionHa
 				...head,
 				role: "omp.tool.read",
 				name: "read",
-				title: "Read",
+				title: (rows.length <= 1 || entries.length === 1 ? withToolIntent("Read", intent) : "Read") as string,
+				intent: intent ? plainText(intent) : undefined,
 				status,
 				tone: status === "error" ? "error" : undefined,
 				frame: "inline",
@@ -911,7 +922,7 @@ export class ReadToolGroupComponent extends Container implements ToolExecutionHa
 			icon: status === "error" ? "x-circle" : undefined,
 			tone: READ_STATUS_TONE[status],
 			chip: conflicts ? { text: `${conflicts} conflict${conflicts === 1 ? "" : "s"}` } : undefined,
-			detail,
+			detail: withToolIntent(detail ?? "", this.#intentsForTargets(row.targets).join(" · ")) || undefined,
 			title: error,
 			key: row.targetPath,
 		});
@@ -972,7 +983,11 @@ export class ReadToolGroupComponent extends Container implements ToolExecutionHa
 		const children: NativeChild[] = [];
 		let head: TspSpan[] = [title];
 		if (rows.length === 1) {
-			head = [title, span(" "), ...this.#nativePathSpans(rows[0]!)];
+			const rowHead = withToolIntent(
+				[title, span(" "), ...this.#nativePathSpans(rows[0]!)],
+				this.#intentsForTargets(rows[0]!.targets).join(" · "),
+			);
+			head = typeof rowHead === "string" ? [span(rowHead)] : [...rowHead];
 			if (previews.length === 0) {
 				for (const usage of usageByRow.get(0) ?? []) children.push(this.#nativeUsage(usage, "u0"));
 			}
@@ -1000,7 +1015,11 @@ export class ReadToolGroupComponent extends Container implements ToolExecutionHa
 					{
 						label: this.#nativePathSpans(row),
 						tone: READ_STATUS_TONE[this.#statusForTargets(row.targets)],
-						detail: usage.length > 0 ? [span(usage.join(" · "), "dim")] : undefined,
+						detail:
+							withToolIntent(
+								usage.length > 0 ? [span(usage.join(" · "), "dim")] : "",
+								this.#intentsForTargets(row.targets).join(" · "),
+							) || undefined,
 					},
 					[],
 					row.targetPath,
@@ -1017,7 +1036,7 @@ export class ReadToolGroupComponent extends Container implements ToolExecutionHa
 					{
 						role: "omp.tool.read.preview",
 						tone: READ_STATUS_TONE[entry.status],
-						head: pathValue ? [title, span(" "), span(pathValue, "path")] : [title],
+						head: withToolIntent(pathValue ? [title, span(" "), span(pathValue, "path")] : [title], entry.intent),
 						collapsible: true,
 						collapsed: !entry.expanded,
 						preview: { lines: COLLAPSED_PREVIEW_LINES },

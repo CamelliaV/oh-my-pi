@@ -1615,6 +1615,8 @@ export class TurnRecovery {
 	 */
 	isRetryableError(message: AssistantMessage): boolean {
 		if (message.stopReason !== "error") return false;
+		const userDecision = AIError.userRetryDecision(message.errorMessage);
+		if (userDecision === false) return false;
 		if (this.#isUsagePreflightBlocked(message)) return false;
 		if (AIError.isResponsesRequestBodyReadTimeout(message)) return false;
 		const model = this.#host.model();
@@ -1627,6 +1629,7 @@ export class TurnRecovery {
 		if (immutableAnthropicThinkingError) return false;
 
 		const id = this.#classifyRetryMessage(message);
+		if (AIError.is(id, AIError.Flag.Abort) || AIError.is(id, AIError.Flag.UserInterrupt)) return false;
 		// Context overflow is handled by compaction, not retry.
 		const contextWindow = this.#host.model()?.contextWindow ?? 0;
 		if (AIError.isContextOverflow(message, contextWindow)) return false;
@@ -1645,6 +1648,7 @@ export class TurnRecovery {
 				AIError.retriable(id)) &&
 			this.#unexecutedToolCallsReplaySafe(message);
 		if (this.#hasReplayUnsafeOutput(message) && !replaySafeUnexecutedTools) return false;
+		if (userDecision === true) return true;
 		if (AIError.is(id, AIError.Flag.AccountPolicy) || this.isClassifierRefusal(message)) return true;
 		return AIError.retriable(id);
 	}
@@ -2556,6 +2560,7 @@ export class TurnRecovery {
 	 */
 	isHardErrorFallbackEligible(message: AssistantMessage): boolean {
 		if (message.stopReason !== "error") return false;
+		if (AIError.userRetryDecision(message.errorMessage) === false) return false;
 		if (this.#isUsagePreflightBlocked(message)) return false;
 		const model = this.#host.model();
 		if (!model) return false;
@@ -2722,6 +2727,8 @@ export class TurnRecovery {
 	async #applyRetryPolicy(message: AssistantMessage, options?: RetryPolicyOptions): Promise<boolean> {
 		const retrySettings = cfgRetry.get(this.#host.settings);
 		if (this.#host.abortInProgress() || this.#host.isDisposed()) return false;
+		const userDecision = AIError.userRetryDecision(message.errorMessage);
+		if (userDecision === false) return false;
 		// The Fireworks Fast→base degrade is an intrinsic model-selection safety net,
 		// not a retry loop, so it runs even when the user disabled retries: it switches
 		// the model once and lets the base turn proceed.
@@ -3119,7 +3126,12 @@ export class TurnRecovery {
 			// same-route budget: every distinct account must be tried first.
 			if (switchedModel) this.#retryAttempt = 1;
 		}
-		if ((classifierRefusal || accountPolicyDenial) && !switchedCredential && !switchedModel) {
+		if (
+			(classifierRefusal || accountPolicyDenial) &&
+			!switchedCredential &&
+			!switchedModel &&
+			userDecision !== true
+		) {
 			// A prior attempt in this saga already announced `auto_retry_start`
 			// (retryAttempt was incremented for each call to this method, so > 1
 			// means at least one earlier attempt started the loop) but this

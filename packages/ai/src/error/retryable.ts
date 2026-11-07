@@ -10,7 +10,7 @@ import {
 	status,
 	TRANSIENT_TRANSPORT_PATTERN,
 } from "./flags";
-import { loadUserRetryRules } from "./user-retry-rules";
+import { userRetryDecision } from "./user-retry-rules";
 
 /**
  * Whether a numeric HTTP status is in the canonical transient/retryable set:
@@ -59,9 +59,8 @@ export function isProviderRetryableError(error: unknown): boolean {
 	// built-in classification: `nonRetryablePatterns` is the explicit kill
 	// switch (checked first), `retryablePatterns` the explicit opt-in that can
 	// rescue even a misleading 4xx from a flaky relay.
-	const userRules = loadUserRetryRules();
-	if (userRules.nonRetryablePatterns.some(re => re.test(error.message))) return false;
-	if (userRules.retryablePatterns.some(re => re.test(error.message))) return true;
+	const userDecision = userRetryDecision(error.message);
+	if (userDecision !== undefined) return userDecision;
 	if (isUsageLimit(error)) return false;
 	const verdict = getShouldRetryFromHeaders(getHeadersFromError(error));
 	if (verdict !== undefined) return verdict;

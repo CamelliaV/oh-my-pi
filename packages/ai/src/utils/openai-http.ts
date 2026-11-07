@@ -21,7 +21,7 @@ import { OpenAIHttpError } from "../error";
 export { OpenAIHttpError };
 
 import type { FetchImpl } from "../types";
-import type { CapturedHttpErrorResponse } from "./http-inspector";
+import { type CapturedHttpErrorResponse, finalizeErrorMessage } from "./http-inspector";
 import { getShouldRetryFromHeaders } from "./retry-after";
 
 /** Bound the `Error.message` allocation for proxy HTML error pages and the like. */
@@ -99,22 +99,27 @@ export async function postOpenAIStream<TEvent>(init: OpenAIStreamRequestInit): P
 			signal: init.signal,
 			fetch: init.fetch,
 			maxAttempts: init.maxAttempts ?? AIError.openaiHttpMaxAttempts(),
-			// A server/gateway `x-should-retry: false` verdict is terminal, as it was
-			// under the removed SDK client. A proxy concurrency-admission 429
+			// Explicit user rules override the server's retry hint; a negative rule wins.
+			// Without an override, x-should-retry: false remains terminal. A proxy concurrency-admission 429
 			// (`rate_limit_type: max_parallel_requests`) surfaces immediately instead of
 			// being slept-and-retried here; session recovery owns its backoff/fallback
 			// (issue #8854).
-			shouldRetryResponse: async (response, bodyText) =>
-				getShouldRetryFromHeaders(response.headers) !== false &&
-				!isConcurrencyAdmissionRejection(response, bodyText) &&
-				(init.shouldRetryResponse === undefined || (await init.shouldRetryResponse(response, bodyText))),
+			shouldRetryResponse: async (response, bodyText) => {
+				const userDecision = await userResponseRetryDecision(response, bodyText);
+				return (
+					(userDecision ?? getShouldRetryFromHeaders(response.headers) !== false) &&
+					!isConcurrencyAdmissionRejection(response, bodyText) &&
+					(init.shouldRetryResponse === undefined || (await init.shouldRetryResponse(response, bodyText)))
+				);
+			},
 			// Misrouted relay nodes answer with a misleading 400 naming thinking-control
 			// semantics the request never set (code 1210 该模型始终思考…); identical
-			// replays flip 200/400 at random, so those 400s — and only those — enter the
-			// transport retry loop. Ordinary 400s surface immediately for the
+			// replays flip 200/400 at random. Explicit user patterns may also opt in
+			// otherwise-terminal statuses. Unmatched 400s surface immediately for the
 			// reasoning-effort fallback layer to own.
-			retryNonRetryableResponse: (response, bodyText) =>
-				response.status === 400 && /\[1210\]|该模型始终思考|不支持关闭思考/.test(bodyText),
+			retryNonRetryableResponse: async (response, bodyText) =>
+				(await userResponseRetryDecision(response, bodyText)) ??
+				(response.status === 400 && /\[1210\]|该模型始终思考|不支持关闭思考/.test(bodyText)),
 			// Bun's native fetch enforces a hard ~300s pre-response timeout (issue #2422).
 			// Cold large-context streams legitimately exceed it; the caller's
 			// `firstEventTimeoutMs`/`AbortSignal` already govern stuck requests.
@@ -176,17 +181,28 @@ async function* decodeStream<TEvent>(
 /** Decode a non-2xx response into an {@link OpenAIHttpError} without consuming it twice. */
 export async function captureOpenAIHttpError(response: Response): Promise<AIError.OpenAIHttpError> {
 	let bodyText: string | undefined;
-	let bodyJson: unknown;
 	try {
 		bodyText = await response.text();
-		if (bodyText.trim().length > 0) {
-			try {
-				bodyJson = JSON.parse(bodyText);
-			} catch {}
-		} else {
-			bodyText = undefined;
-		}
 	} catch {}
+	return createOpenAIHttpError(response, bodyText);
+}
+
+/** Includes structured type/param/code fields exactly as the displayed provider error does. */
+async function userResponseRetryDecision(response: Response, bodyText: string): Promise<boolean | undefined> {
+	const error = createOpenAIHttpError(response, bodyText);
+	return AIError.userRetryDecision(await finalizeErrorMessage(error, undefined, error.captured));
+}
+
+/** Decode a captured body without reading the response stream again. */
+function createOpenAIHttpError(response: Response, bodyText: string | undefined): AIError.OpenAIHttpError {
+	let bodyJson: unknown;
+	if (bodyText?.trim()) {
+		try {
+			bodyJson = JSON.parse(bodyText);
+		} catch {}
+	} else {
+		bodyText = undefined;
+	}
 	const captured: CapturedHttpErrorResponse = {
 		status: response.status,
 		headers: response.headers,

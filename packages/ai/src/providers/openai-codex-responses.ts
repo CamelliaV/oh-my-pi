@@ -4657,10 +4657,8 @@ export function isRetryableCodexFailureEvent(rawEvent: Record<string, unknown>):
 	// User-managed retry rules (~/.omp/agent/retry-rules.json) outrank the
 	// built-in tables: kill-switch patterns first, then opt-in patterns and
 	// codes — same precedence as AIError.isProviderRetryableError.
-	const userRules = AIError.loadUserRetryRules();
-	if (message && userRules.nonRetryablePatterns.some(re => re.test(message))) return false;
-	if (code && userRules.codexRetryableCodes.has(code.toLowerCase())) return true;
-	if (message && userRules.retryablePatterns.some(re => re.test(message))) return true;
+	const userDecision = AIError.userRetryDecision(message, code);
+	if (userDecision !== undefined) return userDecision;
 	if (code && CODEX_RETRYABLE_EVENT_CODES.has(code.toLowerCase())) {
 		return true;
 	}

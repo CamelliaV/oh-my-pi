@@ -1,4 +1,4 @@
-import { afterAll, beforeAll, describe, expect, it } from "bun:test";
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "bun:test";
 import type { AgentMessage, SyntheticToolResultDetails } from "@oh-my-pi/pi-agent-core";
 import type { AssistantMessage, ToolResultMessage } from "@oh-my-pi/pi-ai";
 import * as AIError from "@oh-my-pi/pi-ai/error";
@@ -133,6 +133,36 @@ describe("TurnRecovery replay-unsafe output classification", () => {
 	afterAll(() => {
 		authStorage.close();
 		tempDir.removeSync();
+	});
+
+	afterEach(() => {
+		vi.restoreAllMocks();
+	});
+
+	it("keeps explicit retry patterns behind output replay, abort and context-overflow guards", () => {
+		vi.spyOn(AIError, "userRetryDecision").mockReturnValue(true);
+		const recovery = new TurnRecovery(createHost(model, modelRegistry));
+		const text = makeMessage([{ type: "text", text: "Already displayed" }], model);
+		const tool = makeMessage([{ type: "toolCall", id: "executed", name: "write", arguments: { path: "x" } }], model);
+		const aborted = { ...makeMessage([], model), stopReason: "aborted" as const };
+		const overflow = {
+			...makeMessage([], model),
+			errorId: AIError.create(AIError.Flag.ContextOverflow),
+			errorMessage: "context window exceeded",
+		};
+		for (const message of [text, tool, aborted, overflow]) expect(recovery.isRetryableError(message)).toBe(false);
+	});
+
+	it("does not route a negative user rule through the hard-error model fallback", () => {
+		vi.spyOn(AIError, "userRetryDecision").mockReturnValue(false);
+		const recovery = new TurnRecovery(
+			createHost(model, modelRegistry, {
+				fallbackChains: { default: ["openai/gpt-4o-mini"] },
+				lastModelChangeRole: "default",
+			}),
+		);
+		expect(recovery.isRetryableError(makeMessage([], model))).toBe(false);
+		expect(recovery.isHardErrorFallbackEligible(makeMessage([], model))).toBe(false);
 	});
 
 	it("rolls back a usage fallback cancelled during model reconciliation", async () => {

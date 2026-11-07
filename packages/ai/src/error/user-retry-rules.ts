@@ -54,6 +54,7 @@ const MAX_RETRY_BUDGET = 100;
 const MAX_FILE_BYTES = 64 * 1024;
 
 interface CacheEntry {
+	filePath: string;
 	mtimeMs: number;
 	size: number;
 	rules: UserRetryRules;
@@ -165,7 +166,7 @@ export function loadUserRetryRules(): UserRetryRules {
 		cache = undefined;
 		return EMPTY_RULES;
 	}
-	if (cache && cache.mtimeMs === stat.mtimeMs && cache.size === stat.size) {
+	if (cache && cache.filePath === filePath && cache.mtimeMs === stat.mtimeMs && cache.size === stat.size) {
 		return cache.rules;
 	}
 	let text: string;
@@ -186,8 +187,17 @@ export function loadUserRetryRules(): UserRetryRules {
 				}),
 				EMPTY_RULES)
 			: parseRules(text);
-	cache = { mtimeMs: stat.mtimeMs, size: stat.size, rules };
+	cache = { filePath, mtimeMs: stat.mtimeMs, size: stat.size, rules };
 	return rules;
+}
+
+/** Explicit user verdict; undefined leaves the caller's normal retry policy in force. */
+export function userRetryDecision(message: string | undefined, codexCode?: string): boolean | undefined {
+	const rules = loadUserRetryRules();
+	if (message && rules.nonRetryablePatterns.some(pattern => pattern.test(message))) return false;
+	if (codexCode && rules.codexRetryableCodes.has(codexCode.toLowerCase())) return true;
+	if (message && rules.retryablePatterns.some(pattern => pattern.test(message))) return true;
+	return undefined;
 }
 
 /**

@@ -673,6 +673,23 @@ reasoning matters. The per-release upgrade history sits at the bottom
    tests that fail pre-change and pass post-change.
 
 
+28. `fix(ai)` user retry rules cover OpenAI HTTP and session recovery
+   (2026-11-07 follow-up). The original `febfdebc95` wired patterns into
+   provider-stream/Codex decisions but only wired budgets into `openai-http`;
+   session recovery classified errors independently. A configured
+   `region_blocked` 403 on `openai-completions` therefore stopped after one
+   HTTP request and became terminal `AuthFailed`, despite both user patterns
+   matching. Share `userRetryDecision` across provider, Codex, HTTP and session
+   decisions. Match HTTP rules against the existing decoded error formatter
+   (including type/param/code), with explicit negative rules first. Explicit
+   positives override status/header heuristics; concurrency admission and the
+   caller's transport veto still win. Session retry preserves abort, context
+   overflow, committed-output and executed-tool replay guards, and retains the
+   existing session budget. `providerStream` and `openaiHttp` remain distinct
+   budgets. Cache identity includes the rule-file path so profiles with equal
+   file size/mtime cannot borrow one another's rules. Tests cover actual request
+   attempts, hot reload, escaped JSON, session continuation and termination.
+
 30. `feat(task)` subagent execution-state visibility + `hub resume` — the
    executor's coarse `AgentProgress.status` ("running"/"completed") answered
    "is this child alive?" but not "is it queued, retrying, or dead in a way I

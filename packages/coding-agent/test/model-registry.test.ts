@@ -5,6 +5,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { Effort, type FetchImpl, type Model, type OpenAICompat, type ThinkingConfig } from "@oh-my-pi/pi-ai";
 import { streamOpenAICompletions } from "@oh-my-pi/pi-ai/providers/openai-completions";
+import { streamOpenAICodexResponses } from "@oh-my-pi/pi-ai/providers/openai-codex-responses";
 import { resolveOpenAIRequestSetup } from "@oh-my-pi/pi-ai/providers/openai-shared";
 import { streamSimple } from "@oh-my-pi/pi-ai/stream";
 import { buildModel } from "@oh-my-pi/pi-catalog/build";
@@ -797,6 +798,66 @@ describe("ModelRegistry", () => {
 			expect(websocketModel?.preferWebsockets).toBe(true);
 			expect(httpModel?.preferWebsockets).toBe(false);
 			expect(defaultModel?.preferWebsockets).toBeUndefined();
+		});
+
+		test("models.yml selects Codex Lite on the wire only for the configured model", async () => {
+			const modelsPath = path.join(tempDir, "models.yml");
+			await Bun.write(
+				modelsPath,
+				Bun.YAML.stringify({
+					providers: {
+						"codex-lite-fixture": {
+							api: "openai-codex-responses",
+							baseUrl: "https://relay.example.test/v1/responses",
+							apiKey: "fixture-key",
+							models: [
+								{ id: "lite", responsesLite: true },
+								{ id: "full", responsesLite: true },
+								{ id: "unchanged" },
+							],
+							modelOverrides: { full: { responsesLite: false } },
+						},
+					},
+				}),
+			);
+			const registry = new ModelRegistry(authStorage, modelsPath);
+			const observed: Array<{ lite: string | null; instructions: unknown; context: unknown; firstType: unknown }> =
+				[];
+			const fetch: FetchImpl = async (_input, init) => {
+				const raw = init?.body;
+				if (typeof raw !== "string" && !(raw instanceof Uint8Array)) throw new Error("Missing request body");
+				const body = JSON.parse(
+					typeof raw === "string" ? raw : new TextDecoder().decode(Bun.zstdDecompressSync(raw)),
+				);
+				observed.push({
+					lite: new Headers(init?.headers).get("x-openai-internal-codex-responses-lite"),
+					instructions: body.instructions,
+					context: body.reasoning?.context,
+					firstType: body.input[0]?.type,
+				});
+				return new Response(
+					'data: {"type":"response.completed","response":{"status":"completed","output":[]}}\n\n',
+					{
+						headers: { "content-type": "text/event-stream" },
+					},
+				);
+			};
+			for (const id of ["lite", "full", "unchanged", "lite"]) {
+				const model = registry.find("codex-lite-fixture", id);
+				if (!model || model.api !== "openai-codex-responses") throw new Error("Configured model missing");
+				const result = await streamOpenAICodexResponses(
+					model as Model<"openai-codex-responses">,
+					{
+						systemPrompt: ["Fixture instructions"],
+						messages: [{ role: "user", content: "fixture", timestamp: 1 }],
+					},
+					{ apiKey: "fixture-key", fetch, preferWebsockets: false },
+				).result();
+				expect(result.stopReason).toBe("stop");
+			}
+			const lite = { lite: "true", instructions: undefined, context: "all_turns", firstType: "additional_tools" };
+			const full = { lite: null, instructions: "Fixture instructions", context: undefined, firstType: undefined };
+			expect(observed).toEqual([lite, full, full, lite]);
 		});
 
 		test("models.yml can opt a Responses provider in while opting one model out of stored chaining", async () => {

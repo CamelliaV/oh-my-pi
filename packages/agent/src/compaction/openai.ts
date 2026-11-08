@@ -23,6 +23,7 @@ import {
 	applyInferenceHeaders,
 	applySessionHeader,
 	resolveOpenCodeGoCacheAffinity,
+	setHeaderIfAbsent,
 } from "@oh-my-pi/pi-ai/providers/inference-headers";
 import {
 	encodeResponsesToolResultOutput,
@@ -65,6 +66,7 @@ import { Tokenizer } from "../tokenizer";
 import { appendAzureApiVersion, resolveAzureOpenAiBaseUrl } from "./azure-openai-endpoint";
 import { prepareBedrockCompactionRequest } from "./bedrock";
 import { isOpenAiRemoteCompactionApi, remoteCompactionPolicyModel } from "./compaction-v2-streaming";
+import { resolveCompactionModelHeaders } from "./request-headers";
 import contextWindowTruncatedOutputPrompt from "./prompts/context-window-truncated-output.md" with { type: "text" };
 
 export * from "./compaction-v2-streaming";
@@ -442,6 +444,8 @@ function resolveOpenAiCompactModel(model: Model): string {
 function resolveOpenAiCodexCompactEndpoint(baseUrl: string | undefined): string {
 	const rawBase = baseUrl && baseUrl.length > 0 ? baseUrl : CODEX_BASE_URL;
 	const normalizedBase = rawBase.endsWith("/") ? rawBase.slice(0, -1) : rawBase;
+	if (normalizedBase.endsWith("/responses/compact")) return normalizedBase;
+	if (normalizedBase.endsWith("/responses")) return `${normalizedBase}/compact`;
 	if (/\/codex(?:\/v\d+)?$/.test(normalizedBase)) return `${normalizedBase}/responses/compact`;
 	return `${normalizedBase}/codex/responses/compact`;
 }
@@ -879,6 +883,7 @@ export async function requestOpenAiRemoteCompaction(
 		rewriteOutputs?: boolean;
 	},
 ): Promise<OpenAiRemoteCompactionResponse> {
+	model = await resolveCompactionModelHeaders(model, signal);
 	let fetchImpl: FetchImpl = opts?.fetch ?? fetch;
 	if (isBedrockOpenAIUrl(model.baseUrl)) {
 		({ model, apiKey, fetch: fetchImpl } = await prepareBedrockCompactionRequest(model, apiKey, opts?.fetch, signal));
@@ -965,7 +970,7 @@ export async function requestOpenAiRemoteCompaction(
 		if (attestation) {
 			headers[OPENAI_HEADERS.ATTESTATION] = attestation;
 		}
-		headers[OPENAI_HEADERS.ORIGINATOR] = OPENAI_HEADER_VALUES.ORIGINATOR_CODEX;
+		setHeaderIfAbsent(headers, OPENAI_HEADERS.ORIGINATOR, OPENAI_HEADER_VALUES.ORIGINATOR_CODEX);
 		// This compaction request sends no `service_tier`, so the hint is model-only.
 		headers[OPENAI_HEADERS.ROUTING_HINT] = codexRoutingHint(request.model, undefined);
 		Object.assign(
@@ -984,7 +989,7 @@ export async function requestOpenAiRemoteCompaction(
 		// Responses Lite models take the same rewrite on `/responses/compact`:
 		// instructions ride as an input item and the lite marker header is set
 		// (codex-rs routes compaction through `build_responses_request`).
-		if (model.useResponsesLite) {
+		if (model.responsesLite ?? model.useResponsesLite) {
 			applyCodexResponsesLiteShape(request);
 			headers[OPENAI_HEADERS.RESPONSES_LITE] = "true";
 			request.reasoning = {

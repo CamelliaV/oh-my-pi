@@ -317,6 +317,14 @@ Final stored summary is merged as:
 
 ### Summary generation
 
+OpenAI native compaction resolves the model's configured headers at request time,
+including headers loaded lazily from `models.yml`, just as ordinary streaming
+does. This applies to V1, native Codex V2, and explicit V2 endpoints. A configured
+Codex `originator` is preserved regardless of header-name casing; session and
+turn metadata continue to be generated for the compaction request. Custom relay
+URLs ending in `/responses` are complete V2 endpoints, and their V1 endpoint is
+that URL plus `/compact`. These paths must not append a second `/codex/responses`.
+
 `compact(...)` builds summaries from serialized conversation text:
 
 1. Convert messages via `convertToLlm()`.

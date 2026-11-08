@@ -102,11 +102,16 @@ export interface RequestBody {
 /**
  * Resolve whether a Codex request explicitly opts into Responses Lite.
  *
- * Provider-native compaction passes the model's `useResponsesLite` flag as an
- * explicit option; normal inference defaults to the full Responses contract.
+ * A request override wins over the per-model choice, then the legacy process
+ * switch. Catalog `useResponsesLite` remains compaction-only unless explicitly
+ * selected by the caller, so other configured models keep their existing policy.
  */
-export function resolveCodexResponsesLite(requested: boolean | undefined): boolean {
+export function resolveCodexResponsesLite(
+	requested: boolean | undefined,
+	model?: Pick<Model, "responsesLite">,
+): boolean {
 	if (requested !== undefined) return requested;
+	if (model?.responsesLite !== undefined) return model.responsesLite;
 	const env = $env.PI_CODEX_RESPONSES_LITE?.trim().toLowerCase();
 	if (env === "1" || env === "true") return true;
 	if (env === "0" || env === "false") return false;
@@ -475,7 +480,7 @@ export async function transformRequestBody(
 		}
 	}
 
-	const responsesLite = resolveCodexResponsesLite(options.responsesLite);
+	const responsesLite = resolveCodexResponsesLite(options.responsesLite, model);
 	if (responsesLite) {
 		applyCodexResponsesLiteShape(body);
 	}

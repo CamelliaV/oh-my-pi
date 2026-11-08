@@ -204,7 +204,22 @@ share sticky state; without `providerSessionState`, it lasts only for that call.
 Normal idle retirement is not a downgrade. Codex's protocol and recovery remain
 independent.
 
-### Bedrock request options
+#### Codex Lite per model
+
+For `openai-codex-responses`, set `responsesLite: true` on one `models` entry
+(or its `modelOverrides` entry) to use Responses Lite for both inference and
+native compaction. This carries instructions/tools as input items, sends the
+Lite header, and requests `reasoning.context: all_turns`. `false` explicitly
+keeps that model on full Responses. Other models keep their existing behavior;
+no global environment switch is needed.
+
+A request-level `responsesLite` override wins over the model setting. When the
+model setting is absent, ordinary inference retains the legacy
+`PI_CODEX_RESPONSES_LITE` fallback and native compaction retains its advertised
+`useResponsesLite` policy. The advertised catalog flag alone still does not
+opt ordinary inference into Lite.
+
+## Bedrock request options
 
 Provider-level `guardrailIdentifier`, `guardrailVersion`, and `guardrailTrace` attach a guardrail to
 Converse requests. The version defaults to `"DRAFT"` when an identifier is set; trace accepts
@@ -447,7 +462,7 @@ Provider defaults vs per-model overrides:
 - Model `headers` override provider header keys.
 - `modelOverrides` can override model metadata (`name`, `api`, `kind`, `reasoning`, `thinking`, `input`,
   `imageInputDecoder`, `imageCountBudget`, `tokenizer`, `supportsTools`, `cost`, `promptCache`, `premiumMultiplier`, `contextWindow`,
-  `maxContextWindow`, `maxTokens`, `omitMaxOutputTokens`, `preferWebsockets`, `headers`, `compat`,
+  `maxContextWindow`, `maxTokens`, `omitMaxOutputTokens`, `preferWebsockets`, `responsesLite`, `headers`, `compat`,
   `contextPromotionTarget`, `compactionModel`, and `remoteCompaction`).
 - `compat` is deep-merged for nested routing blocks (`openRouterRouting`, `vercelGatewayRouting`,
   `extraBody`, and `whenThinking`).

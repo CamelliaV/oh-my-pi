@@ -184,9 +184,8 @@ export interface OpenAICodexResponsesOptions extends StreamOptions {
 	preferWebsockets?: boolean;
 	serviceTier?: ServiceTier;
 	/**
-	 * Responses Lite transport opt-in. Normal inference defaults to full
-	 * Responses; provider-native compaction explicitly follows the model's
-	 * `useResponsesLite` flag.
+	 * Responses Lite request override. Otherwise follows the per-model
+	 * `responsesLite` choice, then the legacy process opt-in.
 	 */
 	responsesLite?: boolean;
 	/**
@@ -1288,7 +1287,7 @@ function createCodexRequestContext(
 			? createCodexProviderSessionState()
 			: undefined;
 	const transportProviderSessionState = isolatedTransportState ?? providerSessionState;
-	const responsesLite = resolveCodexResponsesLite(options?.responsesLite);
+	const responsesLite = resolveCodexResponsesLite(options?.responsesLite, model);
 	const sessionKey = getCodexWebSocketSessionKey(transportSessionId, model, accountId, apiKey, baseUrl, responsesLite);
 	const publicSessionKey = transportSessionId ? `${baseUrl}:${model.id}:${transportSessionId}` : undefined;
 	if (sessionKey && publicSessionKey) {
@@ -3250,7 +3249,7 @@ export const streamOpenAICodexResponses: StreamFunction<"openai-codex-responses"
 						requestHeaders: {},
 						codexClientVersion: CODEX_CLIENT_VERSION,
 						turnState: {},
-						responsesLite: options?.responsesLite === true,
+						responsesLite: resolveCodexResponsesLite(options?.responsesLite, model),
 						transformedBody: { model: model.id },
 						rawRequestDump: {
 							provider: model.provider,
@@ -3307,7 +3306,7 @@ export async function prewarmOpenAICodexResponses(
 	const transportSessionId = normalizeOpenAIPromptCacheKey(options?.sessionId);
 	const promptCacheKey = transportSessionId;
 	const providerSessionState = getCodexProviderSessionState(options?.providerSessionState);
-	const responsesLite = resolveCodexResponsesLite(options?.responsesLite);
+	const responsesLite = resolveCodexResponsesLite(options?.responsesLite, model);
 	const sessionKey = getCodexWebSocketSessionKey(transportSessionId, model, accountId, apiKey, baseUrl, responsesLite);
 	const publicSessionKey = transportSessionId ? `${baseUrl}:${model.id}:${transportSessionId}` : undefined;
 	if (publicSessionKey && sessionKey) {

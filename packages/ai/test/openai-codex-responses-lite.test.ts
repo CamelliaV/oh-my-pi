@@ -410,9 +410,19 @@ describe("openai-codex Responses Lite input shaping", () => {
 			expect(envOptIn.instructions).toBeUndefined();
 			expect(envOptIn.input?.[0]?.type).toBe("additional_tools");
 
-			const explicitOptOut = await transformRequestBody({ model: model.id, instructions: "sys" }, model, {
-				responsesLite: false,
-			});
+			const modelOptOut = await transformRequestBody(
+				{ model: model.id, instructions: "sys" },
+				{ ...model, responsesLite: false },
+				{},
+			);
+			expect(modelOptOut.instructions).toBe("sys");
+			expect(modelOptOut.input?.some(item => item.type === "additional_tools")).toBe(false);
+
+			const explicitOptOut = await transformRequestBody(
+				{ model: model.id, instructions: "sys" },
+				{ ...model, responsesLite: true },
+				{ responsesLite: false },
+			);
 			expect(explicitOptOut.instructions).toBe("sys");
 			expect(explicitOptOut.input?.some(item => item.type === "additional_tools")).toBe(false);
 		} finally {

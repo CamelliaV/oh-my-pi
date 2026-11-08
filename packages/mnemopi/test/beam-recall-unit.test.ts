@@ -1,6 +1,7 @@
 import { Database } from "bun:sqlite";
 import { afterEach, describe, expect, it, spyOn } from "bun:test";
 import { factRecall, formatContext, recall, recallEnhanced } from "@oh-my-pi/pi-mnemopi/core/beam/recall";
+import { currentEmbeddingModel } from "@oh-my-pi/pi-mnemopi/core/embeddings";
 import { initBeam } from "@oh-my-pi/pi-mnemopi/core/beam/schema";
 import { resyncFtsEpisodes, resyncFtsWorking } from "@oh-my-pi/pi-mnemopi/core/beam/fts-sync";
 import { invalidate } from "@oh-my-pi/pi-mnemopi/core/beam/store";
@@ -105,9 +106,10 @@ describe("beam recall free functions", () => {
 			[project, ["gate-status", "word-choice"]],
 		] as const) {
 			for (const id of ids) {
-				beam.db.run("INSERT INTO memory_embeddings (memory_id, embedding_json, model) VALUES (?, ?, 'fixture')", [
+				beam.db.run("INSERT INTO memory_embeddings (memory_id, embedding_json, model) VALUES (?, ?, ?)", [
 					id,
 					JSON.stringify([0.5, Math.sqrt(0.75)]),
+					currentEmbeddingModel(),
 				]);
 			}
 		}
@@ -231,12 +233,43 @@ describe("beam recall free functions", () => {
 			"identifier",
 		]);
 		insertWorking(beam, "semantic", "The vault selects the personal login.");
-		beam.db.run(
-			"INSERT INTO memory_embeddings (memory_id, embedding_json, model) VALUES ('semantic', '[1,0]', 'fixture')",
-		);
+		beam.db.run("INSERT INTO memory_embeddings (memory_id, embedding_json, model) VALUES ('semantic', '[1,0]', ?)", [
+			currentEmbeddingModel(),
+		]);
 		expect((await recall(beam, "1Password", 5, { queryEmbedding: [1, 0] })).map(result => result.id)).toEqual([
 			"semantic",
 		]);
+	});
+
+	it("scores only active-model vectors while retaining lexical recall of stale memories", async () => {
+		const beam = makeBeam();
+		const active = currentEmbeddingModel();
+		for (const [tier, insert] of [
+			["working", insertWorking],
+			["episodic", insertEpisodic],
+		] as const) {
+			for (const [kind, model] of [
+				["active", active],
+				["stale", `${active}-stale`],
+				["unstamped", null],
+			] as const) {
+				const id = `${tier}-${kind}`;
+				insert(beam, id, "The vault selects the personal login.");
+				beam.db.run("INSERT INTO memory_embeddings(memory_id, embedding_json, model) VALUES (?, ?, ?)", [
+					id,
+					"[1,0]",
+					model,
+				]);
+			}
+		}
+		const semantic = await recall(beam, "1Password", 10, { queryEmbedding: [1, 0] });
+		expect(semantic.map(result => result.id).sort()).toEqual(["episodic-active", "working-active"]);
+		expect(semantic.every(result => result.dense_score === 1)).toBe(true);
+		const lexical = await recall(beam, "vault", 10, { queryEmbedding: [1, 0] });
+		expect(lexical).toHaveLength(6);
+		expect(lexical.filter(result => !result.id.endsWith("-active")).every(result => result.dense_score === 0)).toBe(
+			true,
+		);
 	});
 
 	it("orders deterministic FTS-only working-memory hits by lexical strength", async () => {
@@ -262,12 +295,12 @@ describe("beam recall free functions", () => {
 		beam.db.run("INSERT INTO memory_embeddings(memory_id, embedding_json, model) VALUES (?, ?, ?)", [
 			"semantic",
 			JSON.stringify([0.6, 0.8]),
-			"fixture",
+			currentEmbeddingModel(),
 		]);
 		beam.db.run("INSERT INTO memory_embeddings(memory_id, embedding_json, model) VALUES (?, ?, ?)", [
 			"lexical",
 			JSON.stringify([0.1, Math.sqrt(0.99)]),
-			"fixture",
+			currentEmbeddingModel(),
 		]);
 		const semantic = await recall(beam, "halt output", 2, {
 			queryEmbedding: [1, 0],

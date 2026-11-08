@@ -2635,6 +2635,57 @@ Alt+Up returns the line-10 hunk to y=106, and Alt+Down returns to line 100.
 Screenshots verify the toolbar stays visible. No Tern plugin or user setting
 is required. Evidence: `/home/cindy/code/clean/omp-native-hunk-20261106/README.md`.
 
+### v18.18.0 → v18.18.1 (2026-11-08)
+
+The release tag is `24439066040e006eb08da7b204f0ac41c79d2de9`; the downloaded
+tarball reproduces its tree `49f463cd9179c108d88025396372769cefa50624` exactly.
+Synthetic `upstream/v18.18.1` parents onto `upstream/v18.18.0`. The delta is
+294 files, including 41 fork-touched files; the only conflicts are the two
+generated catalogs and three blocks in the embedding migration.
+
+Adjudications:
+
+- Embedding migration retains the fork's explicit-provider/key gate, persisted
+  15-minute retry cooldown, and source-revision validation. Upstream contributes
+  active-model-only dense recall and preserves concurrently updated vectors.
+  The existing revision guard supersedes the upstream text-only guard: even an
+  edit followed by restoration of the old text invalidates a staged vector.
+- Recall fixtures stamp the active embedding model and explicitly synchronize
+  their FTS rows, as required by the fork's non-rebuilding FTS initialization.
+  Existing lexical-ranking failures are unchanged on the pre-upgrade tree.
+- Restart/restore interruption reasons compose with fork execution-state
+  persistence. Subscription billing remains separate from OAuth/cache-tier
+  decisions, including worker auth forwarding and configured API-key pools.
+- Native compaction lazily fetches memory context only on paths that consume it;
+  fork request-usage telemetry and the uncommitted per-model Codex Lite/header
+  fixes remain intact. Those pre-existing edits are retained outside the upgrade
+  commit and included in the installed build.
+- TUI trace restoration falls back to ordinary command/output while preserving
+  native tool intents, streamed arguments, usage accounting, and pin behavior.
+- Regenerated KDL rules and RPC outputs. The model catalog is rebuilt through
+  the existing generator's `buildGeneratedModel` from the fixed release snapshot
+  plus 103 retained fork-only rows; the `web/grok` seed and first web-role choice
+  remain present. No live provider catalog refresh is part of this upgrade.
+
+Both native variants come from the checksum-verified official binary
+(`2a75e16550676783b3bc8be0e06513478dd5881efc647954642ab30db8f9be06`),
+independently extracted with `PI_NATIVE_VARIANT=modern` and `baseline`. Both
+official smoke runs pass; the merged source smoke and Bash gallery also pass.
+
+Verification: pristine upstream and merged fork `bun run check:ts` pass. The
+catalog/memory selection has 1,389 passing tests; two lexical-ranking failures
+reproduce on the old master. The new stale-model recall regression passes after
+its FTS fixture is synchronized. TUI selection: 240 pass / 3 platform skips;
+provider/compaction/configuration: 591 pass; fork lifecycle/recall/RPC selection:
+107 pass; Chinese retry driver: 6/6. The upstream application selection has
+1,223 passes; Google quota retry and fish/zsh shell failures predate this upgrade,
+and the stats-dashboard reuse timeout passes on its focused rerun. The Codex
+turn-metadata test exceeds its original 5-second limit on the old tree under
+load; the integrated provider selection passes with a 20-second test timeout.
+
+Source, native extraction, backups, test output and installation evidence live
+under `/home/cindy/code/clean/omp-upgrade-18.18.1-20261108-M8effi/`.
+
 ### v18.17.0 → v18.18.0 (2026-11-07)
 
 Release tag `b5a6b2f7e5b6606b6562e678ead83f21738f34a0`; the downloaded

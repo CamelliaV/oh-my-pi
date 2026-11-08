@@ -50,7 +50,7 @@ function countEmbeddings(memory: Mnemopi): number {
 }
 
 describe("reconcileEmbeddingModel on store open", () => {
-	it("does not restore embeddings of memories edited or deleted while a model migration is in flight", async () => {
+	it("does not restore embeddings of memories edited then restored or deleted during migration", async () => {
 		const { db } = seedDb(OLD_MODEL);
 		const entered = Promise.withResolvers<void>();
 		const resume = Promise.withResolvers<void>();
@@ -65,6 +65,10 @@ describe("reconcileEmbeddingModel on store open", () => {
 		try {
 			await entered.promise;
 			db.run("UPDATE working_memory SET content = 'revised', content_revision = 'revised' WHERE id = 'wm-1'");
+			// Restoring the same text still leaves a new revision; a text-only check would accept the stale vector.
+			db.run(
+				"UPDATE working_memory SET content = 'alpha working memory', content_revision = 'restored' WHERE id = 'wm-1'",
+			);
 			db.run("DELETE FROM episodic_memory WHERE id = 'ep-1'");
 			resume.resolve();
 			await memory.flushExtractions();
@@ -98,6 +102,65 @@ describe("reconcileEmbeddingModel on store open", () => {
 			expect(rows.map(row => row.memory_id).sort()).toEqual([...ids].sort());
 			expect(rows.every(row => row.model === NEW_MODEL)).toBe(true);
 		} finally {
+			memory.close();
+			db.close();
+		}
+	});
+
+	it("preserves updated embeddings and skips deleted memories when a rebuild commits", async () => {
+		const { db } = seedDb(OLD_MODEL);
+		const ts = new Date().toISOString();
+		db.prepare(
+			"INSERT INTO working_memory (id, content, source, timestamp, session_id) VALUES (?, ?, 'test', ?, 'default')",
+		).run("wm-deleted", "delete during rebuild", ts);
+		db.prepare("INSERT INTO memory_embeddings (memory_id, embedding_json, model) VALUES (?, ?, ?)").run(
+			"wm-deleted",
+			JSON.stringify([1, 0, 0, 0]),
+			OLD_MODEL,
+		);
+
+		const oldContent = "alpha working memory";
+		const updatedContent = "updated working memory";
+		const updatedVector = [0, 1, 0, 0];
+		const rebuildStarted = Promise.withResolvers<void>();
+		const releaseRebuild = Promise.withResolvers<void>();
+		const provider = async function* (texts: readonly string[]) {
+			if (texts.includes(oldContent)) {
+				rebuildStarted.resolve();
+				await releaseRebuild.promise;
+			}
+			yield texts.map(text => {
+				if (text === oldContent) return [1, 0, 0, 0];
+				if (text === updatedContent) return updatedVector;
+				return [0, 0, 1, 0];
+			});
+		};
+		const memory = new Mnemopi({ db, embeddings: { model: NEW_MODEL, provider } });
+		try {
+			await rebuildStarted.promise;
+			const pendingBeforeUpdate = new Set(memory.beam.pendingExtractions);
+			expect(memory.update("wm-1", updatedContent)).toBe(true);
+			expect(memory.forget("wm-deleted")).toBe(true);
+			const updateEmbedding = [...memory.beam.pendingExtractions].find(task => !pendingBeforeUpdate.has(task));
+			expect(updateEmbedding).toBeDefined();
+			await updateEmbedding;
+
+			releaseRebuild.resolve();
+			await memory.flushExtractions();
+
+			const results = await memory.recall("unrelated lexical query", 5, {
+				queryEmbedding: updatedVector,
+				vecWeight: 1,
+				ftsWeight: 0,
+				importanceWeight: 0,
+			});
+			const updated = results.find(result => result.id === "wm-1");
+			expect(updated?.content).toBe(updatedContent);
+			expect(updated?.dense_score).toBe(1);
+			expect(memory.conn.query("SELECT 1 FROM memory_embeddings WHERE memory_id = 'wm-deleted'").get()).toBeNull();
+		} finally {
+			releaseRebuild.resolve();
+			await memory.flushExtractions();
 			memory.close();
 			db.close();
 		}

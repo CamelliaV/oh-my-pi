@@ -554,8 +554,8 @@ export function reconcileEmbeddingModel(beam: BeamMemoryState): void {
 				}
 
 				transaction(beam.db, () => {
-					// Only stale-model rows go. A vector that a concurrent remember() stamped under the active
-					// model survives, and the INSERT below overwrites any row this rebuild covers.
+					// Only stale-model rows go. A vector that a concurrent remember() or update() stamped
+					// under the active model survives. Each staged insert also revalidates its source revision.
 					beam.db.query("DELETE FROM memory_embeddings WHERE model IS NOT ?").run(active);
 					beam.db.run("UPDATE episodic_memory SET binary_vector = NULL");
 					if (vecAvailable(beam.db)) {

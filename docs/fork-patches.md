@@ -2745,3 +2745,25 @@ integration patch was not applied by that upgrade. The later authorized
 session-search revision integrated the source/tests into this repository and
 restored `~/.omp/agent/extensions/recall.ts` to `extensions/recall.ts`; see
 [session-search.md](session-search.md).
+
+
+## 2026-11-08: configured Codex Lite and native compaction relay identity
+
+The local `models.yml` model property `responsesLite` explicitly selects Lite
+for normal Codex inference and remote V1/V2 compaction. Request overrides win;
+unconfigured models retain their existing inference/environment and compaction
+catalog policy. The registry accepts custom rows and `modelOverrides`, including
+explicit false. In-process model switching is verified at the HTTP body/header
+boundary; no global environment switch is installed.
+
+Native compaction now resolves lazy configured headers, preserves custom
+originator casing, and accepts a complete `/responses` endpoint (V1 adds
+`/compact`). This fixes relay rejection during compaction after ordinary turns
+succeeded. The existing default-profile model roles are unchanged.
+
+Validation: model-registry and Codex Lite/remote-compaction suites; 318 of 319
+passed together, the existing compaction turn timing test exceeded 5 seconds
+under concurrent build load and passed on focused rerun. `bun run check:ts` and
+Linux x64 binary build pass. Full network evidence, the independent cache
+investigation, and install/rollback records are in
+`/home/cindy/code/clean/omp-codex-probe-20261108/README.md`.

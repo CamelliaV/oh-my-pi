@@ -4441,6 +4441,7 @@ export interface ProviderConfigInput {
 		promptCache?: Model<Api>["promptCache"];
 		/** WebSocket preference within catalog policy; explicit false disables transport selection. */
 		preferWebsockets?: boolean;
+		responsesLite?: boolean;
 		headers?: Record<string, string>;
 		compat?: ModelSpec<Api>["compat"];
 		contextPromotionTarget?: string;

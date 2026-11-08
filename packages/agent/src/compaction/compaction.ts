@@ -1960,7 +1960,7 @@ export async function compact(
 					{
 						reasoning: resolveCompactionEffort(model, summaryOptions.thinkingLevel),
 						forceReasoningOff: summaryOptions.thinkingLevel === ThinkingLevel.Off,
-						responsesLite: model.useResponsesLite,
+						responsesLite: model.responsesLite ?? model.useResponsesLite,
 						sessionId: summaryOptions.sessionId,
 						promptCacheKey: summaryOptions.remotePromptCacheKey,
 						providerSessionState: summaryOptions.providerSessionState,
@@ -1986,7 +1986,7 @@ export async function compact(
 					const userBody = await buildTransformedCodexRequestBody(
 						model,
 						{ messages: [message] },
-						{ responsesLite: model.useResponsesLite },
+						{ responsesLite: model.responsesLite ?? model.useResponsesLite },
 					);
 					retainedUserItems.push(...(userBody.input ?? []));
 				}

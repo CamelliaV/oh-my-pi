@@ -9,6 +9,7 @@
 
 import type { Api, CodexCompactionContext, FetchImpl, Model, ProviderSessionState } from "@oh-my-pi/pi-ai";
 import * as AIError from "@oh-my-pi/pi-ai/error";
+import { setHeaderIfAbsent } from "@oh-my-pi/pi-ai/providers/inference-headers";
 import { createOpenAICodexCompactionRequestContext } from "@oh-my-pi/pi-ai/providers/openai-codex-compaction";
 import { applyCodexResponsesLiteShape } from "@oh-my-pi/pi-ai/providers/openai-codex/request-transformer";
 import type {
@@ -35,6 +36,7 @@ import {
 import { $env, isUnexpectedSocketCloseMessage, logger, ptree, stringifyJson, toError } from "@oh-my-pi/pi-utils";
 import { appendAzureApiVersion, resolveAzureOpenAiBaseUrl } from "./azure-openai-endpoint";
 import { prepareBedrockCompactionRequest } from "./bedrock";
+import { resolveCompactionModelHeaders } from "./request-headers";
 
 // ============================================================================
 // Types & Configuration
@@ -159,7 +161,7 @@ function resolveOpenAiResponsesEndpoint(baseUrl: string | undefined): string {
 function resolveOpenAiCodexResponsesEndpoint(baseUrl: string | undefined): string {
 	const rawBase = baseUrl && baseUrl.trim().length > 0 ? baseUrl : CODEX_BASE_URL;
 	const normalizedBase = rawBase.replace(/\/+$/, "");
-	if (normalizedBase.endsWith("/codex/responses")) return normalizedBase;
+	if (normalizedBase.endsWith("/responses")) return normalizedBase;
 	if (normalizedBase.endsWith("/codex")) return `${normalizedBase}/responses`;
 	return `${normalizedBase}/codex/responses`;
 }
@@ -220,16 +222,19 @@ export function buildCompactionV2Request(
 		instructions,
 		stream: true,
 		store: false,
-		...(options?.reasoning || model.useResponsesLite
+		...(options?.reasoning || (model.responsesLite ?? model.useResponsesLite)
 			? {
-					reasoning: model.useResponsesLite ? { ...options?.reasoning, context: "all_turns" } : options?.reasoning,
+					reasoning:
+						(model.responsesLite ?? model.useResponsesLite)
+							? { ...options?.reasoning, context: "all_turns" }
+							: options?.reasoning,
 					include: ["reasoning.encrypted_content"],
 				}
 			: {}),
 		...(promptCacheKey ? { prompt_cache_key: promptCacheKey } : {}),
 		...(options?.tools && options.tools.length > 0 ? { tools: options.tools, tool_choice: "auto" } : {}),
 	};
-	if (model.useResponsesLite) {
+	if (model.responsesLite ?? model.useResponsesLite) {
 		applyCodexResponsesLiteShape(body);
 	}
 	return buildCompactionV2RequestFromBody(model, body, options);
@@ -277,6 +282,7 @@ export async function requestCompactionV2Streaming(
 		codexAccessPrograms?: boolean;
 	},
 ): Promise<CompactionV2Response> {
+	model = await resolveCompactionModelHeaders(model, signal);
 	let fetchImpl: FetchImpl = options?.fetch ?? globalThis.fetch;
 	if (isBedrockOpenAIUrl(model.baseUrl)) {
 		({
@@ -381,7 +387,7 @@ async function attemptCompactionV2Streaming(
 			providerSessionState: options.providerSessionState,
 			preferWebsockets: options.preferWebsockets,
 			codexAccessPrograms: options.codexAccessPrograms,
-			responsesLite: model.useResponsesLite,
+			responsesLite: model.responsesLite ?? model.useResponsesLite,
 			codexCompaction: createOpenAICodexCompactionRequestContext({
 				context: options.codexCompaction,
 				implementation: "responses_compaction_v2",
@@ -472,10 +478,10 @@ function buildCompactionV2Headers(
 			headers[OPENAI_HEADERS.SESSION_ID] = routingSessionId;
 			headers["x-client-request-id"] = routingSessionId;
 		}
-		headers[OPENAI_HEADERS.ORIGINATOR] = OPENAI_HEADER_VALUES.ORIGINATOR_CODEX;
+		setHeaderIfAbsent(headers, OPENAI_HEADERS.ORIGINATOR, OPENAI_HEADER_VALUES.ORIGINATOR_CODEX);
 		headers[OPENAI_HEADERS.CODEX_BETA_FEATURES] = OPENAI_HEADER_VALUES.REMOTE_COMPACTION_V2;
 		headers[OPENAI_HEADERS.ROUTING_HINT] = codexRoutingHint(request.body.model, undefined);
-		if (model.useResponsesLite) {
+		if (model.responsesLite ?? model.useResponsesLite) {
 			headers[OPENAI_HEADERS.RESPONSES_LITE] = "true";
 		}
 	}

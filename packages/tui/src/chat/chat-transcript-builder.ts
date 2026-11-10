@@ -35,6 +35,7 @@ import {
 	buildAsyncResultComponent,
 	buildFileMentionBlock,
 	buildIrcMessageCard,
+	buildParentIrcMessageCard,
 	buildLaunchCompletionBlock,
 	normalizeToolArgs,
 	resolveAssistantErrorPresentation,
@@ -62,7 +63,12 @@ import {
 import { groupedReadUsageCallIds, ReadToolGroupComponent, readArgsCollapseIntoGroup } from "./read-tool-group";
 import { isReplyWrite, ReplyWriteComponent, replyDisplayMessage, toolResultReplies } from "./reply-write";
 import { SkillMessageComponent } from "./skill-message";
-import { resolveToolCallIntent, ToolExecutionComponent, type ToolExecutionHandle } from "./tool-execution";
+import {
+	resolveToolCallIntent,
+	toolRenderName,
+	ToolExecutionComponent,
+	type ToolExecutionHandle,
+} from "./tool-execution";
 import { TranscriptContainer } from "../chrome/transcript-container";
 import { createUsageRowBlock, TurnUsageTally, turnElapsedMs } from "../overlays/usage-row";
 import { CollapsedSyntheticMessageComponent, UserMessageComponent } from "./user-message";
@@ -351,9 +357,15 @@ export class ChatTranscriptBuilder {
 				// A user prompt closes the poll-displacement window, same as the live path.
 				if (message.role === "user") this.#resolveWaitingPoll();
 				if (message.role === "user") this.#resolveTodoSnapshot();
-				if (message.role === "user") {
+				if (message.role === "user" && message.attribution !== "agent") {
 					this.#flushWorkUsage();
 					this.#workUsage.begin(message.timestamp);
+				}
+				if (message.role === "user" && message.parentIrc) {
+					this.container.addChild(
+						buildParentIrcMessageCard(message.parentIrc, message.timestamp, () => this.#expanded),
+					);
+					break;
 				}
 				const userText = message.role === "user" ? textContent(message.content) : "";
 				if (userText) {
@@ -516,10 +528,16 @@ export class ChatTranscriptBuilder {
 
 		for (const content of message.content) {
 			if (content.type !== "toolCall") continue;
-			this.#resolveWaitingPoll(content.name);
+			// Mirror the live path (event-controller/ui-helpers): look the registry
+			// entry up by the wire name, then route and construct the card under
+			// the canonical name so `toolRenderers[toolName]` resolves identically
+			// live and rebuilt.
+			const tool = this.#deps.getTool?.(content.name);
+			const renderToolName = toolRenderName(content.name, tool);
+			this.#resolveWaitingPoll(renderToolName);
 
 			const afterToolSegment = timeline.afterToolCalls.get(content.id);
-			if (content.name === "read" && readArgsCollapseIntoGroup(content.arguments)) {
+			if (renderToolName === "read" && readArgsCollapseIntoGroup(content.arguments)) {
 				const intent = resolveToolCallIntent(content.intent, content.arguments);
 				if (hasErrorStop && errorMessage) {
 					const group = this.#ensureReadGroup();
@@ -546,9 +564,9 @@ export class ChatTranscriptBuilder {
 
 			this.#readGroup?.seal();
 			this.#readGroup = null;
-			const builtIn = this.#deps.isBuiltInTool?.(content.name) ?? true;
+			const builtIn = this.#deps.isBuiltInTool?.(renderToolName) ?? true;
 			let component: ToolExecutionHandle;
-			if (builtIn && isReplyWrite(content.name, content.arguments) === true) {
+			if (builtIn && isReplyWrite(renderToolName, content.arguments) === true) {
 				const reply = new ReplyWriteComponent({
 					requestRender: () => this.#deps.requestRender(),
 					imageBudget: this.#deps.ui.imageBudget,
@@ -560,7 +578,7 @@ export class ChatTranscriptBuilder {
 				component = reply;
 			} else {
 				const card = new ToolExecutionComponent(
-					content.name,
+					renderToolName,
 					content.arguments,
 					{
 						useBuiltInRenderer: builtIn,
@@ -570,7 +588,7 @@ export class ChatTranscriptBuilder {
 						intent: resolveToolCallIntent(content.intent, content.arguments),
 						transcriptPresenters: false,
 					},
-					this.#deps.getTool?.(content.name),
+					tool,
 					this.#deps.ui,
 					this.#deps.cwd,
 					content.id,
@@ -608,7 +626,11 @@ export class ChatTranscriptBuilder {
 	#appendToolResult(message: Extract<AgentMessage, { role: "toolResult" }>): void {
 		this.#workUsage.addToolResult(message);
 		const pending = this.#pendingTools.get(message.toolCallId);
-		const isReadGroupResult = message.toolName === "read" && (!pending || pending instanceof ReadToolGroupComponent);
+		// Mirror the call side: resolve the wire toolName through the registry so
+		// aliased results route under the canonical name their call was built with.
+		const tool = this.#deps.getTool?.(message.toolName);
+		const renderToolName = toolRenderName(message.toolName, tool);
+		const isReadGroupResult = renderToolName === "read" && (!pending || pending instanceof ReadToolGroupComponent);
 		if (isReadGroupResult) {
 			let component = pending;
 			if (!component) {
@@ -640,10 +662,10 @@ export class ChatTranscriptBuilder {
 		if (!pending) return;
 		pending.updateResult(message, false, message.toolCallId);
 		this.#pendingTools.delete(message.toolCallId);
-		if (message.toolName === "wait" && pending instanceof ToolExecutionComponent && pending.isDisplaceableBlock()) {
+		if (renderToolName === "wait" && pending instanceof ToolExecutionComponent && pending.isDisplaceableBlock()) {
 			this.#waitingPoll = pending;
 		} else if (
-			message.toolName === "todo" &&
+			renderToolName === "todo" &&
 			pending instanceof ToolExecutionComponent &&
 			pending.canBeDisplacedBy("todo")
 		) {

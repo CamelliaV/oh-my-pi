@@ -33,6 +33,9 @@ interface EmbeddingRow {
 	readonly model: string | null;
 }
 
+// Fake-provider tests choose their embedding mode explicitly, independent of host defaults.
+const TEST_EMBEDDINGS = { disabled: false, model: "issue-1832-test" } as const;
+
 /**
  * Deterministic fake provider: each text yields a 4-D vector based on the
  * presence of marker words. Different markers project onto orthogonal axes
@@ -60,7 +63,7 @@ function withFakeMemory<T>(fn: (memory: Mnemopi, calls: () => number) => Promise
 	const { provider, calls } = fakeProvider();
 	const memory = new Mnemopi({
 		db: new Database(":memory:"),
-		embeddings: { provider: provider.embed.bind(provider) },
+		embeddings: { ...TEST_EMBEDDINGS, provider: provider.embed.bind(provider) },
 	});
 	return fn(memory, calls).finally(() => memory.close());
 }
@@ -103,7 +106,7 @@ describe("issue #1832 — embedding write/read coverage", () => {
 		};
 		const memory = new Mnemopi({
 			db: new Database(":memory:"),
-			embeddings: { provider },
+			embeddings: { ...TEST_EMBEDDINGS, provider },
 		});
 		try {
 			const raw =
@@ -200,6 +203,95 @@ describe("issue #1832 — embedding write/read coverage", () => {
 		});
 	});
 
+	it("a late remember embedding cannot overwrite a completed update embedding", async () => {
+		const oldContent = "alpha facts about migration";
+		const updatedContent = "gamma postmortem";
+		const updatedVector = [0, 0, 1, 0];
+		const rememberStarted = Promise.withResolvers<void>();
+		const releaseRemember = Promise.withResolvers<void>();
+		const provider = async function* (texts: readonly string[]) {
+			if (texts.includes(oldContent)) {
+				rememberStarted.resolve();
+				await releaseRemember.promise;
+			}
+			yield texts.map(text => {
+				if (text === oldContent) return [1, 0, 0, 0];
+				if (text === updatedContent) return updatedVector;
+				return [0, 0, 0, 1];
+			});
+		};
+		const memory = new Mnemopi({
+			db: new Database(":memory:"),
+			embeddings: { ...TEST_EMBEDDINGS, provider },
+		});
+		try {
+			const id = memory.remember(oldContent, { source: "test" });
+			await rememberStarted.promise;
+
+			const pendingBeforeUpdate = new Set(memory.beam.pendingExtractions);
+			expect(memory.update(id, updatedContent)).toBe(true);
+			const updateEmbedding = [...memory.beam.pendingExtractions].find(task => !pendingBeforeUpdate.has(task));
+			expect(updateEmbedding).toBeDefined();
+			await updateEmbedding;
+
+			releaseRemember.resolve();
+			await memory.flushExtractions();
+
+			const results = await memory.recall("unrelated lexical query", 5, {
+				queryEmbedding: updatedVector,
+				vecWeight: 1,
+				ftsWeight: 0,
+				importanceWeight: 0,
+			});
+			const updated = results.find(result => result.id === id);
+			expect(updated?.content).toBe(updatedContent);
+			expect(updated?.dense_score).toBe(1);
+		} finally {
+			releaseRemember.resolve();
+			await memory.flushExtractions();
+			memory.close();
+		}
+	});
+
+	it("forget during embedding does not recreate a persisted vector", async () => {
+		const content = "alpha facts about migration";
+		const embedStarted = Promise.withResolvers<void>();
+		const releaseEmbed = Promise.withResolvers<void>();
+		const provider = async function* (texts: readonly string[]) {
+			if (texts.includes(content)) {
+				embedStarted.resolve();
+				await releaseEmbed.promise;
+			}
+			yield texts.map(() => [1, 0, 0, 0]);
+		};
+		const memory = new Mnemopi({
+			db: new Database(":memory:"),
+			embeddings: { ...TEST_EMBEDDINGS, provider },
+		});
+		try {
+			const id = memory.remember(content, { source: "test" });
+			await embedStarted.promise;
+
+			expect(memory.forget(id)).toBe(true);
+			let invalidations = 0;
+			(memory.beam.caches as { queryCache?: { invalidate: () => void } }).queryCache = {
+				invalidate: () => {
+					invalidations += 1;
+				},
+			};
+
+			releaseEmbed.resolve();
+			await memory.flushExtractions();
+
+			expect(readEmbeddings(memory)).toEqual([]);
+			expect(invalidations).toBe(0);
+		} finally {
+			releaseEmbed.resolve();
+			await memory.flushExtractions();
+			memory.close();
+		}
+	});
+
 	it("consolidateToEpisodic() writes an embedding for the new episodic id", async () => {
 		await withFakeMemory(async memory => {
 			const wmId = memory.remember("alpha launch checklist", { source: "test" });
@@ -230,7 +322,7 @@ describe("issue #1832 — embedding write/read coverage", () => {
 		const stdout = { write: (s: string) => captured.push(s) };
 		const stderr = { write: (s: string) => captured.push(s) };
 		const runtimeOptions: ResolvedMnemopiRuntimeOptions = {
-			embeddings: { provider },
+			embeddings: { ...TEST_EMBEDDINGS, provider },
 		};
 
 		await withMnemopiRuntimeOptions(runtimeOptions, async () => {
@@ -270,7 +362,7 @@ describe("issue #1832 — embedding write/read coverage", () => {
 		mkdirSync(dataDir, { recursive: true });
 		const dbPath = join(dataDir, "mnemopi.db");
 		const runtimeOptions: ResolvedMnemopiRuntimeOptions = {
-			embeddings: { provider },
+			embeddings: { ...TEST_EMBEDDINGS, provider },
 		};
 
 		let thrown: unknown;
@@ -314,7 +406,7 @@ describe("issue #1832 — embedding write/read coverage", () => {
 		mkdirSync(dataDir, { recursive: true });
 		const dbPath = join(dataDir, "mnemopi.db");
 		const runtimeOptions: ResolvedMnemopiRuntimeOptions = {
-			embeddings: { provider },
+			embeddings: { ...TEST_EMBEDDINGS, provider },
 		};
 
 		const originalDataDir = process.env.MNEMOPI_DATA_DIR;
@@ -379,11 +471,11 @@ describe("issue #1832 — embedding write/read coverage", () => {
 
 		const alpha = new Mnemopi({
 			db: new Database(":memory:"),
-			embeddings: { provider: alphaProvider },
+			embeddings: { ...TEST_EMBEDDINGS, provider: alphaProvider },
 		});
 		const beta = new Mnemopi({
 			db: new Database(":memory:"),
-			embeddings: { provider: betaProvider },
+			embeddings: { ...TEST_EMBEDDINGS, provider: betaProvider },
 		});
 
 		try {
@@ -421,7 +513,11 @@ describe("issue #1832 — embedding write/read coverage", () => {
 				}
 				yield texts.map(text => (text.includes("Berlin") ? [0, 1, 0, 0] : [1, 0, 0, 0]));
 			};
-			const memory = new Mnemopi({ dbPath: ":memory:", embeddings: { provider }, llm: false });
+			const memory = new Mnemopi({
+				dbPath: ":memory:",
+				embeddings: { ...TEST_EMBEDDINGS, provider },
+				llm: false,
+			});
 			try {
 				const root = memory.remember(
 					mutation === "forget-summary-source" ? "Location source" : "Ada lives in Paris",

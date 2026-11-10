@@ -380,6 +380,8 @@ This skill is added after session creation.
 		try {
 			const learn = session.getToolByName("learn");
 			expect(learn).toBeDefined();
+			const promptSkills = session.promptSkills;
+			const renderedSkills = session.renderedSkills;
 			await learn!.execute("learn-skill-create", {
 				memory: "Use learned-managed-skill immediately in the same session.",
 				skill: {
@@ -392,13 +394,19 @@ This skill is added after session creation.
 
 			expect(session.skills.some(skill => skill.name === "learned-managed-skill")).toBe(true);
 			expect(getActiveSkills().some(skill => skill.name === "learned-managed-skill")).toBe(true);
-			expect(session.agent.state.systemPrompt.join("\n")).toContain("learned-managed-skill");
+			// The prompt keeps its skill list so the cache prefix survives; the next user prompt carries a notice.
+			expect(session.agent.state.systemPrompt.join("\n")).not.toContain("learned-managed-skill");
+			expect(session.promptSkills).toBe(promptSkills);
+			expect(session.renderedSkills).toBe(renderedSkills);
 			const readSkill = session.getToolByName("read");
 			expect(readSkill).toBeDefined();
 			const readResult = await readSkill!.execute("read-learned-skill", { path: "skill://learned-managed-skill" });
 			expect(
 				readResult.content.some(part => part.type === "text" && part.text.includes("# Learned Managed Skill")),
 			).toBe(true);
+			await session.newSession();
+			expect(session.systemPrompt.join("\n")).toContain("learned-managed-skill");
+			expect(session.renderedSkills.some(skill => skill.name === "learned-managed-skill")).toBe(true);
 		} finally {
 			await session.dispose();
 			setAgentDir(originalAgentDir);

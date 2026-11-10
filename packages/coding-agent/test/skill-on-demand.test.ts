@@ -173,11 +173,15 @@ describe("optional on-demand managed skills", () => {
 		await recovery.replaceSkills?.(
 			skills.map(skill => ({ ...skill, description: "Replacement discovery metadata" })),
 		);
+		await session.refreshBaseSystemPrompt();
 		expect(session.skills[0].description).toBe("Replacement discovery metadata");
 		expect(session.systemPrompt).toEqual(prompt);
 		expect(session.renderedSkills.map(skill => ({ name: skill.name, description: skill.description }))).toEqual(
 			listed,
 		);
+		await session.newSession();
+		expect(session.promptSkills[0].description).toBe("Replacement discovery metadata");
+		expect(session.renderedSkills.every(skill => skill.description === "Replacement discovery metadata")).toBe(true);
 	});
 });
 

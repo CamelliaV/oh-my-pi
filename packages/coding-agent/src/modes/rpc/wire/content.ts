@@ -86,9 +86,14 @@ export const messageDefs = {
 		"costTelemetry?": JSON_OBJECT,
 	},
 
+	ParentIrc: doc(
+		{ from: doc("string", "Sending parent agent id."), body: doc("string", "Message body as the parent wrote it.") },
+		"Parent-agent IRC message carried by a steer; render it instead of the model-facing `content` envelope.",
+	),
 	UserMessage: {
 		role: "'user'",
 		content: "MessageContent",
+		"parentIrc?": "ParentIrc",
 		"synthetic?": "boolean",
 		"steering?": "boolean",
 		"liveSteered?": "boolean",

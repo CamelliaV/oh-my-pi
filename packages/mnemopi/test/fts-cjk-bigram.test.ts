@@ -21,8 +21,6 @@ import { initBeam } from "@oh-my-pi/pi-mnemopi/core/beam/schema";
 import { remember, updateWorking } from "@oh-my-pi/pi-mnemopi/core/beam/store";
 import { cjkBigramize } from "@oh-my-pi/pi-mnemopi/util/regex";
 
-process.env.MNEMOPI_NO_EMBEDDINGS = "1";
-
 type BeamState = Parameters<typeof remember>[0];
 
 function makeBeam(db: Database): BeamState {
@@ -64,14 +62,19 @@ describe("cjkBigramize", () => {
 describe("CJK FTS recall through the bigram protocol", () => {
 	let db: Database;
 	let beam: BeamState;
+	let previousNoEmbeddings: string | undefined;
 
 	beforeAll(() => {
+		previousNoEmbeddings = process.env.MNEMOPI_NO_EMBEDDINGS;
+		process.env.MNEMOPI_NO_EMBEDDINGS = "1";
 		db = new Database(":memory:");
 		initBeam(db);
 		beam = makeBeam(db);
 	});
 
 	afterAll(() => {
+		if (previousNoEmbeddings === undefined) delete process.env.MNEMOPI_NO_EMBEDDINGS;
+		else process.env.MNEMOPI_NO_EMBEDDINGS = previousNoEmbeddings;
 		db.close();
 	});
 

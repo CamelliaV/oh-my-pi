@@ -236,6 +236,9 @@ const PROVIDER_FINISH_ERROR_PATTERN = /\bProvider (?:returned error finish_reaso
 /** Misrouted relay rejection: new-api gateways' misleading always-thinking 400. */
 const MISROUTED_RELAY_400_PATTERN = /\[1210\]|该模型始终思考|不支持关闭思考/;
 const EMPTY_RESPONSE_PATTERN = /\bthought-only response without final output\b/i;
+/** Gemini's MALFORMED_RESPONSE finish is a backend fault: the same request can succeed. Kept narrow so
+ *  other "malformed response" errors (e.g. an image API's) stay terminal. */
+const MALFORMED_RESPONSE_FINISH_PATTERN = /\bfinish reason:\s*MALFORMED_RESPONSE\b/i;
 const CONTENT_FILTER_PATTERN = /\b(?:incomplete:\s*)?content_filter\b/i;
 const ACCOUNT_POLICY_PATTERN = /\bcyber_policy\b|trusted access for cyber/i;
 export const ANTHROPIC_ACCOUNT_POLICY_PATTERN =
@@ -657,6 +660,7 @@ function classifyText(
 		if (isMalformedFunctionCallText(errorMessage)) kinds |= Flag.MalformedFunctionCall;
 		if (isProviderFinishErrorText(errorMessage)) kinds |= Flag.ProviderFinishError;
 		if (EMPTY_RESPONSE_PATTERN.test(errorMessage)) kinds |= Flag.EmptyResponse | Flag.Transient;
+		if (MALFORMED_RESPONSE_FINISH_PATTERN.test(errorMessage)) kinds |= Flag.Transient;
 		if (isContentBlockedText(errorMessage)) kinds |= Flag.ContentBlocked;
 
 		if (

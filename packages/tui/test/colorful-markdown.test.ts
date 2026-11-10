@@ -41,7 +41,7 @@ describe("colorful Markdown", () => {
 		expect(out).toContain(t.ansiFg("magenta", t.bold(t.underline("One"))));
 		expect(out).toContain(t.ansiFg("yellow", t.bold("Two")));
 		// Depths past the ladder reuse its last hue.
-		expect(out).toContain(t.ansiFg("blue", t.bold("Six")));
+		expect(out).toContain(t.ansiFg("blue", t.italic("Six")));
 		expect(out).toContain(t.ansiFg("magenta", t.italic("soft")));
 		// Cell wrapping closes styles after the text, so match the opening color only.
 		const yellow = t.ansiFg("yellow", "").replace("\x1b[39m", "");
@@ -57,7 +57,7 @@ describe("colorful Markdown", () => {
 		const out = new Markdown(DOC, 0, 0, getMarkdownTheme()).render(60).join("\n");
 
 		expect(out).toContain(t.fg("mdHeading", t.bold("Two")));
-		expect(out).toContain(t.fg("mdHeading", t.bold("Six")));
+		expect(out).toContain(t.fg("mdHeading", t.italic("Six")));
 		expect(out).toContain(t.fg("mdCode", "code"));
 		expect(out).not.toContain(t.ansiFg("magenta", ""));
 	});

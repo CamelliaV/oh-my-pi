@@ -18,7 +18,7 @@ export interface PromptSegment {
  * section headers.
  */
 const SEGMENT_OPENERS = [
-	/^§ \S/,
+	/^[§⁂] \S/,
 	/^#{1,2} \S/,
 	/^<skills>/,
 	/^<project-context>/,
@@ -62,7 +62,7 @@ export function splitIntoSegments(text: string): readonly PromptSegment[] {
 		const end = index + 1 < boundaries.length ? boundaries[index + 1].offset : text.length;
 		segments.push({ label: boundary.label, text: text.slice(boundary.offset, end) });
 	}
-	// A marker whose whole segment is its own line (`§ Runtime`, `<project-context>`)
+	// A marker whose whole segment is its own line (`⁂ Runtime`, `<project-context>`)
 	// is a heading for what follows: fold it into the next segment and keep the
 	// nesting in the label instead of spending a row on 3 tokens.
 	const merged: PromptSegment[] = [];

@@ -466,8 +466,10 @@ function replaySessionUsage(entries: readonly SessionEntry[], flushTrailing: boo
 		if (!message) continue;
 		switch (message.role) {
 			case "user":
-				flush();
-				workUsage.begin(message.timestamp);
+				if (message.attribution !== "agent") {
+					flush();
+					workUsage.begin(message.timestamp);
+				}
 				break;
 			case "assistant":
 				workUsage.add(message);

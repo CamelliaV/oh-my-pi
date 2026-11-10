@@ -1396,6 +1396,19 @@ This is a paragraph`,
 			// are the heading text alone, so a reader never sees `### ` echoed back.
 			expect(headings).toEqual(["One", "Two", "Three", "Four", "Five", "Six"]);
 		});
+
+		it("keeps list-item headings marker-free at every depth", () => {
+			const source = ["# One", "## Two", "### Three", "#### Four", "##### Five", "###### Six"]
+				.map(heading => `- ${heading}`)
+				.join("\n\n");
+			const plain = new Markdown(source, 0, 0, defaultMarkdownTheme)
+				.render(80)
+				.map(line => stripVTControlCharacters(line))
+				.join("\n");
+
+			for (const heading of ["One", "Two", "Three", "Four", "Five", "Six"]) expect(plain).toContain(heading);
+			expect(plain).not.toContain("#");
+		});
 	});
 
 	describe("Spacing after blockquotes", () => {

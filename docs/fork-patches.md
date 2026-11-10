@@ -2806,3 +2806,76 @@ first-target latency at 136ms before / 123ms after and an immediate pair of
 jumps at 293ms / 167ms (`latency-old/` and `latency-new/`). These measurements
 use the isolated local renderer and the same 112-tool synthetic conversation.
 
+## v18.18.1 → v18.18.6 (2026-11-10)
+
+The release commit is `9058ab9d229663e229e2867824ba6df6f21e9e59`; the downloaded
+tarball reproduces its tree `fd379b65368a20c7648d97f2c2b99cc03e019254` exactly.
+The upstream delta covers 837 files, 97 also changed by the fork. A three-way
+tree merge against `upstream/v18.18.1` had 16 conflicting files. The input
+snapshot includes all 15 previously uncommitted Tern text-navigation paths.
+The user confirmed normal operation on 2026-11-10; navigation and upgrade are
+recorded separately after acceptance.
+
+Adjudications:
+
+- Skills retain the candidate/on-demand catalog policy and frozen prompt
+  snapshot. Upstream `reloadSkills` updates the registry and sends eligible
+  notices without rewriting the prefix; `manage_skill` retains the fork's
+  next-session activation rule. Held MCP mount changes mark the frozen roster
+  so a later no-op rebuild cannot leak mounted routes into the cached prefix.
+  The prompt viewer recognizes both `⁂` and `§` section markers.
+- TUI keeps rounded code frames, marker-free headings and the depth palette,
+  including list headings. Upstream settled-card reuse and parent IRC cards
+  preserve tool intents; replayed agent-attributed messages no longer split
+  one work-usage aggregate. Text navigation and Escape cancellation survive.
+- Memory keeps explicit embedding configuration/key gates, persisted migration
+  cooldown, source-revision validation and recursive derived-summary cleanup.
+  Embedding fixtures explicitly select their fake provider/model; the FTS
+  fixture restores its temporary disable flag instead of poisoning other files.
+- Provider and recovery auto-merges preserve relay identity, per-model Codex
+  Lite, retry rules, Chinese effort fallback and usage telemetry. Upstream's
+  `handleCommittedTextStreamStall` supplies the bounded partial-text continuation.
+- Edit auto-repair keeps the fork candidate chain and admits/records cost for
+  each retry. Title-usage tests explicitly request fork mode; the fork's tiny
+  default remains unchanged.
+- Rules, RPC and export-viewer artifacts are regenerated. The offline catalog
+  contains 6,071 rows including 103 retained fork-only rows and `web/grok`.
+  Rebuilding uses `buildGeneratedModel(toModelSpec(model))`: resolved `compat`
+  must never become authored `compatConfig`, which would pin host-derived wire
+  behavior when a model is subsequently used through a relay.
+
+Official binary SHA-256:
+`a8059b95de5eaba0b3fb6f7182842d661feae29cb2931cdbeba2986db4751ecb`.
+Both native variants were independently extracted from it; both official
+smokes pass, and actual `RunTrace`/`ShellVisualization` constructors load.
+
+Verification: pristine upstream, pre-upgrade fork and merged `check:ts` pass.
+Catalog 1,346/0; provider selection 721/0; memory selection 73/0; additional
+fork selection 91/0; corrected skill/prefix/title selection 87/0; Chinese retry
+driver 6/6. TUI has 4,591 passes and the same nine failures as the old fork;
+agent has 869 passes and the same one failure. The broad application run has
+4,102 passes and shared-state failures: isolated runs distinguish old task
+progress assertions, collab fixture contamination and an upstream browser
+locale discrepancy from the two corrected skill/prefix regressions.
+
+The main-checkout release build passes isolated startup and Bash gallery.
+The real Tern renderer submits the new HTML ask form and returns the selected
+value through a loopback model fixture. Old and new binaries each complete
+all 44 navigation checks; each records one pre-existing >3px alignment failure
+while preserving navigation, draft, caret, focus and Escape behavior. No external
+model requests are made by these UI scenarios.
+
+Evidence, source/input snapshots, logs, generated-catalog driver, rollback
+binary and native backups: `/home/cindy/code/oh-my-pi-upgrade-18.18.6/`.
+Tree refs under `refs/upgrade-snapshots/v18.18.6/` retain before/upstream/merged
+objects. After user acceptance, `upstream/v18.18.6` continues the synthetic
+history from `upstream/v18.18.1`; the navigation feature precedes the two-parent
+upgrade merge on master.
+
+Installed the final main-checkout build atomically at `~/.local/bin/omp-patched`,
+preserving `~/.local/bin/omp` and `~/.fzf/bin/omp`. SHA-256:
+`351ddc3c0a50ac9b521b4603b8d08ac7eb10e0f43f3b54197d6139bb6f352cf7`.
+Both default entries resolve to v18.18.6; isolated installed-entry smoke and
+the installed executable's Tern form interaction pass. Rollback executable:
+`/home/cindy/code/oh-my-pi-upgrade-18.18.6/omp-patched-before-18.18.6`.
+

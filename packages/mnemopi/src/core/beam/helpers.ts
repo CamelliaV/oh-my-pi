@@ -804,10 +804,11 @@ async function runEmbedding(beam: BeamMemoryState, items: readonly PendingEmbedI
 			// A recall taken while these vectors were still generating cached an FTS-only ranking, and
 			// committing vectors changes what recall returns -- so that cache must be dropped, or the
 			// pre-embedding order keeps being served for the whole cache TTL. Gated on `committed`: a
-			// batch whose provider returned a short or empty matrix inserts nothing, changes no ranking,
-			// and invalidating there would only discard a still-valid cache. Only the query cache is
-			// affected; the polyphonic subject dictionary is built from facts/gists, which an embedding
-			// batch never touches.
+			// batch whose provider returned a short or empty matrix inserts nothing, and a row whose
+			// memory was updated or deleted while its vector was in flight is discarded instead of
+			// written; neither changes a ranking, and invalidating there would only discard a
+			// still-valid cache. Only the query cache is affected; the polyphonic subject dictionary
+			// is built from facts/gists, which an embedding batch never touches.
 			if (committed > 0) beam.caches.queryCache?.invalidate();
 		});
 	} catch (error) {

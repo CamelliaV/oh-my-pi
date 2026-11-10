@@ -93,10 +93,19 @@ export interface Usage {
 	costTelemetry?: Record<string, unknown>;
 }
 
+/** Parent-agent IRC message carried by a steer; render it instead of the model-facing `content` envelope. */
+export interface ParentIrc {
+	/** Sending parent agent id. */
+	from: string;
+	/** Message body as the parent wrote it. */
+	body: string;
+}
+
 export interface UserMessage {
 	role: "user";
 	content: MessageContent;
 	timestamp: number;
+	parentIrc?: ParentIrc;
 	synthetic?: boolean;
 	steering?: boolean;
 	liveSteered?: boolean;

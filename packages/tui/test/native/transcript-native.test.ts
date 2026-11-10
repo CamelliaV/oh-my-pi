@@ -1,5 +1,5 @@
 import { afterEach, beforeAll, describe, expect, it, vi } from "bun:test";
-import type { AgentTool } from "@oh-my-pi/pi-agent-core";
+import type { AgentMessage, AgentTool } from "@oh-my-pi/pi-agent-core";
 import { createCompactionSummaryMessage, createCustomMessage } from "@oh-my-pi/pi-agent-core/compaction/messages";
 import type { AssistantMessage } from "@oh-my-pi/pi-ai";
 import { createAdvisorMessageCard } from "@oh-my-pi/pi-tui/chat/advisor-message";
@@ -13,11 +13,13 @@ import { LateDiagnosticsMessageComponent } from "@oh-my-pi/pi-tui/chat/late-diag
 import { SkillMessageComponent } from "@oh-my-pi/pi-tui/chat/skill-message";
 import { StrippedToolCallsPlaceholder } from "@oh-my-pi/pi-tui/chat/stripped-tool-calls-placeholder";
 import { stopSharedSpinnerTicker, ToolExecutionComponent } from "@oh-my-pi/pi-tui/chat/tool-execution";
+import { setInternalUrlSchemeHost } from "@oh-my-pi/pi-tui/tools/url-scheme-host";
 import type { TranscriptEntryLike } from "@oh-my-pi/pi-tui/chat/transcript-entry";
 import { buildAsyncResultBlock, buildFileMentionBlock } from "@oh-my-pi/pi-tui/chat/transcript-render-helpers";
 import { TodoReminderComponent } from "@oh-my-pi/pi-tui/chat/todo-reminder";
 import { TtsrNotificationComponent } from "@oh-my-pi/pi-tui/chat/ttsr-notification";
 import { CollapsedSyntheticMessageComponent, UserMessageComponent } from "@oh-my-pi/pi-tui/chat/user-message";
+import { buildSessionUsageTimeline } from "@oh-my-pi/pi-tui/chat/work-usage";
 import { card, node, text } from "@oh-my-pi/pi-tui/native/describe";
 import { setNativeRendering } from "@oh-my-pi/pi-tui/native/state";
 import {
@@ -87,6 +89,102 @@ function toolTranscript(): TranscriptEntryLike[] {
 				toolCallId: "call-1",
 				toolName: "lookup_thing",
 				content: [{ type: "text", text: Array.from({ length: 30 }, (_, i) => `row ${i}`).join("\n") }],
+				isError: false,
+				timestamp: 2,
+			},
+		},
+	];
+}
+
+/** Viewer transcript entries: a tool call whose wire name aliases a canonical registry entry. */
+function aliasToolTranscript(): TranscriptEntryLike[] {
+	return [
+		{
+			type: "message",
+			id: "a1",
+			parentId: null,
+			timestamp: "2026-01-01T00:00:00Z",
+			message: assistant([{ type: "toolCall", id: "call-1", name: "shell", arguments: { command: "ls -la" } }]),
+		},
+		{
+			type: "message",
+			id: "r1",
+			parentId: "a1",
+			timestamp: "2026-01-01T00:00:01Z",
+			message: {
+				role: "toolResult",
+				toolCallId: "call-1",
+				toolName: "shell",
+				content: [{ type: "text", text: "file-a\nfile-b" }],
+				isError: false,
+				timestamp: 2,
+			},
+		},
+	];
+}
+
+/** Viewer transcript entries: an aliased write call whose target is a reply-scoped out:// URL. */
+function aliasReplyWriteTranscript(): TranscriptEntryLike[] {
+	return [
+		{
+			type: "message",
+			id: "a1",
+			parentId: null,
+			timestamp: "2026-01-01T00:00:00Z",
+			message: assistant([
+				{
+					type: "toolCall",
+					id: "call-1",
+					name: "xd://write",
+					arguments: { path: "out://final", content: "Rebuild answer: 42" },
+				},
+			]),
+		},
+		{
+			type: "message",
+			id: "r1",
+			parentId: "a1",
+			timestamp: "2026-01-01T00:00:01Z",
+			message: {
+				role: "toolResult",
+				toolCallId: "call-1",
+				toolName: "xd://write",
+				content: [{ type: "text", text: "ok" }],
+				isError: false,
+				timestamp: 2,
+			},
+		},
+	];
+}
+
+/** Viewer transcript entries: an aliased read call plus its result as a separate message. */
+function aliasReadTranscript(): TranscriptEntryLike[] {
+	return [
+		{
+			type: "message",
+			id: "a2",
+			parentId: null,
+			timestamp: "2026-01-01T00:00:00Z",
+			message: assistant([
+				{
+					type: "toolCall",
+					id: "call-2",
+					name: "xd://read",
+					arguments: { path: "/tmp/rebuild-target.ts" },
+					intent: "Inspect the rebuild target",
+				},
+			]),
+		},
+		{
+			type: "message",
+			id: "r2",
+			parentId: "a2",
+			timestamp: "2026-01-01T00:00:01Z",
+			message: {
+				role: "toolResult",
+				toolCallId: "call-2",
+				toolName: "xd://read",
+				content: [{ type: "text", text: "const rebuilt = true;\n" }],
 				isError: false,
 				timestamp: 2,
 			},
@@ -356,6 +454,43 @@ describe("native transcript", () => {
 		}
 	});
 
+	it("keeps a parent IRC steer inside the current work aggregate during replay", () => {
+		const usage = { ...USAGE, output: 1, totalTokens: 1 };
+		const messages: AgentMessage[] = [
+			{ role: "user", content: "Start the work", timestamp: 1 },
+			{ ...assistant([{ type: "text", text: "First response" }], usage), timestamp: 2 },
+			{
+				role: "user",
+				content: "Hidden model-facing envelope",
+				parentIrc: { from: "Main", body: "Continue with the same work" },
+				attribution: "agent",
+				timestamp: 3,
+			},
+			{ ...assistant([{ type: "text", text: "Second response" }], usage), timestamp: 4 },
+		];
+		const entries: TranscriptEntryLike[] = messages.map((message, index) => ({
+			type: "message",
+			id: String(index),
+			parentId: index === 0 ? null : String(index - 1),
+			timestamp: new Date(message.timestamp).toISOString(),
+			message,
+		}));
+		const builder = new ChatTranscriptBuilder({
+			ui: { requestRender: () => {}, requestComponentRender: () => {}, resetDisplay: () => {} } as never,
+			cwd: "/tmp",
+			requestRender: () => {},
+		});
+		builder.rebuild(entries);
+		const plain = Bun.stripANSI(builder.container.render(120).join("\n"));
+		expect(plain).toContain("Continue with the same work");
+		expect(plain).not.toContain("Hidden model-facing envelope");
+		expect(plain.match(/\bWORK\b/g)).toEqual(["WORK"]);
+		expect(plain).toContain("2 req");
+		const timeline = buildSessionUsageTimeline(entries);
+		expect(timeline).toHaveLength(1);
+		expect(timeline[0]?.work).toMatchObject({ requests: 2, startedAt: 1 });
+	});
+
 	it("reports a message block whose presentation changed under rows it already drew", () => {
 		// Regression guard: a `!` run or message block in terminal scrollback (never drawn again)
 		// keeping its stale rows there after its data changed outside a refresh (a `!` run recorded).
@@ -420,6 +555,92 @@ describe("native transcript", () => {
 		const h = await startWith(h => h.tui.addChild(new PresentedBlock(new PaintedRows(), messageBlock(message))));
 		const rows = h.find(node => node.k === "rows");
 		expect(JSON.stringify(rows?.p)).toContain("PAINTED-ROW");
+	});
+
+	it("renders an aliased wire-named tool call through the canonical renderer", async () => {
+		const bashTool = {
+			name: "bash",
+			label: "Bash",
+			description: "demo",
+			parameters: {},
+		} as unknown as AgentTool;
+		const h = await startWith(h => {
+			const builder = new ChatTranscriptBuilder({
+				ui: h.tui,
+				getTool: name => (name === "shell" ? bashTool : undefined),
+				isBuiltInTool: name => name === "bash",
+				cwd: "/tmp",
+				requestRender: () => h.tui.requestRender(),
+			});
+			builder.append(aliasToolTranscript());
+			h.tui.addChild(builder.container);
+		});
+		// The wire name never keys the card; the canonical registry name does.
+		expect(h.find(node => node.k === "tool" && node.p?.role === "omp.tool.shell")).toBeUndefined();
+		const card = h.find(node => node.k === "tool" && node.p?.role === "omp.tool.bash");
+		expect(card?.p).toMatchObject({ name: "bash", status: "done" });
+		// The canonical bash renderer described the call; the generic fallback would not.
+		expect(h.find(node => node.k === "code" && node.p?.role === "omp.tool.bash.command")?.p).toMatchObject({
+			text: "ls -la",
+		});
+		expect(h.errors).toEqual([]);
+	});
+
+	it("rebuilds an aliased reply-scoped write as prose, not a tool card", async () => {
+		setInternalUrlSchemeHost({
+			spec: scheme => (scheme === "out" ? { selectors: "none", write: { scope: "reply" } } : undefined),
+			specs: () => new Map([["out", { selectors: "none", write: { scope: "reply" } }]]),
+		});
+		const writeTool = {
+			name: "write",
+			label: "Write",
+			description: "demo",
+			parameters: {},
+		} as unknown as AgentTool;
+		const h = await startWith(h => {
+			const builder = new ChatTranscriptBuilder({
+				ui: h.tui,
+				getTool: name => (name === "xd://write" ? writeTool : undefined),
+				isBuiltInTool: name => name === "write",
+				cwd: "/tmp",
+				requestRender: () => h.tui.requestRender(),
+			});
+			builder.append(aliasReplyWriteTranscript());
+			h.tui.addChild(builder.container);
+		});
+		// The wire name resolves to canonical `write`, so the reply-scoped target
+		// draws as assistant prose; a tool card would mean the reply-write check
+		// never saw the canonical name.
+		expect(h.find(node => node.k === "tool")).toBeUndefined();
+		expect(h.find(node => node.k === "md")?.p).toMatchObject({ text: "Rebuild answer: 42" });
+		expect(h.errors).toEqual([]);
+	});
+
+	it("keeps an aliased read result in the collapsed read group", async () => {
+		const readTool = {
+			name: "read",
+			label: "Read",
+			description: "demo",
+			parameters: {},
+		} as unknown as AgentTool;
+		const h = await startWith(h => {
+			const builder = new ChatTranscriptBuilder({
+				ui: h.tui,
+				getTool: name => (name === "xd://read" ? readTool : undefined),
+				isBuiltInTool: name => name === "read",
+				cwd: "/tmp",
+				requestRender: () => h.tui.requestRender(),
+			});
+			builder.append(aliasReadTranscript());
+			h.tui.addChild(builder.container);
+		});
+		// The result resolved to canonical `read`, so the group materializes and
+		// settles (one file renders as the group's inline read row); a wire-name
+		// check would discard the result with no read node at all.
+		const group = h.find(node => node.k === "tool" && node.p?.role === "omp.tool.read");
+		expect(group?.p).toMatchObject({ status: "done", collapsible: false });
+		expect(JSON.stringify(group?.p?.title)).toContain("Inspect the rebuild target");
+		expect(h.errors).toEqual([]);
 	});
 
 	it("mirrors a native toggle into the tool card and re-collapses it on a transcript-wide collapse", async () => {

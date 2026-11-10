@@ -383,10 +383,10 @@ export async function attemptEditAutoRepair(options: {
 			const apiKey = await registry.getApiKey(model, sessionId);
 			if (!apiKey) continue;
 			try {
-				session.costGate?.admit();
 				const response = await retryTransientCompletion(
-					() =>
-						completeSimple(
+					async () => {
+						session.costGate?.admit();
+						const attempt = await completeSimple(
 							model,
 							{ messages: [{ role: "user", content: builtPrompt, timestamp: Date.now() }] },
 							{
@@ -396,10 +396,12 @@ export async function attemptEditAutoRepair(options: {
 								disableReasoning: true,
 								signal,
 							},
-						),
+						);
+						session.costGate?.record(attempt.usage.cost.total);
+						return attempt;
+					},
 					{ signal, provider: model.provider },
 				);
-				session.costGate?.record(response.usage.cost.total);
 				if (response.stopReason === "error") {
 					lastError = new Error(response.errorMessage ?? "auto-repair completion failed");
 					continue;

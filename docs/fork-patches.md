@@ -2879,3 +2879,40 @@ Both default entries resolve to v18.18.6; isolated installed-entry smoke and
 the installed executable's Tern form interaction pass. Rollback executable:
 `/home/cindy/code/oh-my-pi-upgrade-18.18.6/omp-patched-before-18.18.6`.
 
+## Magpie session activation identity (2026-11-11)
+
+Local HTTP(S) Magpie requests whose model id starts with `group/` now carry
+request-only `magpie_session_route: { version: 1, session_id, run_id }`. The
+session id comes from the owning `SessionManager`; a new random run id is
+created on startup, resume/switch, branch, and parked-session revival. Ordinary
+turns, tools, HTTP retries, and cache refreshes retain the activation identity.
+Provider session ids and prompt cache keys are unchanged.
+
+The boundary lives in `ExtensionRunner`, which the SDK creates even with
+extensions disabled and for isolated seance sessions. It runs after request
+payload hooks and outside their fail-open exception handling. Missing or changed
+activation identity, invalid payloads, and conflicting preexisting routing
+metadata reject the request rather than sending an unmarked or stale run.
+Requests for other providers, direct model selectors, and non-loopback gateways
+retain their existing behavior. No standalone routing extension is required.
+
+Manual and automatic compaction retain this boundary even without request-hook
+extensions. The existing `onPayload` callback is forwarded through local summary
+generation, native Anthropic compaction, OpenAI V1, and both native and explicit
+HTTP V2 transports. Hooks receive the actual endpoint, protocol and wire model;
+custom summarizers cannot inherit local Magpie group identity. Rejected hooks
+cannot proceed to a network request.
+
+Behavior coverage: `packages/coding-agent/test/magpie-session-route.test.ts`,
+including zero-extension and seance SDK construction, same-id resume/revival,
+concurrent activation changes, payload preservation, and native error propagation.
+`packages/agent/test/codex-proxy-compaction.test.ts` also covers asynchronous
+payload replacement and rejection on V1, native Codex V2, and explicit V2 HTTP.
+Verification: 189 tests pass across the session identity, maintenance cache-key,
+Codex proxy compaction, remote compaction, and native Anthropic compaction suites,
+with all external networking disabled. After correcting generic remote endpoint
+identity, all 142 relevant tests pass, including external and loopback custom
+summarizers. Actual built-binary RPC evidence verifies stable activation/cache
+identity across turns and a new activation with the same cache key after persistent
+resume; see the Magpie session-routing evidence directory.
+

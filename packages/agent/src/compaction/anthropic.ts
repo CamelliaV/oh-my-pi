@@ -227,6 +227,7 @@ export interface AnthropicNativeCompactionOptions
 			| "initiatorOverride"
 			| "metadata"
 			| "fetch"
+			| "onPayload"
 			| "sessionId"
 			| "promptCacheKey"
 			| "providerSessionState"
@@ -269,6 +270,7 @@ export async function requestAnthropicNativeCompaction(
 			initiatorOverride: options.initiatorOverride,
 			metadata: options.metadata,
 			fetch: options.fetch,
+			onPayload: options.onPayload,
 			sessionId: options.sessionId,
 			promptCacheKey: options.promptCacheKey,
 			providerSessionState: options.providerSessionState,

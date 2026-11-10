@@ -2,6 +2,7 @@
  * Extension runner - executes extensions and manages their lifecycle.
  */
 import { AsyncLocalStorage } from "node:async_hooks";
+import { randomUUID } from "node:crypto";
 import {
 	type AgentMessage,
 	type AgentTool,
@@ -546,6 +547,11 @@ interface DeliveryTurn {
 	release: () => void;
 }
 
+interface MagpieSessionActivation {
+	sessionId: string;
+	runId: string;
+}
+
 /** Identity reported by a session that is not a subagent and received no explicit identity. */
 export const TOP_LEVEL_AGENT: ExtensionAgentIdentity = Object.freeze({
 	kind: "main",
@@ -609,6 +615,8 @@ export class ExtensionRunner {
 	#toolRegistrationSubscribers = new Set<(extension: Extension) => ToolRegistrationListener>();
 	/** Latest `session_start` broadcast, replayed to extensions added afterwards. */
 	#sessionStartEvent: RunnerEmitEvent | undefined;
+	/** Native routing identity: present even when extensions are disabled, never persisted or used as a cache key. */
+	#magpieSessionActivation: MagpieSessionActivation | undefined;
 	/** Notified after {@link setSuspendedExtensions} suspends or resumes any extension. */
 	#suspensionListeners = new Set<() => void>();
 	/** Fail-open wrappers of transcript presenters, kept so their identity is stable. */
@@ -1988,6 +1996,16 @@ export class ExtensionRunner {
 	}
 
 	async emit<TEvent extends RunnerEmitEvent>(event: TEvent): Promise<RunnerEmitResult<TEvent>> {
+		if (event.type === "session_start" || event.type === "session_switch" || event.type === "session_branch") {
+			// The runner is per session. Resume/revive also activates a new run when the saved ID is unchanged.
+			this.#magpieSessionActivation = undefined;
+			this.#magpieSessionActivation = {
+				sessionId: this.sessionManager.getSessionId(),
+				runId: randomUUID(),
+			};
+		} else if (event.type === "session_shutdown") {
+			this.#magpieSessionActivation = undefined;
+		}
 		const result = await this.#emitTo(this.extensions, event);
 		// Recorded once the broadcast ends: an extension added mid-broadcast is
 		// reached by the live iteration, one added later gets the replay.
@@ -2517,13 +2535,76 @@ export class ExtensionRunner {
 		return currentMessages;
 	}
 
+	#applyMagpieSessionRoute(
+		payload: unknown,
+		model: Model | undefined,
+		activation: MagpieSessionActivation | undefined,
+	): unknown {
+		if (model?.provider !== "magpie" || !model.id.startsWith("group/")) return payload;
+		let url: URL;
+		try {
+			url = new URL(model.baseUrl);
+		} catch {
+			return payload;
+		}
+		if (url.protocol !== "http:" && url.protocol !== "https:") return payload;
+		const host = url.hostname;
+		if (host !== "localhost" && host !== "localhost." && host !== "[::1]" && !/^127(?:\.\d{1,3}){3}$/.test(host)) {
+			return payload;
+		}
+
+		const sessionId = this.sessionManager.getSessionId();
+		if (typeof sessionId !== "string" || sessionId.length === 0 || sessionId.trim() !== sessionId) {
+			throw new Error("[magpie-session-route] Missing or invalid OMP session identity.");
+		}
+		if (!activation) {
+			throw new Error("[magpie-session-route] Missing session activation before provider request.");
+		}
+		if (activation !== this.#magpieSessionActivation || activation.sessionId !== sessionId) {
+			throw new Error(
+				"[magpie-session-route] Session activation changed before dispatch; refusing to reuse another run's identity.",
+			);
+		}
+		if (payload === null || typeof payload !== "object" || Array.isArray(payload)) {
+			throw new Error("[magpie-session-route] Expected a provider request object.");
+		}
+		if ("magpie_session_route" in payload) {
+			const supplied = payload.magpie_session_route;
+			if (
+				supplied === null ||
+				typeof supplied !== "object" ||
+				Array.isArray(supplied) ||
+				Object.keys(supplied).length !== 3 ||
+				!("version" in supplied) ||
+				supplied.version !== 1 ||
+				!("session_id" in supplied) ||
+				supplied.session_id !== sessionId ||
+				!("run_id" in supplied) ||
+				supplied.run_id !== activation.runId
+			) {
+				throw new Error(
+					"[magpie-session-route] Existing routing metadata conflicts with the current session activation.",
+				);
+			}
+			return payload;
+		}
+		return {
+			...payload,
+			magpie_session_route: { version: 1, session_id: sessionId, run_id: activation.runId },
+		};
+	}
+
 	/** Runs request payload hooks with the model used for that provider request. */
 	async emitBeforeProviderRequest(
 		payload: unknown,
 		model?: Model,
 		signal?: AbortSignal,
 	): Promise<BeforeProviderRequestEventResult> {
-		if (!this.hasHandlers("before_provider_request")) return payload;
+		const requestModel = model ?? this.#getModel();
+		const activation = this.#magpieSessionActivation;
+		if (!this.hasHandlers("before_provider_request")) {
+			return this.#applyMagpieSessionRoute(payload, requestModel, activation);
+		}
 		const ctx = this.createContext(model);
 		let currentPayload = payload;
 
@@ -2551,7 +2632,8 @@ export class ExtensionRunner {
 			}
 		}
 
-		return currentPayload;
+		// This native boundary must fail closed, outside the extension handler error isolation above.
+		return this.#applyMagpieSessionRoute(currentPayload, requestModel, activation);
 	}
 
 	/** Runs response hooks with the model that produced that provider response. */

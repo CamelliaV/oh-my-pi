@@ -7,7 +7,7 @@
  * compaction item as replacement history.
  */
 
-import type { Api, CodexCompactionContext, FetchImpl, Model, ProviderSessionState } from "@oh-my-pi/pi-ai";
+import type { Api, CodexCompactionContext, FetchImpl, Model, ProviderSessionState, SimpleStreamOptions } from "@oh-my-pi/pi-ai";
 import * as AIError from "@oh-my-pi/pi-ai/error";
 import { setHeaderIfAbsent } from "@oh-my-pi/pi-ai/providers/inference-headers";
 import { createOpenAICodexCompactionRequestContext } from "@oh-my-pi/pi-ai/providers/openai-codex-compaction";
@@ -274,6 +274,7 @@ export async function requestCompactionV2Streaming(
 	signal?: AbortSignal,
 	options?: {
 		fetch?: FetchImpl;
+		onPayload?: SimpleStreamOptions["onPayload"];
 		timeoutMs?: number;
 		retryWait?: (delayMs: number, signal?: AbortSignal) => Promise<void>;
 		providerSessionState?: Map<string, ProviderSessionState>;
@@ -324,6 +325,7 @@ export async function requestCompactionV2Streaming(
 				codexCompaction: options?.codexCompaction,
 				preferWebsockets: options?.preferWebsockets,
 				codexAccessPrograms: options?.codexAccessPrograms,
+				onPayload: options?.onPayload,
 			});
 		} catch (err) {
 			const error = toError(err);
@@ -361,6 +363,7 @@ async function attemptCompactionV2Streaming(
 		codexCompaction?: CodexCompactionContext;
 		preferWebsockets?: boolean;
 		codexAccessPrograms?: boolean;
+		onPayload?: SimpleStreamOptions["onPayload"];
 	},
 ): Promise<CompactionV2Response> {
 	// Faithful to Codex: append the compaction trigger as the final input item
@@ -375,6 +378,10 @@ async function attemptCompactionV2Streaming(
 	if (options.codexMetadata) {
 		body.client_metadata = options.codexMetadata.clientMetadata;
 	}
+	// Hooks describe the model and endpoint actually receiving compaction, including overrides.
+	const hookModel = options.onPayload
+		? { ...model, api: compactionV2Api(model), id: body.model, requestModelId: body.model, baseUrl: endpoint }
+		: model;
 
 	if (shouldUseCodexProviderTransport(model)) {
 		// The native transport is only needed when sending a Codex compaction request.
@@ -383,6 +390,9 @@ async function attemptCompactionV2Streaming(
 			apiKey,
 			signal,
 			fetch: fetchImpl,
+			onPayload: options.onPayload
+				? (payload, _model, payloadSignal) => options.onPayload!(payload, hookModel, payloadSignal ?? signal)
+				: undefined,
 			sessionId: request.sessionId,
 			providerSessionState: options.providerSessionState,
 			preferWebsockets: options.preferWebsockets,
@@ -395,11 +405,13 @@ async function attemptCompactionV2Streaming(
 		});
 		return collectCompactionV2Events(eventStream, request);
 	}
+	const replacement = await options.onPayload?.(body, hookModel, signal);
+	const wireBody = replacement === undefined ? body : replacement;
 
 	const response = await fetchImpl(endpoint, {
 		method: "POST",
 		headers: buildCompactionV2Headers(model, apiKey, request, options.codexMetadata),
-		body: stringifyJson(body),
+		body: stringifyJson(wireBody),
 		signal,
 	});
 

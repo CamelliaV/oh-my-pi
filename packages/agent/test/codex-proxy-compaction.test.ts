@@ -1,11 +1,12 @@
 import { describe, expect, test } from "bun:test";
+import assert from "node:assert/strict";
 import {
 	buildCompactionV2Request,
 	getCompactionV2Endpoint,
 	requestCompactionV2Streaming,
 	requestOpenAiRemoteCompaction,
 } from "@oh-my-pi/pi-agent-core/compaction/openai";
-import type { FetchImpl, Model } from "@oh-my-pi/pi-ai/types";
+import type { FetchImpl, Model, SimpleStreamOptions } from "@oh-my-pi/pi-ai/types";
 import { buildModel } from "@oh-my-pi/pi-catalog/build";
 
 const nativeInput = [{ type: "message", role: "user", content: [{ type: "input_text", text: "remember fixture" }] }];
@@ -92,6 +93,72 @@ describe("Codex proxy compaction", () => {
 					routing: `route-${index}`,
 				})),
 			);
+		});
+	}
+
+	for (const route of ["v1", "v2-native", "v2-explicit"] as const) {
+		test(`${route} awaits the payload hook with the actual compaction model and endpoint`, async () => {
+			const subject = {
+				...model(),
+				remoteCompaction: {
+					model: "group/compaction-target",
+					...(route === "v2-explicit" ? { v2Endpoint: "https://other-relay.example.test/responses" } : {}),
+				},
+			};
+			const identity = { version: 1, session_id: "session-fixture", run_id: "run-fixture" };
+			let hookCalls = 0;
+			let hookModel: Model | undefined;
+			const onPayload: SimpleStreamOptions["onPayload"] = async (payload, requestModel) => {
+				await Promise.resolve();
+				hookCalls++;
+				hookModel = requestModel;
+				assert.ok(payload && typeof payload === "object");
+				return { ...payload, magpie_session_route: identity };
+			};
+			let sent = 0;
+			const fetch: FetchImpl = async (input, init) => {
+				sent++;
+				expect(hookCalls).toBe(1);
+				expect(hookModel).toMatchObject({ id: "group/compaction-target", baseUrl: String(input) });
+				const body = JSON.parse(String(init?.body));
+				expect(body.magpie_session_route).toEqual(identity);
+				expect(body.prompt_cache_key).toBe("cache-fixture");
+				return response(route !== "v1");
+			};
+			if (route === "v1") {
+				await requestOpenAiRemoteCompaction(subject, "fixture-key", nativeInput, "instructions", undefined, {
+					fetch, onPayload, sessionId: "session-fixture", promptCacheKey: "cache-fixture",
+				});
+			} else {
+				await requestCompactionV2Streaming(
+					subject, "fixture-key",
+					buildCompactionV2Request(subject, nativeInput, "instructions", {
+						sessionId: "session-fixture", promptCacheKey: "cache-fixture",
+					}),
+					undefined, { fetch, onPayload, preferWebsockets: false },
+				);
+			}
+			expect(sent).toBe(1);
+		});
+
+		test(`${route} propagates payload-hook rejection before any fetch`, async () => {
+			const subject = {
+				...model(),
+				...(route === "v2-explicit" ? { remoteCompaction: { v2Endpoint: "https://relay.example.test/responses" } } : {}),
+			};
+			let sent = 0;
+			const fetch: FetchImpl = async () => { sent++; return response(route !== "v1"); };
+			const onPayload: SimpleStreamOptions["onPayload"] = async () => {
+				await Promise.resolve();
+				throw new Error("invalid session activation");
+			};
+			const pending = route === "v1"
+				? requestOpenAiRemoteCompaction(subject, "fixture-key", nativeInput, "instructions", undefined, { fetch, onPayload })
+				: requestCompactionV2Streaming(subject, "fixture-key", buildCompactionV2Request(subject, nativeInput, "instructions"), undefined, {
+						fetch, onPayload, preferWebsockets: false,
+					});
+			await expect(pending).rejects.toThrow("invalid session activation");
+			expect(sent).toBe(0);
 		});
 	}
 

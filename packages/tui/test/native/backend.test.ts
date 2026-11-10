@@ -1,10 +1,11 @@
-import { afterEach, describe, expect, it } from "bun:test";
+import { afterEach, describe, expect, it, spyOn, vi } from "bun:test";
 import { type LogEvent, registerLogSink } from "@oh-my-pi/pi-utils/logger";
 import { card, md, node } from "@oh-my-pi/pi-tui/native/describe";
 import type { NativeNode, NativeUiEvent } from "@oh-my-pi/pi-tui/native/node";
 import { nativeComponentId } from "@oh-my-pi/pi-tui/native/reconcile";
 import { settleNative } from "@oh-my-pi/pi-tui/native/settle";
 import { isNativeRendering, onNativeRenderingChange } from "@oh-my-pi/pi-tui/native/state";
+import * as textNavigation from "@oh-my-pi/pi-tui/native/text-navigation";
 import { type Component, Container } from "@oh-my-pi/pi-tui/tui";
 import type { TspOp } from "@oh-my-pi/pi-wire";
 import { ManualScheduler, TspHarness, TspTestTerminal } from "./tsp-harness";
@@ -30,11 +31,99 @@ let harness: TspHarness | undefined;
 afterEach(() => {
 	harness?.stop();
 	harness = undefined;
+	vi.restoreAllMocks();
 });
 
 const opsOf = (h: TspHarness, from: number): TspOp[] => h.frames.slice(from).flatMap(frame => frame.ops);
 
 describe("native backend", () => {
+	describe("text navigation cancellation", () => {
+		async function start() {
+			const prose = new Probe(node("col", { role: "omp.user" }, [md("First text")]));
+			const editor = new Probe(node("editor", { text: "unfinished draft", cursor: 4 }));
+			harness = await TspHarness.start(tui => {
+				const provider = {
+					renderFrame: () => ({ viewport: [] }),
+					acknowledgeHistory: () => {},
+					describeSurface: () => ({ main: [prose], dock: [editor] }),
+				};
+				tui.setFrameProvider(provider);
+				tui.setFocus(editor);
+			});
+			return { h: harness, editor, anchor: { id: `${nativeComponentId(prose)}.0`, root: 0 } };
+		}
+
+		it("cancels queued keys before the first query starts", async () => {
+			const find = spyOn(textNavigation, "findTextNavigationTarget");
+			const { h } = await start();
+			expect(h.tui.exitNativeTextNavigation()).toBe(false);
+			h.tui.navigateNativeText("previous");
+			h.tui.navigateNativeText("latest");
+			expect(h.tui.exitNativeTextNavigation()).toBe(true);
+			await Bun.sleep(0);
+			h.flush();
+			expect(find).not.toHaveBeenCalled();
+			expect(opsOf(h, 0).some(op => op[0] === "reveal")).toBe(false);
+			expect(h.tui.exitNativeTextNavigation()).toBe(false);
+		});
+
+		it("aborts a delayed query and drops its result without blocking a fresh navigation", async () => {
+			const { h, anchor } = await start();
+			const delayed = Promise.withResolvers<typeof anchor>();
+			const started = Promise.withResolvers<AbortSignal>();
+			const find = spyOn(textNavigation, "findTextNavigationTarget")
+				.mockImplementationOnce((_document, _direction, signal) => {
+					started.resolve(signal!);
+					return delayed.promise;
+				})
+				.mockResolvedValue(undefined);
+			h.tui.navigateNativeText("previous");
+			const signal = await started.promise;
+			h.tui.navigateNativeText("latest");
+			expect(h.tui.exitNativeTextNavigation()).toBe(true);
+			expect(signal.aborted).toBe(true);
+			expect(h.tui.exitNativeTextNavigation()).toBe(false);
+			h.tui.navigateNativeText("next");
+			await h.until(() => h.find(node => node.p?.role === "omp.text.navigation") !== undefined);
+			expect(find).toHaveBeenCalledTimes(2);
+			expect(h.tui.exitNativeTextNavigation()).toBe(true);
+			delayed.resolve(anchor);
+			await Bun.sleep(0);
+			h.flush();
+			expect(h.find(node => node.p?.role === "omp.text.navigation")).toBeUndefined();
+			expect(opsOf(h, 0).some(op => op[0] === "reveal")).toBe(false);
+			expect(h.tui.exitNativeTextNavigation()).toBe(false);
+		});
+
+		it("closes in place during a delayed reveal correction without touching the dock editor", async () => {
+			const { h, editor, anchor } = await start();
+			spyOn(textNavigation, "findTextNavigationTarget").mockResolvedValue(anchor);
+			const correction = Promise.withResolvers<textNavigation.TextNavigationPosition>();
+			const correcting = Promise.withResolvers<void>();
+			const readPosition = spyOn(textNavigation, "readTextNavigationPosition").mockImplementation(() => {
+				correcting.resolve();
+				return correction.promise;
+			});
+			h.tui.navigateNativeText("first");
+			await h.until(() => opsOf(h, 0).some(op => op[0] === "reveal"));
+			await correcting.promise;
+			const editorBefore = h.byId(nativeComponentId(editor));
+			const sent = h.frames.length;
+			expect(h.find(node => node.p?.role === "omp.text.navigation")).toBeDefined();
+			expect(h.tui.exitNativeTextNavigation()).toBe(true);
+			await h.render();
+			correction.resolve({ id: anchor.id, offset: 10, height: 600, start: 20, end: -400 });
+			await Bun.sleep(0);
+			h.flush();
+			expect(h.find(node => node.p?.role === "omp.text.navigation")).toBeUndefined();
+			expect(opsOf(h, sent).some(op => op[0] === "reveal" || op[0] === "focus")).toBe(false);
+			expect(h.byId(nativeComponentId(editor))).toEqual(editorBefore);
+			expect(h.tui.getFocused()).toBe(editor);
+			expect(readPosition).toHaveBeenCalledTimes(1);
+			expect(h.tui.exitNativeTextNavigation()).toBe(false);
+		});
+	});
+
 	it("keeps at most `credits` frames unacknowledged and coalesces changes made while blocked", async () => {
 		const stream = new Probe(md("", { stream: true }));
 		harness = await TspHarness.start(tui => tui.addChild(stream), { credits: 2, autoAck: false });

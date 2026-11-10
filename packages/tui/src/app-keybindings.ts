@@ -37,6 +37,10 @@ interface AppKeybindings {
 	"app.model.selectTemporary": true;
 	"app.tools.expand": true;
 	"app.tools.toggleVisibility": true;
+	"app.text.previous": true;
+	"app.text.next": true;
+	"app.text.first": true;
+	"app.text.latest": true;
 	"app.ask.hide": true;
 	"app.approval.approve": true;
 	"app.editor.external": true;
@@ -144,6 +148,22 @@ export const KEYBINDINGS = {
 	"app.tools.toggleVisibility": {
 		defaultKeys: "ctrl+shift+o",
 		description: "Show or hide tool activity",
+	},
+	"app.text.previous": {
+		defaultKeys: "alt+pageUp",
+		description: "Jump to previous text from the current Tern viewport",
+	},
+	"app.text.next": {
+		defaultKeys: "alt+pageDown",
+		description: "Jump to next text from the current Tern viewport",
+	},
+	"app.text.first": {
+		defaultKeys: "alt+home",
+		description: "Jump to first text in Tern",
+	},
+	"app.text.latest": {
+		defaultKeys: "alt+end",
+		description: "Return to latest output in Tern",
 	},
 	"app.ask.hide": {
 		defaultKeys: "alt+h",

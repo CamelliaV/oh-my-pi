@@ -35,6 +35,7 @@ import { normalizeIconProps } from "./icons";
 import type { DescribeContext, NativeChild, NativeNode, NativeRevealAt } from "./node";
 import { quietMotion } from "./quiet";
 import { isNativeSettled } from "./settle";
+import type { TextNavigationAnchor, TextNavigationDocument } from "./text-navigation";
 
 /** The regions a frame fills. */
 export interface NativeRegions {
@@ -242,7 +243,10 @@ export class Reconciler {
 		layer: { base: "layer", state: null },
 	};
 
-	constructor(surface: string) {
+	constructor(
+		surface: string,
+		readonly mainRole?: string,
+	) {
 		this.surface = surface;
 	}
 
@@ -265,7 +269,19 @@ export class Reconciler {
 		this.#rows = 0;
 		let prev = this.#regions;
 		if (prev === null) {
-			for (const region of REGION_IDS) this.#ops.push(["add", region, this.surface, null, { id: region, k: "col" }]);
+			for (const region of REGION_IDS) {
+				this.#ops.push([
+					"add",
+					region,
+					this.surface,
+					null,
+					{
+						id: region,
+						k: "col",
+						...(region === "main" && this.mainRole ? { p: { role: this.mainRole } } : {}),
+					},
+				]);
+			}
 			prev = { main: EMPTY_ENTRIES, dock: EMPTY_ENTRIES, layer: EMPTY_ENTRIES };
 		}
 		for (const region of this.#readd) this.#ops.push(["add", region, this.surface, null, { id: region, k: "col" }]);
@@ -333,6 +349,54 @@ export class Reconciler {
 		this.#prevPortals = [];
 		this.#regions = { main: regions.main, dock: EMPTY_ENTRIES, layer: EMPTY_ENTRIES };
 		this.#readd = ["dock", "layer"];
+	}
+
+	/** Last actual transcript node, used to return an inline surface to its tail. */
+	mainEnd(): string | undefined {
+		return this.#regions?.main.at(-1)?.id;
+	}
+
+	/** Logical prose order, including nodes Tern has virtualized out of the viewport. */
+	textNavigationDocument(): TextNavigationDocument {
+		const roots = this.#regions?.main ?? EMPTY_ENTRIES;
+		const anchors: TextNavigationAnchor[] = [];
+		const visit = (entry: Entry, root: number, depth: number): void => {
+			if (depth > 64 || this.#gone.has(entry.id)) return;
+			let described: NativeNode | null | undefined;
+			let owner: Owner;
+			let keypath: string;
+			if (entry.comp !== undefined) {
+				const state = this.#states.get(entry.comp);
+				if (!state || !this.#cx) return;
+				described = this.described(entry.comp) ?? ownDescription(entry.comp, this.#cx);
+				owner = state.owner;
+				keypath = "";
+			} else {
+				described = entry.node;
+				owner = entry.owner;
+				keypath = entry.keypath;
+			}
+			if (!described || described.p?.hidden) return;
+			const role = described.p?.role;
+			const children = this.#entries(described.c, keypath, owner, false, null);
+			if (role === "omp.user" || role === "omp.assistant" || role === "omp.assistant.rewound") {
+				for (const child of children) {
+					if (child.comp !== undefined || child.node.k !== "md" || !child.node.p?.text?.trim()) continue;
+					if (role !== "omp.user" && !/^t\d+$/.test(child.node.key ?? "")) continue;
+					anchors.push({ id: child.id, root });
+				}
+				return;
+			}
+			// Tool bodies and thoughts may contain Markdown; none of it is conversational prose.
+			if (role?.startsWith("omp.tool") || role?.startsWith("omp.thinking") || role === "omp.user.synthetic") return;
+			for (const child of children) visit(child, root, depth + 1);
+		};
+		for (let root = 0; root < roots.length; root++) visit(roots[root]!, root, 0);
+		return {
+			selector: `.sf-main[data-role='${this.mainRole}']`,
+			roots: roots.map(entry => entry.id),
+			anchors,
+		};
 	}
 
 	/** The component and keypath that described wire node `id`. */

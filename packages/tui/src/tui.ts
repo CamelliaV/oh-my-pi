@@ -28,6 +28,7 @@ import { assumedTspHello, NativeBackend, type NativeHost } from "./native/backen
 import { col } from "./native/describe";
 import { TSP_PREFIX, type TspHello } from "./native/encode";
 import type { DescribeContext, NativeNode, NativeScreen, NativeSurfaceProvider, NativeUiEvent } from "./native/node";
+import type { TextNavigationDirection } from "./native/text-navigation";
 import { cropSixelTop } from "./sixel";
 import { STDOUT_BACKLOG_CLEAR_BYTES, setAltScreenActive, type Terminal } from "./terminal";
 import { classifyTerminalMultiplexerModule, terminalMultiplexerSessions } from "./terminal-multiplexer";
@@ -1726,6 +1727,16 @@ export class TUI extends Container {
 	/** Whether frames go to a Tern Surface Protocol surface instead of the row renderer. */
 	get nativeRendering(): boolean {
 		return this.#nativeLive;
+	}
+
+	/** Navigate prose in the inline Tern transcript without changing editor focus. */
+	navigateNativeText(direction: TextNavigationDirection): void {
+		if (this.#nativeLive) this.#native?.navigateText(direction);
+	}
+
+	/** Exit native text navigation in place; false leaves Escape to the focused component. */
+	exitNativeTextNavigation(): boolean {
+		return this.#nativeLive && (this.#native?.exitTextNavigation() ?? false);
 	}
 
 	/**

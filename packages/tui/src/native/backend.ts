@@ -53,6 +53,16 @@ import { NARROW_SHEET_COLS } from "./overlay";
 import { resetQuietMotion } from "./quiet";
 import { nativeComponentId, Reconciler } from "./reconcile";
 import { setNativeButtons, setNativePacing, setNativeRendering } from "./state";
+import {
+	findTextNavigationTarget,
+	readTextNavigationPosition,
+	textNavigationDocumentRole,
+	type TextNavigationCursor,
+	type TextNavigationDirection,
+	type TextNavigationDocument,
+	type TextNavigationPosition,
+} from "./text-navigation";
+import { TextNavigationBar } from "./text-navigation-bar";
 
 /** Share of the viewport's rows a centered sheet's content must reach to fill a narrow pane. */
 const SHEET_FILL_FRACTION = 0.5;
@@ -263,9 +273,17 @@ class Surface {
 		this.id = id;
 		this.mode = mode;
 		this.role = role;
-		this.reconciler = new Reconciler(id);
+		this.reconciler = new Reconciler(id, `${textNavigationDocumentRole}.${id.replaceAll(":", "-")}`);
 		this.doc = mirror ? new TspDocument(id) : null;
 	}
+}
+
+interface TextReveal {
+	readonly surface: Surface;
+	readonly id: string;
+	readonly at: "start" | "end";
+	seq?: number;
+	finish(error?: Error): void;
 }
 
 function overlayAnchor(options: OverlayOptions | undefined): "center" | "top" | "bottom" {
@@ -331,6 +349,14 @@ export class NativeBackend {
 	/** Bumped when the connection resets or stops, so blob cache writes finishing later are dropped. */
 	#blobEpoch = 0;
 	#unbindMotion: (() => void) | undefined;
+	#textNavigationQueue: Promise<void> = Promise.resolve();
+	#textNavigationEpoch = 0;
+	#textNavigationPending = 0;
+	#textNavigationQuery: AbortController | undefined;
+	#textReveal: TextReveal | undefined;
+	#textSelected: string | undefined;
+	#textCursor: TextNavigationCursor | undefined;
+	#textNavigationBar = new TextNavigationBar(direction => this.navigateText(direction));
 
 	constructor(host: NativeHost, hello: TspHello, options: NativeBackendOptions = {}) {
 		this.#host = host;
@@ -359,6 +385,151 @@ export class NativeBackend {
 	/** `rows` fallback nodes in the last frame. */
 	get fallbackCount(): number {
 		return (this.#screen ?? this.#inline).reconciler.fallbackCount;
+	}
+
+	/** Read the current Tern viewport for each request, including after a mouse scroll. */
+	navigateText(direction: TextNavigationDirection): void {
+		if (!this.#live || this.#screen || this.#host.overlays().length > 0) return;
+		this.#textNavigationPending++;
+		const epoch = this.#textNavigationEpoch;
+		this.#textNavigationQueue = this.#textNavigationQueue
+			.then(async () => {
+				if (epoch === this.#textNavigationEpoch) await this.#navigateText(direction);
+			})
+			.catch(error => {
+				if (epoch !== this.#textNavigationEpoch || !this.#live) return;
+				logger.debug("Tern text navigation failed", { error: String(error) });
+				this.#textNavigationBar.setError("Text navigation unavailable: could not read or reveal the Tern view");
+				this.#host.requestRender();
+			})
+			.finally(() => {
+				if (epoch === this.#textNavigationEpoch) this.#textNavigationPending--;
+			});
+	}
+
+	/** Close reading controls and cancel queued jumps without moving the transcript or editor. */
+	exitTextNavigation(): boolean {
+		if (
+			!this.#live ||
+			this.#screen ||
+			this.#host.overlays().length > 0 ||
+			(this.#textNavigationPending === 0 && !this.#textNavigationBar.visible)
+		)
+			return false;
+		this.#cancelTextNavigation();
+		this.#host.requestRender();
+		return true;
+	}
+
+	async #navigateText(direction: TextNavigationDirection): Promise<void> {
+		if (!this.#live || this.#screen || this.#host.overlays().length > 0) return;
+		this.render();
+		const surface = this.#inline;
+		const document = surface.reconciler.textNavigationDocument();
+		if (direction === "latest") {
+			this.#textSelected = undefined;
+			this.#textCursor = undefined;
+			this.#textNavigationBar.hide();
+			const end = surface.reconciler.mainEnd();
+			if (end) await this.#settleTextReveal(surface, document, end, "end");
+			else this.#host.requestRender();
+			return;
+		}
+		const query = new AbortController();
+		this.#textNavigationQuery = query;
+		try {
+			const target = await findTextNavigationTarget(document, direction, query.signal, this.#textCursor);
+			if (
+				query.signal.aborted ||
+				!this.#live ||
+				surface !== this.#inline ||
+				this.#screen ||
+				this.#host.overlays().length > 0
+			)
+				return;
+			if (!target) {
+				this.#textNavigationBar.setError("No text in the current view to navigate");
+				this.#host.requestRender();
+				return;
+			}
+			if (!surface.reconciler.target(target.id)) return;
+			this.#textSelected = target.id;
+			this.#textNavigationBar.setPosition(document.anchors.indexOf(target), document.anchors.length);
+			const cursor = await this.#settleTextReveal(surface, document, target.id, "start", query.signal);
+			if (!query.signal.aborted) this.#textCursor = cursor;
+		} finally {
+			if (this.#textNavigationQuery === query) this.#textNavigationQuery = undefined;
+		}
+	}
+
+	/** Recheck actual layout after each acknowledged reveal; stop once aligned or clamped. */
+	async #settleTextReveal(
+		surface: Surface,
+		document: TextNavigationDocument,
+		id: string,
+		at: "start" | "end",
+		signal?: AbortSignal,
+	): Promise<TextNavigationPosition | undefined> {
+		const epoch = this.#textNavigationEpoch;
+		let previous: TextNavigationPosition | undefined;
+		for (let attempt = 0; attempt < 3; attempt++) {
+			if (
+				epoch !== this.#textNavigationEpoch ||
+				!this.#live ||
+				surface !== this.#inline ||
+				this.#host.overlays().length > 0
+			)
+				return;
+			await this.#revealText(surface, id, at);
+			// ACK can precede virtualized height settlement; allow one layout turn before measuring.
+			await Bun.sleep(attempt === 0 ? 32 : 16);
+			if (epoch !== this.#textNavigationEpoch) return;
+			const position = await readTextNavigationPosition(document, id, signal);
+			if (epoch !== this.#textNavigationEpoch) return;
+			if (
+				Math.abs(position[at]) <= 3 ||
+				(previous &&
+					Math.abs(position[at] - previous[at]) <= 0.5 &&
+					Math.abs(position.offset - previous.offset) <= 0.5)
+			)
+				return position;
+			previous = position;
+		}
+		return previous;
+	}
+
+	#revealText(surface: Surface, id: string, at: "start" | "end"): Promise<void> {
+		const { promise, resolve, reject } = Promise.withResolvers<void>();
+		const timer = this.#scheduler.scheduleRender(
+			() => reveal.finish(new Error("Tern navigation frame timed out")),
+			2000,
+		);
+		const reveal: TextReveal = {
+			surface,
+			id,
+			at,
+			finish: error => {
+				timer.cancel();
+				if (this.#textReveal === reveal) this.#textReveal = undefined;
+				if (error) reject(error);
+				else resolve();
+			},
+		};
+		this.#textReveal = reveal;
+		this.#host.requestRender();
+		return promise;
+	}
+
+	#cancelTextNavigation(): void {
+		this.#textNavigationEpoch++;
+		this.#textNavigationPending = 0;
+		this.#textNavigationQueue = Promise.resolve();
+		this.#textNavigationQuery?.abort();
+		this.#textNavigationQuery = undefined;
+		this.#textReveal?.finish();
+		this.#textSelected = undefined;
+		this.#textCursor = undefined;
+		this.#textNavigationBar.hide();
 	}
 
 	/**
@@ -409,6 +580,7 @@ export class NativeBackend {
 	stop(keep = true): void {
 		if (!this.#live) return;
 		this.#live = false;
+		this.#cancelTextNavigation();
 		if (this.#screen) this.#close(this.#screen, false);
 		this.#screen = null;
 		this.#close(this.#inline, keep);
@@ -504,6 +676,7 @@ export class NativeBackend {
 		let dock: readonly NativeChild[];
 		let layer: NativeChild[];
 		if (fullscreen >= 0) {
+			this.#cancelTextNavigation();
 			const component = overlays[fullscreen]!.component;
 			const page = component.describeScreen?.(this.#cx);
 			const role = page?.role ?? SESSION_ROLE;
@@ -525,7 +698,7 @@ export class NativeBackend {
 			surface = this.#inline;
 			const described = this.#host.describeSurface(this.#cx);
 			main = described.main;
-			dock = described.dock;
+			dock = this.#textNavigationBar.visible ? [this.#textNavigationBar, ...described.dock] : described.dock;
 			layer = overlays.map(overlay => this.#overlayNode(overlay));
 		}
 		this.#pruneOverlayNodes(overlays);
@@ -536,6 +709,17 @@ export class NativeBackend {
 		}
 		surface.dirty = false;
 		const ops = surface.reconciler.reconcile({ main, dock, layer }, this.#cx);
+		if (surface === this.#inline) {
+			if (this.#textSelected && !surface.reconciler.target(this.#textSelected)) {
+				this.#cancelTextNavigation();
+				this.#host.requestRender();
+			}
+			const reveal = this.#textReveal;
+			if (reveal?.surface === surface && reveal.seq === undefined) {
+				ops.push(["reveal", reveal.id, reveal.at]);
+				reveal.seq = surface.seq + 1;
+			}
+		}
 		const focused = this.#host.focused();
 		const focus = focused ? surface.reconciler.focusTarget(focused) : null;
 		if (focus !== surface.focus) {
@@ -795,6 +979,8 @@ export class NativeBackend {
 				const newly = Math.min(event.s, surface.seq) - surface.acked;
 				surface.acked = Math.min(event.s, surface.seq);
 				surface.unacked.splice(0, newly);
+				const reveal = this.#textReveal;
+				if (reveal?.surface === surface && reveal.seq !== undefined && surface.acked >= reveal.seq) reveal.finish();
 				if (surface.stalledSince !== undefined) {
 					logger.debug("TSP: terminal acknowledging frames again", {
 						sf: surface.id,
@@ -831,6 +1017,7 @@ export class NativeBackend {
 			case "gone":
 				if (event.ids.includes(this.#inline.id)) {
 					// Adopt found nothing (evicted, or another pane): start over.
+					this.#cancelTextNavigation();
 					this.#resetBlobs();
 					this.#inline = this.#newSurface("inline");
 					if (this.#live) this.#open(this.#inline);

@@ -135,6 +135,10 @@ function hotkeyGroups(bindings: HotkeysMarkdownBindings): HotkeyGroup[] {
 				{ keys: [act("app.history.search")], action: "Search prompt history" },
 				{ keys: [act("app.tools.expand")], action: "Toggle tool output expansion" },
 				{ keys: [act("app.tools.toggleVisibility")], action: "Toggle tool activity visibility" },
+				{ keys: [act("app.text.previous")], action: "Previous text from current viewport (Tern)" },
+				{ keys: [act("app.text.next")], action: "Next text from current viewport (Tern)" },
+				{ keys: [act("app.text.first")], action: "First text in transcript (Tern)" },
+				{ keys: [act("app.text.latest")], action: "Return to latest output (Tern)" },
 				{
 					keys: [act("app.links.hint")],
 					action: "Pick an extension link on screen by its tag; press again to browse the whole transcript",

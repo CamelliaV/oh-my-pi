@@ -2767,3 +2767,42 @@ under concurrent build load and passed on focused rerun. `bun run check:ts` and
 Linux x64 binary build pass. Full network evidence, the independent cache
 investigation, and install/rollback records are in
 `/home/cindy/code/clean/omp-codex-probe-20261108/README.md`.
+
+## 2026-11-09: Tern navigation between user and assistant text
+
+`Alt+PageUp` / `Alt+PageDown` move between conversation text blocks from the
+current viewport, skipping tools, thoughts and synthetic messages. `Alt+Home`
+reaches the first text and `Alt+End` returns to the output tail. The navigation
+bar leaves editor drafts, focus and tool disclosure state intact.
+
+The reconciler supplies the complete logical text index. Tern's read-only
+control snapshots locate the current mounted root, including after mouse
+scrolling; virtualized neighbors remain navigable. A process-scoped main-region
+role separates concurrent OMP instances. After a reveal is acknowledged, a
+32ms layout turn precedes one combined geometry/cursor query. Further reveals
+run only while the text is misaligned, bounded to three attempts and 16ms
+layout turns, replacing unconditional 60ms + 120ms correction waits.
+
+Validation: 214 native tests and 65 input/keybinding tests passed; full
+`bun run check:ts` passed. An isolated Tern renderer exercised a synthetic
+session with 112 tool calls, nine text anchors, a long reply, multiple text
+blocks in one assistant message, wheel navigation, rapid keys, a 640px window,
+and a multiline Chinese/emoji draft. Evidence is under
+`/home/cindy/code/clean/omp-tern-text-navigation-20261109/`.
+
+Deployment: rebuilt from the main checkout and replaced `~/.local/bin/omp-patched`
+with a rollback backup, preserving both default `omp` symlinks. The installed
+default binary passed the isolated startup smoke and all 42 Tern interaction
+checks; no model requests were made. Installed-entry evidence is in
+`/home/cindy/code/clean/omp-tern-text-navigation-20261109/default-installed/verification.json`.
+
+The 2026-11-10 revision lets Escape dismiss navigation in place, cancel pending
+queries/reveals/queued keys, and preserve the draft, caret, focus and viewport.
+Outside navigation, existing Escape completion/interrupt behavior remains.
+Validation: 338 native/input/keybinding tests and `bun run check:ts` passed;
+44 actual Tern interaction checks passed with zero inference requests
+(`escape-fast-2/verification.json`). Seven runs per binary measured median
+first-target latency at 136ms before / 123ms after and an immediate pair of
+jumps at 293ms / 167ms (`latency-old/` and `latency-new/`). These measurements
+use the isolated local renderer and the same 112-tool synthetic conversation.
+

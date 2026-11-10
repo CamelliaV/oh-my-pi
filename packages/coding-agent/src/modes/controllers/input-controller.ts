@@ -337,6 +337,7 @@ export class InputController {
 	#expandToolsListenerInstalled = false;
 	#inlineMouseListenerInstalled = false;
 	#linkHintListenerInstalled = false;
+	#textNavigationListenerInstalled = false;
 
 	/** Click-candidate id the hover band currently tracks; repaint only on change. */
 	#lastHoverClickId: string | undefined;
@@ -390,6 +391,34 @@ export class InputController {
 			this.#linkHintListenerInstalled = true;
 			// First, so a tag letter typed in link-hint mode reaches no other listener or the editor.
 			this.ctx.ui.addInputListener(data => this.#handleLinkHintInput(data));
+		}
+		if (!this.#textNavigationListenerInstalled) {
+			this.#textNavigationListenerInstalled = true;
+			this.ctx.ui.addInputListener(data => {
+				if (
+					!this.ctx.ui.nativeRendering ||
+					this.ctx.ui.hasOverlay() ||
+					this.ctx.ui.getFocused() !== this.ctx.editor
+				)
+					return undefined;
+				// Reading mode owns Esc before editor completion/Vim handling; link hints and overlays keep priority.
+				if (matchesKey(data, "escape") && this.ctx.ui.exitNativeTextNavigation()) {
+					this.ctx.lastEscapeTime = 0;
+					return { consume: true };
+				}
+				const direction = this.ctx.keybindings.matches(data, "app.text.previous")
+					? "previous"
+					: this.ctx.keybindings.matches(data, "app.text.next")
+						? "next"
+						: this.ctx.keybindings.matches(data, "app.text.first")
+							? "first"
+							: this.ctx.keybindings.matches(data, "app.text.latest")
+								? "latest"
+								: undefined;
+				if (!direction) return undefined;
+				this.ctx.ui.navigateNativeText(direction);
+				return { consume: true };
+			});
 		}
 		if (!this.#focusedLeftTapListenerInstalled) {
 			this.#focusedLeftTapListenerInstalled = true;

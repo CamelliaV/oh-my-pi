@@ -3825,7 +3825,7 @@ export class SessionMaintenance {
 						buildProviderContext: (summarized, retained, signal, model) =>
 							this.#host.buildLiveProviderContext(summarized, retained, signal, model),
 						isUserAuthored: isUserAuthoredMessage,
-						onPayload: this.#host.extensionRunner?.hasHandlers("before_provider_request")
+						onPayload: this.#host.extensionRunner
 							? (payload, model, signal) =>
 									this.#host.extensionRunner?.emitBeforeProviderRequest(payload, model, signal)
 							: undefined,
@@ -5964,6 +5964,10 @@ export class SessionMaintenance {
 									buildProviderContext: (summarized, retained, signal, model) =>
 										this.#host.buildLiveProviderContext(summarized, retained, signal, model),
 									isUserAuthored: isUserAuthoredMessage,
+									onPayload: this.#host.extensionRunner
+										? (payload, model, signal) =>
+												this.#host.extensionRunner?.emitBeforeProviderRequest(payload, model, signal)
+										: undefined,
 									telemetry,
 									// Honor the user's /model thinking selection on the
 									// auto-compaction path — the most-fired compaction

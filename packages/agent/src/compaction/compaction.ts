@@ -796,7 +796,7 @@ export interface SummaryOptions {
 	tools?: Tool[];
 	/** Optional fetch implementation threaded into remote compaction calls. */
 	fetch?: FetchImpl;
-	/** Inspect or replace a generic remote-compaction payload before it is sent. */
+	/** Inspect or replace compaction provider payloads before they are sent. */
 	onPayload?: SimpleStreamOptions["onPayload"];
 	/**
 	 * Optional completion transport override for host-level request wrappers
@@ -1099,6 +1099,7 @@ async function summarizeConversationWindow(
 			initiatorOverride: options?.initiatorOverride,
 			metadata: options?.metadata,
 			fetch: options?.fetch,
+			onPayload: options?.onPayload,
 			sessionId: options?.sessionId,
 			promptCacheKey: options?.promptCacheKey,
 			providerSessionState: options?.providerSessionState,
@@ -1334,6 +1335,7 @@ async function generateShortSummary(
 					initiatorOverride: options?.initiatorOverride,
 					metadata: options?.metadata,
 					fetch: options?.fetch,
+					onPayload: options?.onPayload,
 					sessionId: options?.sessionId,
 					promptCacheKey: options?.promptCacheKey,
 					providerSessionState: options?.providerSessionState,
@@ -2080,6 +2082,7 @@ export async function compact(
 				key =>
 					requestCompactionV2Streaming(model, key, request, signal, {
 						fetch: summaryOptions.fetch,
+						onPayload: summaryOptions.onPayload,
 						providerSessionState: summaryOptions.providerSessionState,
 						preferWebsockets: summaryOptions.preferWebsockets,
 						codexAccessPrograms: summaryOptions.codexAccessPrograms,
@@ -2156,6 +2159,7 @@ export async function compact(
 						signal,
 						{
 							fetch: summaryOptions.fetch,
+							onPayload: summaryOptions.onPayload,
 							sessionId: summaryOptions.sessionId,
 							promptCacheKey: summaryOptions.remotePromptCacheKey,
 							providerSessionState: summaryOptions.providerSessionState,
@@ -2329,6 +2333,7 @@ export async function compact(
 					initiatorOverride: summaryOptions.initiatorOverride,
 					metadata: summaryOptions.metadata,
 					fetch: summaryOptions.fetch,
+					onPayload: summaryOptions.onPayload,
 					sessionId: summaryOptions.sessionId,
 					promptCacheKey: summaryOptions.promptCacheKey,
 					providerSessionState: summaryOptions.providerSessionState,
@@ -2507,6 +2512,7 @@ async function generateTurnPrefixSummary(
 			initiatorOverride: options?.initiatorOverride,
 			metadata: options?.metadata,
 			fetch: options?.fetch,
+			onPayload: options?.onPayload,
 			sessionId: options?.sessionId,
 			promptCacheKey: options?.promptCacheKey,
 			providerSessionState: options?.providerSessionState,

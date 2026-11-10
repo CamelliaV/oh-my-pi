@@ -878,6 +878,7 @@ export async function requestOpenAiRemoteCompaction(
 	signal?: AbortSignal,
 	opts?: {
 		fetch?: FetchImpl;
+		onPayload?: SimpleStreamOptions["onPayload"];
 		timeoutMs?: number;
 		sessionId?: string;
 		/**
@@ -1010,10 +1011,22 @@ export async function requestOpenAiRemoteCompaction(
 		}
 	}
 
+	const hookModel = opts?.onPayload
+		? {
+				...model,
+				api: model.remoteCompaction?.api ?? model.api,
+				id: requestModel,
+				requestModelId: requestModel,
+				baseUrl: endpoint,
+			}
+		: model;
+	const replacement = await opts?.onPayload?.(request, hookModel, signal);
+	const wireBody = replacement === undefined ? request : replacement;
+
 	const response = await fetchImpl(endpoint, {
 		method: "POST",
 		headers,
-		body: stringifyJson(request),
+		body: stringifyJson(wireBody),
 		signal: ptree.combineSignals(signal, opts?.timeoutMs ?? REMOTE_COMPACTION_TIMEOUT_MS),
 	});
 
@@ -1114,9 +1127,10 @@ export async function requestRemoteCompaction(
 		}
 	}
 
+	const wireModel = isChatCompletions && opts?.model ? resolveOpenAiCompactModel(opts.model) : undefined;
 	let body: unknown = isChatCompletions
 		? {
-				model: opts?.model ? resolveOpenAiCompactModel(opts.model) : undefined,
+				model: wireModel,
 				messages: [
 					{ role: "system", content: request.systemPrompt },
 					{ role: "user", content: request.prompt },
@@ -1125,7 +1139,18 @@ export async function requestRemoteCompaction(
 				max_tokens: request.maxTokens,
 			}
 		: { systemPrompt: request.systemPrompt, prompt: request.prompt, maxTokens: request.maxTokens };
-	const replacement = await opts?.onPayload?.(body, opts.model, signal);
+	// The summary service can differ from the selected chat provider. Custom
+	// summarizers have no wire model and must not inherit local group identity.
+	const hookModel = opts?.onPayload && opts.model
+		? {
+				...opts.model,
+				api: isChatCompletions ? "openai-completions" : "remote-compaction",
+				id: wireModel ?? "",
+				requestModelId: wireModel,
+				baseUrl: endpoint,
+			}
+		: opts?.model;
+	const replacement = await opts?.onPayload?.(body, hookModel, signal);
 	if (replacement !== undefined) body = replacement;
 
 	const response = await (opts?.fetch ?? fetch)(endpoint, {

@@ -6,6 +6,9 @@ import { SpaceHoldGesture } from "@oh-my-pi/pi-tui/space-hold";
 import type { InteractiveModeContext, SubmittedUserInput } from "@oh-my-pi/pi-coding-agent/modes/types";
 import { USER_INTERRUPT_LABEL } from "@oh-my-pi/pi-coding-agent/session/messages";
 import { vocalizer } from "@oh-my-pi/pi-coding-agent/tts/vocalizer";
+import { CombinedAutocompleteProvider } from "@oh-my-pi/pi-tui/autocomplete";
+import { CustomEditor } from "@oh-my-pi/pi-tui/prompt/custom-editor";
+import { getEditorTheme, initTheme } from "@oh-my-pi/pi-tui/theme";
 import * as logger from "@oh-my-pi/pi-utils/logger";
 import type { FileSlashCommand } from "@oh-my-pi/pi-coding-agent/extensibility/slash-commands";
 
@@ -329,6 +332,115 @@ afterEach(() => {
 });
 
 describe("InputController escape behavior", () => {
+	describe("native text navigation", () => {
+		function setup(realEditor?: CustomEditor) {
+			const context = createContext();
+			if (realEditor) context.ctx.editor = realEditor;
+			const state = { active: true, overlay: false, focused: context.ctx.editor, native: true };
+			const exit = vi.fn(() => {
+				const active = state.active;
+				state.active = false;
+				return active;
+			});
+			Object.assign(context.ctx.ui, {
+				get nativeRendering() {
+					return state.native;
+				},
+				hasOverlay: () => state.overlay,
+				getFocused: () => state.focused,
+				exitNativeTextNavigation: exit,
+			});
+			new InputController(context.ctx).setupKeyHandlers();
+			const dispatch = (data = "\x1b") => {
+				for (const listener of context.inputListeners) {
+					const result = listener(data);
+					if (result) return result;
+				}
+				return undefined;
+			};
+			const escape = () => {
+				if (!dispatch()?.consume) context.ctx.editor.onEscape?.();
+			};
+			return { ...context, state, exit, dispatch, escape };
+		}
+
+		it("closes navigation before editor completion and preserves the draft, caret and focus", async () => {
+			await initTheme(false);
+			const editor = new CustomEditor(getEditorTheme());
+			editor.setAutocompleteProvider(
+				new CombinedAutocompleteProvider([
+					{ name: "model", description: "Model" },
+					{ name: "memory", description: "Memory" },
+				]),
+			);
+			editor.setText("/m");
+			const shown = Promise.withResolvers<void>();
+			editor.onAutocompleteUpdate = () => {
+				if (editor.isShowingAutocomplete()) shown.resolve();
+			};
+			editor.handleInput("\t");
+			await shown.promise;
+			const { ctx, state, dispatch, spies } = setup(editor);
+			const cursor = editor.getCursor();
+			const draft = editor.getText();
+			ctx.lastEscapeTime = Date.now();
+			expect(dispatch()).toEqual({ consume: true });
+			expect(editor.isShowingAutocomplete()).toBe(true);
+			expect(editor.getText()).toBe(draft);
+			expect(editor.getCursor()).toEqual(cursor);
+			expect(state.focused).toBe(editor);
+			expect(ctx.lastEscapeTime).toBe(0);
+			expect(spies.abort).not.toHaveBeenCalled();
+			// Inactive navigation leaves the next Escape to the visible completion popup.
+			expect(dispatch()).toBeUndefined();
+			editor.handleInput("\x1b");
+			expect(editor.isShowingAutocomplete()).toBe(false);
+			expect(editor.getText()).toBe(draft);
+			expect(editor.getCursor()).toEqual(cursor);
+			expect(spies.abort).not.toHaveBeenCalled();
+		});
+
+		it("delegates the next Escape to an active turn once navigation has closed", () => {
+			const { ctx, state, editor, spies, escape } = setup();
+			mutableSessionState(ctx).isStreaming = true;
+			editor.setText("keep this draft");
+			escape();
+			expect(state.active).toBe(false);
+			expect(spies.abort).not.toHaveBeenCalled();
+			escape();
+			expect(spies.abort).toHaveBeenCalledWith({ reason: USER_INTERRUPT_LABEL });
+			expect(editor.getText()).toBe("keep this draft");
+		});
+
+		it("requires a fresh double-Escape after navigation consumes Escape", () => {
+			vi.spyOn(Date, "now").mockReturnValue(2_000);
+			const { ctx, escape } = setup();
+			ctx.lastEscapeTime = 1_900;
+			escape();
+			expect(ctx.lastEscapeTime).toBe(0);
+			escape();
+			expect(ctx.showUserMessageSelector).not.toHaveBeenCalled();
+			escape();
+			expect(ctx.showUserMessageSelector).toHaveBeenCalledTimes(1);
+		});
+
+		it("leaves Escape to overlays, other focused components and higher-priority link hints", () => {
+			const { ctx, state, dispatch, exit } = setup();
+			state.overlay = true;
+			expect(dispatch()).toBeUndefined();
+			state.overlay = false;
+			state.focused = {} as typeof state.focused;
+			expect(dispatch()).toBeUndefined();
+			state.focused = ctx.editor;
+			Object.defineProperty(ctx, "linkHintsActive", { value: true });
+			ctx.cancelLinkHints = vi.fn();
+			expect(dispatch()).toEqual({ consume: true });
+			expect(ctx.cancelLinkHints).toHaveBeenCalledTimes(1);
+			expect(exit).not.toHaveBeenCalled();
+			expect(state.active).toBe(true);
+		});
+	});
+
 	it("prefers canceling a pending optimistic submission before aborting the session", async () => {
 		const { ctx, editor, spies } = createContext();
 		const submission = createSubmission({ text: "hello" });

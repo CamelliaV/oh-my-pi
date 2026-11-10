@@ -36,6 +36,10 @@ app.history.search: []
 | `app.history.search`         | `Ctrl+R`                                                              | Search prompt history                                                                                                                                  |
 | `app.tools.expand`           | `Ctrl+O`                                                              | Toggle tool-output expansion                                                                                                                           |
 | `app.tools.toggleVisibility` | `Ctrl+Shift+O`                                                        | Show or hide tool activity                                                                                                                             |
+| `app.text.previous`          | `Alt+PageUp`                                                          | Jump to previous user/assistant text from the current Tern viewport                                                                                    |
+| `app.text.next`              | `Alt+PageDown`                                                        | Jump to next user/assistant text from the current Tern viewport                                                                                        |
+| `app.text.first`             | `Alt+Home`                                                            | Jump to the first user/assistant text in the current Tern transcript                                                                                   |
+| `app.text.latest`            | `Alt+End`                                                             | Return to the latest output in Tern                                                                                                                   |
 | `app.links.hint`             | `Alt+O`                                                               | Tag each [extension link](./extensions.md#extension-link-schemes) on screen; type a tag to pick it, `Esc` cancels; again or `Page Up` browses all      |
 | `app.ask.hide`               | `Alt+H`                                                               | Hide a pending `ask` question to one line (the Hide button in Tern); the same key, `Enter`, or Show brings it back                                     |
 | `app.approval.approve`       | `Ctrl+Enter`, `Ctrl+Q`                                                | Approve a pending tool call outright (the Approve button in Tern); `Esc` denies, and `Enter` takes the Approve/Deny choice highlighted with the arrows |
@@ -77,6 +81,16 @@ With `stt.enabled` on, the native composer shows a microphone beside Send. Click
 Dictation started with this button stays in the draft, regardless of `stt.submitTrigger`. Review or edit the text, then press Enter or click Send. While dictation is recording or transcribing into the draft, Enter and Send do nothing.
 
 For live English transcription, select **Nemotron 0.6B (live streaming, English)** in `omp setup speech`, or set `modelRoles.dictation` to `local/nemotron-streaming-en-0.6b`. Words appear in the draft while you speak. The first recording waits for the model to load before opening the microphone; start speaking when the button says **Recording · Stop**. Later recordings reuse the loaded model. See [local speech models](local-models.md#speech-to-text) for download and language details.
+
+## Text navigation in Tern
+
+`Alt+PageUp` and `Alt+PageDown` navigate user prompts and assistant prose, skipping tool calls/results, thoughts, synthetic input and status rows. Each assistant text content block is one stop; its paragraphs and code fences stay together. `Alt+Home` reaches the first text even when older blocks have been virtualized. `Alt+End` returns to the output tail and closes the navigation bar.
+
+`Esc` exits text navigation at the current scroll position, leaving the draft, caret and editor focus intact. It also cancels pending or queued jumps and dismisses navigation errors. Link hints and dialogs retain their Escape handling; otherwise navigation takes Escape before editor autocomplete or Vim mode. Once navigation is closed, Escape resumes its usual interrupt and double-Escape behavior.
+
+Each navigation request reads the current viewport through Tern's control interface. Mouse scrolling therefore changes where the next jump starts; no background polling is needed. From the middle of a long reply, Previous returns to that reply's beginning. At an unchanged viewport, consecutive jumps continue through the text stops even when a short final reply cannot scroll all the way to the top. The dock's Previous, Next and Latest buttons leave the editor draft and focus intact.
+
+These actions require the native Tern UI and a working local `tern ctl` route on the OMP host. A missing control route reports an error in the navigation bar instead of using a stale reading position. The shortcuts apply while the main editor has focus; dialogs and overlays retain their own keyboard handling. Other terminals keep their existing input behavior.
 
 ## Recover a cleared prompt
 

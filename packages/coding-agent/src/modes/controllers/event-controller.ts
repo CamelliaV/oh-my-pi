@@ -1395,6 +1395,10 @@ export class EventController {
 			const replacesOptimistic =
 				this.ctx.optimisticUserMessageSignature !== undefined && !wasOptimistic && !matchedLocalSubmission;
 			if (wasOptimistic) {
+				// The kept row was painted at submit with a local clock stamp; adopt the
+				// recorded timestamp so its turn actions (rewind/edit/retry/fork) resolve
+				// the entry on the branch instead of failing the lookup.
+				this.ctx.syncOptimisticUserTimestamp(event.message.timestamp);
 				this.ctx.clearOptimisticUserMessage();
 			} else if (replacesOptimistic) {
 				this.ctx.replaceOptimisticUserMessage(event.message);

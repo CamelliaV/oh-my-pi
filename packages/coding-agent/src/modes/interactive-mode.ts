@@ -317,6 +317,7 @@ import { hasSpotlightOriginal, SpotlightSheet } from "@oh-my-pi/pi-tui/overlays/
 import type { SpotlightDetails } from "@oh-my-pi/pi-tui/chat/spotlight";
 import { readArtifactText } from "../spotlight/sink";
 import { SkillMessageComponent } from "@oh-my-pi/pi-tui/chat/skill-message";
+import { UserMessageComponent } from "@oh-my-pi/pi-tui/chat/user-message";
 import { StatusLineComponent } from "@oh-my-pi/pi-tui/status-line";
 import { statusLineHost } from "./status-line-host";
 import { stopSharedSpinnerTicker, type ToolExecutionHandle } from "@oh-my-pi/pi-tui/chat/tool-execution";
@@ -3990,6 +3991,20 @@ export class InteractiveMode implements InteractiveModeContext {
 		this.#pendingSubmissionDispose?.();
 		this.#pendingSubmissionDispose = undefined;
 		this.#optimisticUserMessageComponents = [];
+	}
+
+	/**
+	 * The kept optimistic user row adopts the canonical prompt's send time: the row
+	 * is painted at submit with a local clock stamp, but the session stamps the
+	 * message when dispatch admits it, and the row's turn actions (rewind, edit,
+	 * retry, fork) resolve their entry by that recorded timestamp — a drifted stamp
+	 * fails the branch lookup ("That message is no longer on this branch").
+	 */
+	syncOptimisticUserTimestamp(timestamp: number): void {
+		for (const component of this.#optimisticUserMessageComponents) {
+			const card = component instanceof PresentedBlock ? component.inner : component;
+			if (card instanceof UserMessageComponent) card.setTimestamp(timestamp);
+		}
 	}
 
 	replaceOptimisticUserMessage(

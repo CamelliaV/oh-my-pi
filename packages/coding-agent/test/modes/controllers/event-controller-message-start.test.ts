@@ -50,8 +50,10 @@ function createContext(options: {
 	const replaceOptimisticUserMessage = vi.fn(() => {
 		ctx.optimisticUserMessageSignature = undefined;
 	});
+	const syncOptimisticUserTimestamp = vi.fn();
 	ctx.clearOptimisticUserMessage = clearOptimisticUserMessage;
 	ctx.replaceOptimisticUserMessage = replaceOptimisticUserMessage;
+	ctx.syncOptimisticUserTimestamp = syncOptimisticUserTimestamp;
 	return {
 		ctx,
 		editor,
@@ -60,6 +62,7 @@ function createContext(options: {
 		updatePendingMessagesDisplay: ctx.updatePendingMessagesDisplay,
 		clearOptimisticUserMessage,
 		replaceOptimisticUserMessage,
+		syncOptimisticUserTimestamp,
 	};
 }
 function createUsageContext(entries: readonly SessionEntry[]): InteractiveModeContext {
@@ -171,6 +174,29 @@ describe("EventController message_start (user role)", () => {
 		expect(addMessageToChat).not.toHaveBeenCalled();
 		expect(setText).not.toHaveBeenCalled();
 		expect(ctx.optimisticUserMessageSignature).toBeUndefined();
+	});
+
+	it("adopts the recorded timestamp on the kept optimistic row before clearing it", async () => {
+		// Regression: the optimistic row is painted at submit with a local Date.now(),
+		// but the session stamps the canonical message when dispatch admits it — a
+		// later millisecond on the first prompt. The kept row must adopt the recorded
+		// timestamp, or its turn actions (rewind/edit/retry/fork) fail the branch
+		// lookup by role + timestamp ("That message is no longer on this branch").
+		const message = { ...createUserMessage("optimistic send"), timestamp: 1_234_567 };
+		const signature = "optimistic send\u00000";
+		const { ctx, syncOptimisticUserTimestamp, clearOptimisticUserMessage } = createContext({
+			editorText: "",
+			optimisticSignature: signature,
+			locallySubmittedSignatures: [signature],
+		});
+		const controller = new EventController(ctx);
+
+		await controller.handleEvent({ type: "message_start", message });
+
+		expect(syncOptimisticUserTimestamp).toHaveBeenCalledWith(1_234_567);
+		expect(syncOptimisticUserTimestamp.mock.invocationCallOrder[0]).toBeLessThan(
+			clearOptimisticUserMessage.mock.invocationCallOrder[0],
+		);
 	});
 
 	it("appends a queued image submission synchronously so later events cannot reorder it", async () => {

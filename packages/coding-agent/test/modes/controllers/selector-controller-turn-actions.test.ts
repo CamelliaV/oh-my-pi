@@ -99,4 +99,26 @@ describe("SelectorController turn actions", () => {
 		expect(h.navigateTree).toHaveBeenLastCalledWith("a2", { summarize: false });
 		expect(h.editor.text).toBe("half-typed");
 	});
+
+	it("falls back to the unplaced selector when a rewind names a not-yet-recorded prompt", async () => {
+		// A prompt whose dispatch is still preprocessing (e.g. a pasted image being
+		// described) has no entry on the branch yet; "Rewind to here…" on its row must
+		// behave like /rewind — open the selector — rather than dead-end in the
+		// "no longer on this branch" toast.
+		const { controller, statuses } = harness();
+		const selectorCalls: (string | undefined)[] = [];
+		controller.showUserMessageSelector = (startAt?: string) => selectorCalls.push(startAt);
+		await controller.runTurnAction("rewind", { role: "user", at: 999 });
+		expect(selectorCalls).toEqual([undefined]);
+		expect(statuses.map(([message]) => message)).not.toContain("That message is no longer on this branch");
+	});
+
+	it("keeps the off-branch notice for edit, which needs the entry", async () => {
+		const { controller, statuses } = harness();
+		const selectorCalls: (string | undefined)[] = [];
+		controller.showUserMessageSelector = (startAt?: string) => selectorCalls.push(startAt);
+		await controller.runTurnAction("edit", { role: "user", at: 999 });
+		expect(selectorCalls).toEqual([]);
+		expect(statuses.map(([message]) => message)).toContain("That message is no longer on this branch");
+	});
 });

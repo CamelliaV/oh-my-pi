@@ -172,7 +172,7 @@ export class UserMessageComponent extends Container implements ReactionTarget, T
 	readonly #bgColor: (value: string) => string;
 	readonly #liveSteered: boolean;
 	readonly #synthetic: boolean;
-	readonly #timestamp: number | undefined;
+	#timestamp: number | undefined;
 	readonly #images: readonly ImageContent[];
 	readonly #imageLinks: readonly (string | undefined)[] | undefined;
 	/** Display text: image markers collapsed to chips and model mentions to their labels. */
@@ -305,6 +305,19 @@ export class UserMessageComponent extends Container implements ReactionTarget, T
 	}
 
 	/**
+	 * Adopt the recorded prompt's send time. The optimistic row is painted at submit
+	 * with a local clock stamp, before the session stamps the canonical message; the
+	 * hover toolbar's clock and the rewind/edit/retry/fork turn actions resolve their
+	 * entry on the branch by this timestamp, so a drifted stamp breaks them.
+	 */
+	setTimestamp(timestamp: number): void {
+		if (this.#timestamp === timestamp) return;
+		this.#timestamp = timestamp;
+		this.#native = undefined;
+		this.invalidate();
+	}
+
+	/**
 	 * A head-less user-toned frame with the prompt as markdown under its
 	 * attached images (titled `#N` like their chips, opening the materialized
 	 * file on click): the fill says "you". A quiet footer like a turn's usage line
@@ -342,7 +355,7 @@ export class UserMessageComponent extends Container implements ReactionTarget, T
 					{
 						name: "rewind",
 						role: "omp.user.tool",
-						title: "Rewind the conversation to an earlier message",
+						title: "Rewind to here…",
 						aria: "Rewind",
 						actions: { click: "rewind" },
 					},
@@ -415,6 +428,11 @@ export class UserMessageComponent extends Container implements ReactionTarget, T
 	handleNativeEvent(event: NativeUiEvent): void {
 		if (event.type !== "action") return;
 		if (event.act === "copy-message") runTranscriptAction({ act: "copy", text: this.#text });
+		// The toolbar's ⏪ is the desktop face of the hold menu's "Rewind to here…": the
+		// selector opens outlined on this prompt, not on the latest turn at the bottom.
+		// A prompt without a timestamp (none today) keeps the selector unplaced.
+		else if (event.act === "rewind" && this.#timestamp !== undefined)
+			runTurnAction("rewind-turn", { role: "user", at: this.#timestamp });
 		else if (event.act === "rewind") runTranscriptAction({ act: "rewind" });
 		else if (this.#timestamp !== undefined) runTurnAction(event.act, { role: "user", at: this.#timestamp });
 	}

@@ -170,10 +170,11 @@ describe("native transcript redesign", () => {
 		expect(harness.errors).toEqual([]);
 	});
 
-	it("gives a user message no head row, and routes its toolbar to omp's copy and rewind", async () => {
+	it("gives a user message no head row, and its toolbar rewind opens on that prompt", async () => {
 		const actions: TranscriptAction[] = [];
 		setTranscriptActionHandler(action => actions.push(action));
-		const user = new UserMessageComponent("Fix the build", { timestamp: Date.UTC(2026, 0, 1, 12, 30) });
+		const at = Date.UTC(2026, 0, 1, 12, 30);
+		const user = new UserMessageComponent("Fix the build", { timestamp: at });
 		harness = await TspHarness.start();
 		harness.tui.addChild(user);
 		await harness.render();
@@ -183,7 +184,47 @@ describe("native transcript redesign", () => {
 			harness!.find(node => node.p?.role === "omp.user.tool" && prop(node, "name") === icon)!;
 		harness.event({ ev: "action", sf: harness.terminal.surface!, id: tool("copy").id, act: "copy-message" });
 		harness.event({ ev: "action", sf: harness.terminal.surface!, id: tool("rewind").id, act: "rewind" });
-		expect(actions).toEqual([{ act: "copy", text: "Fix the build" }, { act: "rewind" }]);
+		// The ⏪ is the desktop face of the hold menu's "Rewind to here…": the selector
+		// starts outlined on this prompt instead of the latest turn at the bottom.
+		expect(actions).toEqual([
+			{ act: "copy", text: "Fix the build" },
+			{ act: "turn", turn: "rewind", message: { role: "user", at } },
+		]);
+	});
+
+	it("adopts the recorded timestamp when the canonical prompt lands, re-clocking the row", async () => {
+		const actions: TranscriptAction[] = [];
+		setTranscriptActionHandler(action => actions.push(action));
+		// The optimistic row is painted at submit with a local clock stamp; the session
+		// stamps the canonical message when dispatch admits it (a later millisecond).
+		const painted = Date.UTC(2026, 0, 1, 12, 30);
+		const recorded = Date.UTC(2026, 0, 1, 13, 45);
+		const user = new UserMessageComponent("First prompt", { timestamp: painted });
+		harness = await TspHarness.start();
+		harness.tui.addChild(user);
+		await harness.render();
+		const before = texts(harness.find(node => node.p?.role === "omp.user.time"));
+		const tool = harness.find(node => node.p?.role === "omp.user.tool" && prop(node, "name") === "rewind")!;
+		harness.event({ ev: "action", sf: harness.terminal.surface!, id: tool.id, act: "rewind" });
+		user.setTimestamp(recorded);
+		await harness.render();
+		harness.event({ ev: "action", sf: harness.terminal.surface!, id: tool.id, act: "rewind" });
+		expect(actions).toEqual([
+			{ act: "turn", turn: "rewind", message: { role: "user", at: painted } },
+			{ act: "turn", turn: "rewind", message: { role: "user", at: recorded } },
+		]);
+		expect(texts(harness.find(node => node.p?.role === "omp.user.time"))).not.toBe(before);
+	});
+
+	it("keeps the unplaced rewind selector for a prompt without a timestamp", async () => {
+		const actions: TranscriptAction[] = [];
+		setTranscriptActionHandler(action => actions.push(action));
+		harness = await TspHarness.start();
+		harness.tui.addChild(new UserMessageComponent("Fix the build"));
+		await harness.render();
+		const tool = harness.find(node => node.p?.role === "omp.user.tool" && prop(node, "name") === "rewind")!;
+		harness.event({ ev: "action", sf: harness.terminal.surface!, id: tool.id, act: "rewind" });
+		expect(actions).toEqual([{ act: "rewind" }]);
 	});
 
 	it("offers a prompt's turn actions to a phone's long press, each naming the prompt by role and time", async () => {

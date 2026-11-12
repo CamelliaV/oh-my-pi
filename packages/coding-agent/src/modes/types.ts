@@ -526,6 +526,8 @@ export interface InteractiveModeContext {
 	withLocalSubmission<T>(text: string, fn: () => Promise<T>, options?: { imageCount?: number }): Promise<T>;
 	/** Clears bookkeeping for an optimistic local user message once the matching session event arrives. */
 	clearOptimisticUserMessage(): void;
+	/** The kept optimistic user row adopts the canonical prompt's recorded send time. */
+	syncOptimisticUserTimestamp(timestamp: number): void;
 	/** Replaces the raw optimistic user render with the canonical message emitted by the session. */
 	replaceOptimisticUserMessage(
 		message: AgentMessage,

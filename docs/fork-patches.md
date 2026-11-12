@@ -2943,3 +2943,67 @@ summarizers. Actual built-binary RPC evidence verifies stable activation/cache
 identity across turns and a new activation with the same cache key after persistent
 resume; see the Magpie session-routing evidence directory.
 
+
+## Native rewind toolbar opens the selector on its message (2026-11-11)
+
+Clicking the ⏪ in a user message's hover footer used to dispatch the unplaced
+`{ act: "rewind" }` transcript action, so the fullscreen selector always opened
+outlined on the latest turn at the bottom — whatever message the click named.
+The toolbar is the desktop face of the hold menu's "Rewind to here…", so it now
+dispatches the same turn action (`rewind-turn` with the prompt's role and
+timestamp), and the host resolves it exactly as the hold menu does: the
+selector opens outlined on that prompt via `showUserMessageSelector(entry.id)`
+("Rewind to here · the prompt returns to the editor · N turns below dropped").
+The icon title matches the hold-menu label. A prompt with no timestamp (none
+in practice) keeps the old unplaced selector, and Esc Esc is unchanged — it
+still starts on the latest turn.
+
+Verification: `packages/tui/test/native/transcript-redesign-native.test.ts`
+(13 pass) pins the dispatched action and the no-timestamp fallback. The built
+`omp-linux-x64` passes `--smoke-test`, and the binary's "Rewind to here"
+literal count moved 3 → 4, proving the change is compiled in; installed to
+`~/.local/bin/omp-patched` with a timestamped backup. Native evidence with the
+installed binary, an isolated Tern sandbox and a synthetic 3-turn v3 session
+(`--session`, loopback request-rejecting endpoint, zero model requests):
+`tern ctl click` on the first prompt's ⏪ (TSP id `j.tools/rewind`) opens the
+selector on `REWIND_PROBE_TURN_1` with "5 turns below dropped" and the bar at
+"Rewind 1/6"; clicking the last prompt's ⏪ opens on it with "1 turn below
+dropped"; Escape closes. Evidence:
+`~/code/clean/tern-rewind-click-20261111/` (verification.json, shots, trees).
+
+## The rewind toolbar survives the turn's opening window (2026-11-12)
+
+"Rewind from here" on the first prompt dead-ended in "That message is no longer
+on this branch" whenever the reply was still streaming, while `/rewind` worked.
+Both readers agree with the transcript: the toast has exactly one producer,
+`runTurnAction`'s role+timestamp lookup over the branch, and `/rewind` instead
+opens `showUserMessageSelector` on turn entries by id. A turn opens two windows
+where the lookup cannot see the row's prompt:
+
+- **Pre-dispatch.** The optimistic row is painted at submit, but the user entry
+  is appended only after submission admission, which awaits the vision
+  description of attached images. Real sessions (2026-11-12T03-25-46Z,
+  03-28-19Z) hold the entry back 8-15 s; a click there names a prompt that is
+  not on the branch *yet*, not one that left it.
+- **Timestamp drift.** Any transcript rebuild inside the window (`Ctrl+T`,
+  settings/theme changes — `#replayOptimisticUserMessage`, #2372) repaints the
+  row with a fresh `Date.now()`, while `message_start` keeps that row and never
+  adopts the canonical `message.timestamp`.
+
+`rewind-turn` now degrades exactly like `/rewind`: when the lookup misses, the
+selector opens on the branch (or the accurate "No messages to branch from")
+instead of the off-branch toast; edit/retry/fork keep the notice, since they
+need the entry. `message_start` additionally hands the recorded timestamp to the
+kept optimistic row (`syncOptimisticUserTimestamp` → `UserMessageComponent
+.setTimestamp`), so a mid-window redraw cannot strand the row's clock.
+
+Verification: `selector-controller-turn-actions.test.ts` (fallback vs the kept
+notice), `event-controller-message-start.test.ts` (recorded timestamp adopted
+before the optimistic clear), `transcript-redesign-native.test.ts` (painted
+13:45 under a rebuild replays at 12:30 then re-clocks to the record) — 29 pass.
+Native A/B with an isolated Tern sandbox, a loopback mock provider (slow SSE
+chat) and a 4 s vision-description call: on the old build, `tern ctl` click on
+the ⏪ 1.4 s after submit reproduces "That message is no longer on this branch";
+on the installed binary the same click never toasts and falls back to the
+selector/status. Evidence: `~/code/clean/tern-rewind-streaming-20261112/`
+(verification.json for both binaries, shots, trees).

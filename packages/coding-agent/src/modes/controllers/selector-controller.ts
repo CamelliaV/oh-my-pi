@@ -1545,6 +1545,15 @@ export class SelectorController {
 		);
 		const entry = branch[index];
 		if (!entry) {
+			// The row can name a prompt whose dispatch is still preprocessing — its entry
+			// not recorded yet (a pasted image being described, a maintenance wait) — not a
+			// message that left the branch. Rewind keeps /rewind's own behavior (the
+			// selector on the branch) instead of a dead-end toast; the other acts
+			// genuinely need the entry, so they keep the notice.
+			if (turn === "rewind") {
+				this.showUserMessageSelector();
+				return;
+			}
 			this.ctx.showStatus("That message is no longer on this branch");
 			return;
 		}

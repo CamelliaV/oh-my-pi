@@ -2891,6 +2891,21 @@ Both default entries resolve to v18.18.6; isolated installed-entry smoke and
 the installed executable's Tern form interaction pass. Rollback executable:
 `/home/cindy/code/oh-my-pi-upgrade-18.18.6/omp-patched-before-18.18.6`.
 
+## Startup model-scope notification removed (2026-11-10)
+
+Interactive startup no longer emits the full enabled-model roster as a status
+notification. Large scopes produced a screen-filling Tern toast on every launch,
+even though the user had requested no model information. Removed the notification
+builder and enqueue call from `main.ts`, plus the obsolete quiet-mode-only test.
+Scope resolution, model cycling, and model-restore warnings are unchanged.
+
+Verification: 12 model-scope contract tests pass; `main.ts` LSP diagnostics are
+clean. The compiled binary passes `--smoke-test`. Isolated native Tern startup
+with `startup.quiet: false` and 120 enabled fixture models emits no model-scope
+notification in its recorded TSP traffic, while a synthetic unavailable saved
+model still produces its restore warning. No model requests are made.
+Evidence: `~/code/clean/omp-startup-model-scope-20261110/`.
+
 ## Magpie session activation identity (2026-11-11)
 
 Local HTTP(S) Magpie requests whose model id starts with `group/` now carry

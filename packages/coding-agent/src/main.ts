@@ -430,22 +430,6 @@ export interface InteractiveModeNotify {
 	message: string;
 }
 
-export function buildModelScopeNotification(
-	scopedModelsForDisplay: readonly Pick<ScopedModel, "model" | "thinkingLevel" | "explicitThinkingLevel">[],
-	startupQuiet: boolean,
-): InteractiveModeNotify | null {
-	if (startupQuiet || scopedModelsForDisplay.length === 0) {
-		return null;
-	}
-	const modelList = scopedModelsForDisplay
-		.map(scopedModel => {
-			const thinkingStr =
-				scopedModel.explicitThinkingLevel && scopedModel.thinkingLevel ? `:${scopedModel.thinkingLevel}` : "";
-			return `${scopedModel.model.id}${thinkingStr}`;
-		})
-		.join(", ");
-	return { kind: "info", message: `Model scope: ${modelList} (${formatKeyHint("ctrl+p")} to cycle)` };
-}
 export async function submitInteractiveInput(
 	mode: Pick<
 		InteractiveMode,
@@ -2962,17 +2946,6 @@ export async function runRootCommand(
 				});
 			} else if (isInteractive) {
 				const versionCheckPromise = checkForNewVersion(VERSION).catch(() => undefined);
-
-				const modelScopeNotification = buildModelScopeNotification(
-					scopedModels,
-					cfgStartupQuiet.get(settingsInstance),
-				);
-				if (modelScopeNotification) {
-					// Routed through the TUI (not stdout): the startup capture owns the
-					// terminal in raw mode here, and the TUI's first clearScrollback paint
-					// would wipe a pre-TUI line anyway.
-					notifs.push(modelScopeNotification);
-				}
 
 				const pythonEvalWarning = await pythonEvalWarningPromise;
 				if (pythonEvalWarning) {

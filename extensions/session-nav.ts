@@ -15,9 +15,8 @@
  *   n / p     jump to next / previous user-message block
  *   ↑↓ pgup/pgdn g/G home/end ⌃⇧home/end — free scroll
  *   ctrl+o    toggle tool-output expansion (same as the live transcript)
- *   Pointer note: SGR mouse tracking stays OFF for the whole viewer — plain
- *   drag selects/copies text natively; the terminal translates wheel to arrow
- *   keys on the alt screen (kitty), so scrolling still works without grabs.
+ *   Pointer note: terminal SGR tracking stays OFF for native text selection;
+ *   Tern uses native scroll containers, while kitty maps wheel to arrow keys.
  *   esc       back to the picker
  *
  * The viewer renders through the REAL transcript pipeline: ChatTranscriptBuilder
@@ -38,6 +37,10 @@ import {
 	UserMessageComponent,
 } from "@oh-my-pi/pi-coding-agent";
 import { ChatTranscriptBuilder } from "@oh-my-pi/pi-coding-agent/modes/components/chat-transcript-builder";
+import { exec } from "@oh-my-pi/pi-utils/ptree";
+import { isRecord } from "@oh-my-pi/pi-utils/type-guards";
+import { node, span, text } from "@oh-my-pi/pi-tui/native/describe";
+import type { DescribeContext, NativeNode, NativeScreen, NativeScroll, NativeUiEvent } from "@oh-my-pi/pi-tui/native/node";
 import type { Component, OverlayOptions, TUI } from "@oh-my-pi/pi-tui";
 import {
 	extractPrintableText,
@@ -161,6 +164,12 @@ class TranscriptViewer implements Component {
 	 *  re-assembly so image rows replace their placeholder/fallback rows. */
 	#assembledVersion = -1;
 	#totalRows = 0;
+	#native = false;
+	#nativeScroll: NativeScroll | undefined;
+	#reveal = 0;
+	#nativeJump = Promise.resolve();
+	#nativeError: string | undefined;
+	readonly #nativeRole = `omp.turns.${crypto.randomUUID()}`;
 	#overlayOptions: OverlayOptions = {
 		mouseTracking: false,
 		fullscreen: true,
@@ -269,13 +278,105 @@ class TranscriptViewer implements Component {
 		this.#targetTurn = this.#currentTurnFromOffset();
 	}
 
+	/** Read only on turn jumps; ordinary wheel scrolling stays entirely in Tern. */
+	async #jumpNativeTurn(delta: number): Promise<void> {
+		if (this.#disposed) return;
+		const command = ["tern", "ctl"];
+		if (process.env.OMP_TERN_CONTROL) command.push("--control", process.env.OMP_TERN_CONTROL);
+		command.push("dump", `.tv-cover > .sf-main,[data-role='${this.#nativeRole}.turn']`);
+		const { stdout } = await exec(command, { signal: AbortSignal.timeout(2000) });
+		if (this.#disposed) return;
+		const result: unknown = JSON.parse(stdout);
+		if (!isRecord(result) || result.ok !== true || !Array.isArray(result.elements)) {
+			throw new Error("Unable to read the Tern viewport");
+		}
+		const elements = result.elements.filter(isRecord);
+		const viewport = elements.find(element => typeof element.nth === "string" && elements.some(other =>
+			typeof other.nth === "string" && other.nth.startsWith(`${element.nth}>`)));
+		if (!viewport || !Array.isArray(viewport.rect)) throw new Error("Tern viewport is unavailable");
+		const turns = elements.filter(element => typeof element.nth === "string" && element.nth.startsWith(`${viewport.nth}>`));
+		const top = Number(viewport.rect[1]);
+		let current = 0;
+		for (let i = 0; i < turns.length; i++) {
+			const rect = turns[i]!.rect;
+			if (Array.isArray(rect) && Number(rect[1]) <= top + 3) current = i;
+		}
+		this.#targetTurn = Math.max(0, Math.min(turns.length - 1, current + delta));
+		this.#reveal++;
+		this.tui.requestRender();
+	}
+
+	describeScreen(cx: DescribeContext): NativeScreen {
+		return {
+			role: "session-nav",
+			main: [this.describe(cx)],
+			dock: [text(this.#nativeError ?? "n/p turn · ↑↓ pgup/pgdn g/G scroll · ctrl+o expand · esc back", {
+				tone: this.#nativeError ? "error" : "muted",
+			})],
+		};
+	}
+
+	describe(cx: DescribeContext): NativeNode {
+		this.#native = true;
+		const turns: NativeNode[] = [];
+		let children: Component[] = [];
+		const prelude = children;
+		for (const child of this.#builder.container.children) {
+			if (child instanceof UserMessageComponent || child instanceof CollapsedSyntheticMessageComponent) {
+				children = [];
+				const index = turns.length;
+				turns.push({
+					...node("col", { gap: "sm", shrink: 0, role: `${this.#nativeRole}.turn` }, children, `turn-${index}`),
+					reveal: index === this.#targetTurn
+						? this.#reveal === 0 ? "start" : { at: "start", n: this.#reveal }
+						: undefined,
+				});
+			}
+			children.push(child);
+		}
+		if (prelude.length) turns.unshift(node("col", { shrink: 0 }, prelude, "prelude"));
+		return {
+			...node("col", { gap: "md", role: this.#nativeRole }, turns, "body"),
+			scroll: cx.feature("scroll") ? this.#nativeScroll : undefined,
+		};
+	}
+
 	handleInput(data: string): void {
 		if (matchesKey(data, "escape")) {
 			this.#dispose();
 			return;
 		}
-		// Fullscreen overlays get SGR mouse tracking from the TUI engine; route
-		// the wheel to 3-rows-per-notch scrolling (same rate as Workspace Inspector).
+		if (this.#native) {
+			this.#nativeError = undefined;
+			const delta = matchesKey(data, "n") || matchesKey(data, "ctrl+n") ? 1
+				: matchesKey(data, "p") || matchesKey(data, "ctrl+p") ? -1 : 0;
+			if (delta) {
+				this.#nativeJump = this.#nativeJump.then(() => this.#jumpNativeTurn(delta)).catch(error => {
+					if (this.#disposed) return;
+					this.#nativeError = error instanceof Error ? error.message : String(error);
+					this.tui.requestRender();
+				});
+				return;
+			}
+			const by = matchesKey(data, "up") ? "line-up"
+				: matchesKey(data, "down") ? "line-down"
+				: matchesKey(data, "pageUp") ? "page-up"
+				: matchesKey(data, "pageDown") ? "page-down"
+				: matchesKey(data, "home") || matchesKey(data, "g") || matchesKey(data, "ctrl+shift+home") ? "start"
+				: matchesKey(data, "end") || matchesKey(data, "shift+g") || matchesKey(data, "ctrl+shift+end") ? "end"
+				: undefined;
+			if (by) {
+				this.#nativeScroll = { by, n: (this.#nativeScroll?.n ?? 0) + 1 };
+				this.tui.requestRender();
+				return;
+			}
+			if (matchesKey(data, "ctrl+o") || matchesKey(data, "super+o")) {
+				this.#builder.setExpanded(!this.#builder.expanded);
+				this.tui.requestRender();
+			}
+			return;
+		}
+		// SGR reports from terminals that explicitly enable mouse tracking.
 		if (routeSgrMouseInput(data, event => {
 			if (event.wheel === null) return false;
 			this.#scrollView.scroll(event.wheel * 3);
@@ -410,6 +511,14 @@ class TurnPicker implements Component {
 			this.done(undefined);
 			return;
 		}
+		if (routeSgrMouseInput(data, event => {
+			if (event.wheel !== null) this.#index += event.wheel;
+			return true;
+		})) {
+			this.#clamp();
+			this.tui.requestRender();
+			return;
+		}
 		if (matchesKey(data, "enter") || matchesKey(data, "return") || data === "\n" || data === "\r") {
 			const item = this.#filtered[this.#index];
 			if (!item) return;
@@ -449,6 +558,26 @@ class TurnPicker implements Component {
 		}
 		this.#clamp();
 		this.tui.requestRender();
+	}
+
+	handleNativeEvent(event: NativeUiEvent): void {
+		if (event.type !== "select" && event.type !== "activate") return;
+		const index = this.#filtered.findIndex(item => item.entryId === event.item);
+		if (index < 0) return;
+		this.#index = index;
+		this.#clamp();
+		if (event.type === "activate") this.handleInput("\r");
+		else this.tui.requestRender();
+	}
+
+	describe(): NativeNode {
+		this.#clamp();
+		return node("col", { gap: "sm" }, [
+			text([span("User turns", "strong"), span(`  ${this.#filtered.length}/${this.items.length}  /${this.#query}`, "muted")]),
+			node("list", { selected: this.#filtered[this.#index]?.entryId, max: { lines: this.#visibleRows() } },
+				this.#filtered.map(item => node("item", { label: `${item.num} ${item.time} ${item.preview}` }, undefined, item.entryId)), "turns"),
+			text(this.#flash?.message ?? "↑↓ search · enter jump · ^r rewind · ^b branch · esc", { tone: this.#flash ? "warning" : "muted" }),
+		]);
 	}
 
 	render(width: number): readonly string[] {

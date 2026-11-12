@@ -146,6 +146,18 @@ reasoning matters. The per-release upgrade history sits at the bottom
    overlay mouseTracking off (selection-first: plain drag selects/copies text;
    kitty translates wheel to arrow keys on the alt screen). PTY-verified
    marker/jump/expansion/rewind + no-mouse-tracking-bytes paths.
+   **Tern native rendering (2026-11-10):** the picker describes a native
+   bounded list with pointer selection/activation; the viewer describes the
+   actual transcript components in a screen surface with a sticky hints dock.
+   Tern owns wheel scrolling and viewport resizing; scroll keys emit native
+   scroll requests, while n/p reads the current screen geometry before revealing
+   a turn, including after mouse scrolling. The ANSI path keeps its existing
+   selection-first behavior. Verified with the installed binary and this
+   symlinked extension in an isolated Tern: native Markdown/tool nodes with no
+   rows fallback, list/body wheel movement, filtered selection, n/p, paging,
+   Home/End, and narrow-window resizing. Evidence:
+   `~/code/clean/omp-turns-native-20261110/`. Restart OMP to load the updated
+   extension; rebuilding the binary is unnecessary for this extension-only fix.
 11. `feat(extensions)` history_search recall over full session history —
    **Current (2026-11-07):** shared code moved to `extensions/recall/`;
    `session_search` has snapshot-safe scan/session/hit pagination, match-centered
